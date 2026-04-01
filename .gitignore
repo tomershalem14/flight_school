@@ -13,3 +13,10 @@ __pycache__/
 
 # PyInstaller temp
 *.pkg
+"scheduler.db" 
+"scheduler.db-wal" 
+"scheduler.db-shm" 
+"ngrok_bin/" 
+"debug_*.py" 
+"fix_*.py" 
+"test_*.py" 
