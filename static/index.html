@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>לוח טיסות - בית ספר למפעילי כטמ"מ</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="app-header">
+  <div class="header-right">
+    <img src="data:image/png;base64,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" class="header-logo-img" alt="לוגו" />
+    <span class="logo">לוח טיסות</span>
+    <span class="subtitle">בית ספר למפעילי כטמ"מ</span>
+  </div>
+  <div class="header-nav">
+    <button class="nav-btn active" data-view="flightboard">לוח טיסות</button>
+    <button class="nav-btn" data-view="schedule">מטריצה</button>
+    <button class="nav-btn" data-view="employees">מפעילים</button>
+    <button class="nav-btn" data-view="reports">דוחות</button>
+    <button class="nav-btn" data-view="settings">הגדרות</button>
+  </div>
+</header>
+
+<!-- MAIN -->
+<main id="app">
+
+  <!-- ═══════════════ VIEW: SCHEDULE (daily matrix) ═══════════════ -->
+  <section id="view-schedule" class="view">
+    <div class="matrix-layout">
+      <!-- Left: main matrix -->
+      <div class="matrix-main">
+        <!-- Day Navigation -->
+        <div class="week-bar">
+          <button id="prev-day" class="icon-btn">▶</button>
+          <span id="day-label" class="week-label"></span>
+          <button id="next-day" class="icon-btn">◀</button>
+          <button id="today-btn" class="btn-secondary">היום</button>
+          <div class="spacer"></div>
+          <button id="week-analysis-btn" class="btn-secondary">📊 ניתוח שבוע</button>
+          <button id="add-shift-btn" class="btn-primary">+ הוסף משמרת</button>
+          <button id="clear-week-btn" class="btn-danger" onclick="clearWeekShifts()" title="נקה את כל משמרות השבוע">🗑 נקה שבוע</button>
+          <button id="send-wa-btn" class="btn-wa">📱 שלח בוואטסאפ</button>
+          <button class="btn-secondary" onclick="openRegPanel()" title="חלונית רישומים שהתקבלו">📋 רישום מרחוק</button>
+        </div>
+
+        <!-- Violations Banner -->
+        <div id="violations-banner" class="violations-banner hidden"></div>
+
+        <!-- Daily Matrix Table: rows=hours, cols=employees -->
+        <div class="table-wrapper">
+          <table id="schedule-table">
+            <thead>
+              <tr id="days-header">
+                <th class="col-hour-matrix">שעה</th>
+              </tr>
+            </thead>
+            <tbody id="schedule-body"></tbody>
+          </table>
+        </div>
+
+        <!-- Workload Bar -->
+        <div id="workload-bar" class="workload-bar">
+          <div class="wl-bar-header" onclick="toggleWorkloadBar()" style="cursor:pointer;display:flex;align-items:center;gap:8px">
+            <span class="wl-title">📊 עומסי שבוע</span>
+            <span id="wl-chevron" style="font-size:0.8rem;color:var(--text-muted)">▾</span>
+          </div>
+          <div id="workload-items" class="workload-items hidden"></div>
+        </div>
+
+        <!-- Remote Registration Panel -->
+        <div id="remote-reg-panel" class="remote-reg-panel hidden">
+          <div class="remote-reg-header">
+            <span>✍ חלונית רישום מרחוק</span>
+            <div style="display:flex;gap:8px">
+              <button class="btn-secondary" style="font-size:0.78rem;padding:4px 10px" onclick="refreshRemoteRegPanel()">🔄 רענן</button>
+              <button class="icon-btn" onclick="document.getElementById('remote-reg-panel').classList.add('hidden')">✕</button>
+            </div>
+          </div>
+          <!-- Sheet URL config -->
+          <div style="padding:8px 12px;border-bottom:1px solid var(--border);direction:rtl">
+            <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:4px">📊 Google Sheet (תגובות טופס):</div>
+            <div style="display:flex;gap:6px;align-items:center">
+              <input id="rr-sheet-url" type="text"
+                placeholder="הדבק כתובת Google Sheet..."
+                style="flex:1;background:var(--surface3);border:1px solid var(--border);
+                  border-radius:7px;padding:5px 8px;color:var(--text);font-size:0.75rem;
+                  direction:ltr;min-width:0" />
+              <button onclick="saveSheetUrl()"
+                style="padding:4px 10px;background:rgba(34,197,94,0.15);
+                  border:1px solid rgba(34,197,94,0.3);border-radius:7px;
+                  color:#86efac;cursor:pointer;font-size:0.75rem;white-space:nowrap">
+                💾 שמור
+              </button>
+              <button onclick="pollSheetNow()"
+                style="padding:4px 10px;background:rgba(59,130,246,0.15);
+                  border:1px solid rgba(59,130,246,0.3);border-radius:7px;
+                  color:#93c5fd;cursor:pointer;font-size:0.75rem;white-space:nowrap">
+                🔄 משוך
+              </button>
+            </div>
+            <div id="sheet-status" style="font-size:0.72rem;color:var(--text-muted);margin-top:3px"></div>
+          </div>
+          <div id="remote-reg-list"></div>
+        </div>
+      </div>
+
+      <!-- Right: Timeline panel -->
+      <div class="timeline-panel" id="timeline-panel">
+        <div class="timeline-header">
+          <span id="timeline-title">ציר זמן יומי</span>
+          <button class="icon-btn" id="timeline-close-btn" title="סגור">✕</button>
+        </div>
+        <div id="timeline-content"></div>
+      </div>
+    </div>
+
+    <!-- Week Analysis Panel (slides in from bottom) -->
+    <div id="week-analysis-panel" class="week-analysis-panel hidden">
+      <div class="wa-panel-header">
+        <span>📊 ניתוח שבוע מפעיל</span>
+        <button class="icon-btn" id="week-analysis-close">✕</button>
+      </div>
+      <div class="wa-panel-body">
+        <select id="analysis-emp-select" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;min-width:160px;">
+          <option value="">-- בחר מפעיל --</option>
+        </select>
+        <div id="analysis-content" style="margin-top:12px;"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════ VIEW: FLIGHT BOARD ═══════════════ -->
+  <section id="view-flightboard" class="view active">
+    <div class="week-bar">
+      <button id="fb-prev-week" class="icon-btn" title="יום קודם">▶</button>
+      <span id="fb-week-label" class="week-label"></span>
+      <button id="fb-next-week" class="icon-btn" title="יום הבא">◀</button>
+      <button id="fb-today-btn" class="btn-secondary">היום</button>
+      <div class="spacer"></div>
+      <button id="fb-add-board-btn" class="btn-primary">+ הוסף לוח</button>
+    </div>
+    <!-- Managers Table -->
+    <div class="managers-bar">
+      <table class="managers-table">
+        <thead><tr id="managers-head"></tr></thead>
+        <tbody id="managers-body"></tbody>
+      </table>
+    </div>
+    <div id="fb-violations-banner" class="violations-banner hidden"></div>
+    <div id="fb-boards-container"></div>
+  </section>
+
+  <!-- Add/Edit Board Modal -->
+  <div id="modal-fb-board" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="fb-board-modal-title">הוסף לוח טיסות</h3>
+        <button class="modal-close" data-close="modal-fb-board">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <label>שם הלוח</label>
+          <input type="text" id="fb-board-name" placeholder="לוח טיסות 1" />
+        </div>
+        <div class="form-row">
+          <label>שעת התחלה</label>
+          <select id="fb-board-start"></select>
+        </div>
+        <div class="form-row">
+          <label>שעת סיום</label>
+          <select id="fb-board-end"></select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-danger hidden" id="fb-board-delete-btn">מחק לוח</button>
+        <button class="btn-secondary" data-close="modal-fb-board">ביטול</button>
+        <button class="btn-primary" id="fb-board-save-btn">שמור</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ VIEW: EMPLOYEES ═══════════════ -->
+  <section id="view-employees" class="view">
+    <div class="view-header">
+      <h2>ניהול מפעילים</h2>
+      <button class="btn-primary" id="add-emp-btn">+ הוסף מפעיל</button>
+    </div>
+    <table class="data-table" id="emp-table">
+      <thead>
+        <tr>
+          <th>שם</th><th>טלפון</th><th>דרג</th>
+          <th>שיוך</th><th>קבוע</th><th>פעיל</th><th>פעולות</th>
+        </tr>
+      </thead>
+      <tbody id="emp-body"></tbody>
+    </table>
+
+  </section>
+
+  <!-- ═══════════════ VIEW: REPORTS ═══════════════ -->
+  <section id="view-reports" class="view">
+    <div class="view-header">
+      <h2>דוחות</h2>
+      <button class="btn-primary" onclick="exportTrackingExcel()" style="margin-left:12px">⬇ יצא מעקב Excel</button>
+      <div class="report-week-nav">
+        <button id="rpt-prev-week" class="icon-btn">▶</button>
+        <span id="rpt-week-label"></span>
+        <button id="rpt-next-week" class="icon-btn">◀</button>
+      </div>
+    </div>
+
+    <div class="reports-grid">
+      <!-- Shift Count Table -->
+      <div class="report-card">
+        <h3>מעקב משמרות (לפי סילבוס)</h3>
+        <div id="rpt-shift-count"></div>
+      </div>
+      <!-- Workload Table -->
+      <div class="report-card">
+        <h3>עומסים שבועיים</h3>
+        <div id="rpt-workload"></div>
+      </div>
+    </div>
+    <!-- Syllabus Chart -->
+    <div class="report-card full-width" style="margin-top:16px">
+      <h3>📊 שעות לפי סוג סילבוס</h3>
+      <div id="rpt-syllabus-chart"></div>
+    </div>
+
+    <!-- Employee History -->
+    <div class="report-card full-width">
+      <h3>היסטוריית משמרות מפעיל</h3>
+      <div class="history-controls">
+        <select id="hist-emp-select"><option value="">-- בחר מפעיל --</option></select>
+        <button class="btn-secondary" id="hist-load-btn">טען</button>
+      </div>
+      <div id="rpt-history"></div>
+    </div>
+  </section>
+
+  <!-- ═══════════════ VIEW: SETTINGS ═══════════════ -->
+  <section id="view-settings" class="view">
+    <div class="view-header"><h2>הגדרות</h2></div>
+
+    <div class="settings-grid">
+      <!-- Roles -->
+      <div class="settings-card">
+        <h3>דרגים</h3>
+        <table class="data-table" id="roles-table">
+          <thead><tr><th>שם</th><th>טיסה</th><th>ניהול</th><th>צבע</th><th></th></tr></thead>
+          <tbody id="roles-body"></tbody>
+        </table>
+        <button class="btn-secondary" id="add-role-btn">+ הוסף דרג</button>
+      </div>
+
+<!-- Shift types removed - managed via DB defaults -->
+    </div>
+
+    <!-- Color Rules -->
+    <div class="settings-card full-width" style="margin-top:16px">
+      <h3>🎨 חוקי צבע לפי מילה</h3>
+      <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:16px">כל תא בלוח טיסות שמכיל את המילה יצבע ברקע. ניתן לרשום כמה מילים מופרדות בפסיק לאותו צבע.</p>
+      <table class="data-table color-rules-table">
+        <thead>
+          <tr>
+            <th>צבע</th>
+            <th>מילים / שמות</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="color-rules-list"></tbody>
+        <tfoot>
+          <tr class="color-rule-add-tr">
+            <td style="width:56px">
+              <input type="color" id="new-color-pick" value="#3b82f6" class="color-pick-cell" />
+            </td>
+            <td>
+              <input type="text" id="new-color-words" class="form-input"
+                placeholder="מילים מופרדות בפסיק — יוסי, אחמד, בוגי" />
+            </td>
+            <td style="width:80px">
+              <button class="btn-primary btn-sm" onclick="addColorRule()">+ הוסף</button>
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<!-- ═══════════════ MODALS ═══════════════ -->
+
+<!-- Remote Registration Modal -->
+<div id="modal-remote-reg" class="modal-overlay hidden">
+  <div class="modal" style="max-width:500px">
+    <div class="modal-header">
+      <h3>✍ רישום מרחוק</h3>
+      <button class="modal-close" data-close="modal-remote-reg">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>שבוע (ראשון)</label>
+        <input type="date" id="rr-week-start" />
+      </div>
+      <div class="form-row">
+        <label>יום ספציפי</label>
+        <select id="rr-day-select" style="width:100%">
+          <option value="">-- בחר יום --</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>שיוך קטגוריה</label>
+        <select id="rr-affil-select" style="width:100%">
+          <option value="">-- כל המפעילים --</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>טווח שעות לרישום</label>
+        <div style="display:flex;gap:8px;align-items:center;direction:ltr">
+          <select id="rr-from-h" class="time-sel"></select>
+          <span class="time-colon">:</span>
+          <select id="rr-from-m" class="time-sel">
+            <option value="00">00</option><option value="30">30</option>
+          </select>
+          <span style="color:var(--text-muted);margin:0 4px">–</span>
+          <select id="rr-to-h" class="time-sel"></select>
+          <span class="time-colon">:</span>
+          <select id="rr-to-m" class="time-sel">
+            <option value="00">00</option><option value="30">30</option>
+          </select>
+        </div>
+      </div>
+      <div id="rr-preview" style="display:none;margin-top:12px;padding:10px;background:var(--surface2);border-radius:8px;font-size:0.82rem;color:var(--text-muted);direction:rtl;white-space:pre-line"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" data-close="modal-remote-reg">ביטול</button>
+      <button class="btn-primary" id="rr-send-btn">📤 שלח הודעות</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add/Edit Shift Modal -->
+<div id="modal-shift" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="shift-modal-title">הוסף משמרת</h3>
+      <button class="modal-close" data-close="modal-shift">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>תאריך</label>
+        <input type="date" id="shift-date" />
+      </div>
+
+      <div class="form-row">
+        <label>שעת התחלה</label>
+        <div class="time-select-row">
+          <select id="shift-start-h" class="time-sel">
+            <option value="06">06</option>
+            <option value="07">07</option>
+            <option value="08">08</option>
+            <option value="09">09</option>
+            <option value="10">10</option>
+            <option value="11">11</option>
+            <option value="12">12</option>
+            <option value="13">13</option>
+            <option value="14">14</option>
+            <option value="15">15</option>
+            <option value="16">16</option>
+            <option value="17">17</option>
+            <option value="18">18</option>
+            <option value="19">19</option>
+            <option value="20">20</option>
+            <option value="21">21</option>
+            <option value="22">22</option>
+          </select>
+          <span class="time-colon">:</span>
+          <select id="shift-start-m" class="time-sel">
+            <option value="00">00</option>
+            <option value="30">30</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>שעת סיום</label>
+        <div class="time-select-row">
+          <select id="shift-end-h" class="time-sel">
+            <option value="06">06</option>
+            <option value="07">07</option>
+            <option value="08">08</option>
+            <option value="09">09</option>
+            <option value="10">10</option>
+            <option value="11">11</option>
+            <option value="12">12</option>
+            <option value="13">13</option>
+            <option value="14">14</option>
+            <option value="15">15</option>
+            <option value="16">16</option>
+            <option value="17">17</option>
+            <option value="18">18</option>
+            <option value="19">19</option>
+            <option value="20">20</option>
+            <option value="21">21</option>
+            <option value="22">22</option>
+          </select>
+          <span class="time-colon">:</span>
+          <select id="shift-end-m" class="time-sel">
+            <option value="00">00</option>
+            <option value="30">30</option>
+          </select>
+        </div>
+      </div>
+      
+      <div class="form-row">
+        <label>לוח טיסות</label>
+        <select id="shift-board-select">
+          <option value="">-- ללא שיוך ללוח --</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>מפעיל</label>
+        <select id="shift-emp-select">
+          <option value="">-- לא מאויש --</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>סילבוס</label>
+        <input type="text" id="shift-notes" placeholder="שם הסילבוס" />
+      </div>
+      <div id="shift-violations-preview" class="violations-list hidden"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-danger hidden" id="delete-shift-btn">מחק</button>
+      <button class="btn-secondary" data-close="modal-shift">ביטול</button>
+      <button class="btn-primary" id="save-shift-btn">שמור</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Employee Modal -->
+<div id="modal-emp" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="emp-modal-title">הוסף מפעיל</h3>
+      <button class="modal-close" data-close="modal-emp">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>שם</label>
+        <input type="text" id="emp-name" placeholder="שם מלא" />
+      </div>
+      <div class="form-row">
+        <label>טלפון</label>
+        <input type="text" id="emp-phone" placeholder="050-0000000" />
+      </div>
+      <div class="form-row">
+        <label>דרג</label>
+        <select id="emp-role-select"></select>
+      </div>
+      <div class="form-row">
+        <label>נוכח תמיד</label>
+        <input type="checkbox" id="emp-always-present" />
+        <span class="hint">יוזמן אוטומטית לכל שבוע</span>
+      </div>
+      <div class="form-row">
+        <label>שיוך</label>
+        <select id="emp-affiliation">
+          <option value="">-- ללא שיוך --</option>
+          <option value="קפ''ט">קפ''ט</option>
+          <option value="מיל' אורגני">מיל' אורגני</option>
+          <option value="מיל' דואלי">מיל' דואלי</option>
+          <option value="מגמה א'">מגמה א'</option>
+          <option value="מגמה ב'">מגמה ב'</option>
+          <option value="מגמה ג'">מגמה ג'</option>
+          <option value="מגמה ד'">מגמה ד'</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>הערות</label>
+        <input type="text" id="emp-notes" placeholder="אופציונלי" />
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" data-close="modal-emp">ביטול</button>
+      <button class="btn-primary" id="save-emp-btn">שמור</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Constraint Modal -->
+<div id="modal-constraint" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="con-modal-title">הוסף אילוץ</h3>
+      <button class="modal-close" data-close="modal-constraint">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>מפעיל</label>
+        <select id="con-emp-select"></select>
+      </div>
+      <div class="form-row">
+        <label>תאריך</label>
+        <input type="date" id="con-date" class="form-input" />
+      </div>
+      <div class="form-row">
+        <label>שעת התחלה</label>
+        <div class="time-select-row">
+          <select id="con-start-h" class="time-sel">
+            <option value="">כל היום</option>
+            <option value="06">06</option><option value="07">07</option><option value="08">08</option>
+            <option value="09">09</option><option value="10">10</option><option value="11">11</option>
+            <option value="12">12</option><option value="13">13</option><option value="14">14</option>
+            <option value="15">15</option><option value="16">16</option><option value="17">17</option>
+            <option value="18">18</option><option value="19">19</option><option value="20">20</option>
+          </select>
+          <span class="time-colon">:</span>
+          <select id="con-start-m" class="time-sel">
+            <option value="00">00</option><option value="30">30</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>שעת סיום</label>
+        <div class="time-select-row">
+          <select id="con-end-h" class="time-sel">
+            <option value="">כל היום</option>
+            <option value="06">06</option><option value="07">07</option><option value="08">08</option>
+            <option value="09">09</option><option value="10">10</option><option value="11">11</option>
+            <option value="12">12</option><option value="13">13</option><option value="14">14</option>
+            <option value="15">15</option><option value="16">16</option><option value="17">17</option>
+            <option value="18">18</option><option value="19">19</option><option value="20">20</option>
+            <option value="21">21</option><option value="22">22</option><option value="23">23</option>
+          </select>
+          <span class="time-colon">:</span>
+          <select id="con-end-m" class="time-sel">
+            <option value="00">00</option><option value="30">30</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>סוג</label>
+        <select id="con-type">
+          <option value="absence">הצ"ח</option>
+          <option value="vacation">חופשה</option>
+          <option value="unavailable">הצ"ח</option>
+          <option value="preferred">משמרת מועדפת</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>סיבה</label>
+        <input type="text" id="con-reason" placeholder="אופציונלי" />
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-danger hidden" id="delete-con-btn">🗑 מחק</button>
+      <button class="btn-secondary" data-close="modal-constraint">ביטול</button>
+      <button class="btn-primary" id="save-con-btn">שמור</button>
+    </div>
+  </div>
+</div>
+
+<!-- WhatsApp Send Modal -->
+<div id="modal-wa" class="modal-overlay hidden">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <h3>📱 שליחת לוז בוואטסאפ</h3>
+      <button class="modal-close" data-close="modal-wa">✕</button>
+    </div>
+    <div class="modal-body" id="wa-list"></div>
+    <div class="modal-footer">
+      <button class="btn-secondary" data-close="modal-wa">סגור</button>
+      <button class="btn-primary" id="open-all-wa-btn">פתח הכל בוואטסאפ</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

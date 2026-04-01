@@ -1,0 +1,15 @@
+# Build output
+dist/
+build/
+*.spec.bak
+
+# Database (user data - don't commit)
+scheduler.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller temp
+*.pkg
