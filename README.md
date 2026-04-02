@@ -1,91 +1,44 @@
-# ✈ מערכת לוז - בית ספר לטיסה
+# Flight School Scheduler (Desktop)
 
-## התקנה והפעלה
+Tauri + React + TypeScript + SQLite — local-first replacement for the legacy Python/FastAPI app.
 
-### דרישות
-- Python 3.10+
-- Windows / Mac / Linux
+## Prerequisites
 
-### הפעלה מהירה
-```
-לחץ פעמיים על: run.bat
-```
+- [Node.js](https://nodejs.org/) (LTS)
+- [Rust](https://www.rust-lang.org/tools/rusinstall) + Visual Studio C++ Build Tools (Windows)
+- [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
 
-או ידנית:
+## Development
+
 ```bash
-pip install -r requirements.txt
-python main.py
+cd desktop
+npm install
+npm run tauri dev
 ```
 
-הדפדפן ייפתח אוטומטית על `http://localhost:8765`
+## Production build (Windows installer)
 
----
-
-## תכונות המערכת
-
-### 📅 לוח משמרות
-- תצוגה שבועית (ראשון-שבת)
-- ניווט שבועות קדימה/אחורה
-- הוספת משמרת בלחיצה על "+" בתא
-- עריכת/מחיקת משמרת בלחיצה על המשמרת
-- חישוב אוטומטי של שעת סיום לפי סוג המשמרת
-- סימון אוטומטי של חריגות (⚠ אדום)
-
-### 🚦 בדיקת חוקים אוטומטית
-1. **דרג מינימלי** - בדיקת דרג עובד מול דרג נדרש למשמרת
-2. **ניהול לא טס** - מניעת איוש ניהול במשמרות טיסה
-3. **זמן הכנה/תאוששות** - חישוב חלונות לפני ואחרי כל משמרת, בדיקת חפיפות
-4. **ערב לא פעמיים ברצף** - מניעת שתי משמרות ערב (>18:00) בימים רצופים
-5. **משמרת אחרונה vs 5 ראשונות** - לא יכול להיות גם בסיום וגם בתחילת היום
-6. **כפל ניהול** - בדיקת חפיפת שני ניהולים בו-זמנית
-7. **אילוצי עובד** - בדיקת חסרות/חופשות שהוגדרו מראש
-
-### 👥 ניהול עובדים
-- הוספה/עריכה/השבתה של עובדים
-- שיוך לדרג
-- סימון "נוכח תמיד" לעובדים קבועים
-- הוספת אילוצים (חופשה / היעדרות / לא זמין)
-
-### 📊 דוחות
-- **מעקב משמרות** - טבלת כמות משמרות לפי עובד וסוג
-- **עומסים שבועיים** - ירוק/צהוב/אדום לפי עומס
-- **היסטוריה** - כל המשמרות האחרונות של עובד עם תאריכים
-
-### 📱 שליחת וואטסאפ
-- לחיצה על "שלח בוואטסאפ" → פותח חלון עם הודעה מוכנה לכל עובד
-- פורמט: יום | שעות | סוג משמרת
-- פתיחה אוטומטית בלשוניות דפדפן
-
-### ⚙️ הגדרות
-- הוספת דרגים (עם הגדרת יכולת טיסה, ניהול, צבע)
-- הוספת סוגי משמרות (עם משך, זמן הכנה, זמן תאוששות, צבע)
-
----
-
-## מבנה הפרויקט
-```
-flight_school_scheduler/
-├── main.py          - FastAPI שרת + API endpoints
-├── models.py        - מסד נתונים SQLite + טבלאות
-├── rules.py         - מנוע חוקי האיוש
-├── requirements.txt
-├── run.bat          - קובץ הפעלה Windows
-├── scheduler.db     - מסד הנתונים (נוצר אוטומטית)
-└── static/
-    ├── index.html   - ממשק ראשי
-    ├── style.css    - עיצוב
-    └── app.js       - לוגיקת Frontend
+```bash
+cd desktop
+npm run tauri build
 ```
 
----
+Artifacts appear under `desktop/src-tauri/target/release/bundle/`.
 
-## סוגי משמרות ברירת מחדל
-| שם | משך | הכנה | תאוששות |
-|----|-----|------|---------|
-| משמרת שעה | 60 דק' | 30 דק' | 30 דק' |
-| משמרת שעתיים | 120 דק' | 60 דק' | 60 דק' |
-| שעה + שעה (הפסקה 2 שעות) | 60+60 דק' | 30 דק' | 30 דק' |
-| שעתיים + שעה (הפסקה 3 שעות) | 120+60 דק' | 60 דק' | 60 דק' |
-| פתיחת יום | 30 דק' | 0 | 0 |
-| סגירת יום | 30 דק' | 0 | 0 |
-| משמרת ניהול | 60 דק' | 0 | 0 |
+## Project layout
+
+| Path | Role |
+|------|------|
+| `src/app/` | Shell, routing, Zustand store |
+| `src/features/` | Feature views (schedule, employees, …) |
+| `src/shared/` | API helpers, date utilities |
+| `src-tauri/src/commands/` | Tauri `invoke` handlers |
+| `src-tauri/src/domain/` | Scheduling rules (violations, workload) |
+| `src-tauri/src/persistence/` | SQLite via `db/` module + `migrations/` |
+| `src-tauri/src/integration/` | Google Sheet CSV polling |
+
+## Data
+
+The SQLite file is created under the OS app data directory (e.g. `%AppData%\com.flightschool.scheduler\scheduler.db` on Windows).
+
+Tunneling / public URL features are intentionally not implemented; remote registration links are local-only.
