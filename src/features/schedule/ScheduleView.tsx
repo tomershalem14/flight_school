@@ -9,8 +9,24 @@ import type { JsonObject } from "../../shared/api";
 const HOURS = Array.from({ length: 16 }, (_, h) => `${String(h + 6).padStart(2, "0")}:00`);
 
 function timeToMin(t: string): number {
-  const [h, m] = t.split(":").map(Number);
+  const parts = String(t).trim().split(":");
+  const h = Number(parts[0]);
+  const m = Number(parts[1] ?? 0);
+  if (Number.isNaN(h) || Number.isNaN(m)) return 0;
   return h * 60 + m;
+}
+
+/** Tauri IPC may return camelCase keys; DB rows use snake_case. */
+function normalizeShiftRow(s: JsonObject): JsonObject {
+  return {
+    ...s,
+    shift_date: s.shift_date ?? s.shiftDate,
+    employee_id: "employee_id" in s ? s.employee_id : s.employeeId,
+    start_time: s.start_time ?? s.startTime,
+    end_time: s.end_time ?? s.endTime,
+    type_name: s.type_name ?? s.typeName,
+    notes: s.notes,
+  };
 }
 
 export function ScheduleView() {
@@ -24,10 +40,15 @@ export function ScheduleView() {
     queryKey: ["employees"],
     queryFn: () => api.getEmployees(true),
   });
-  const { data: shifts = [] } = useQuery({
+  const { data: shiftsRaw = [] } = useQuery({
     queryKey: ["shifts", weekStr],
     queryFn: () => api.getShifts(weekStr),
   });
+
+  const shifts = useMemo(
+    () => shiftsRaw.map((s) => normalizeShiftRow(s as JsonObject)),
+    [shiftsRaw],
+  );
   const { data: violations = [] } = useQuery({
     queryKey: ["violations", dateStr],
     queryFn: () => api.getDayViolations(dateStr),
@@ -181,7 +202,11 @@ export function ScheduleView() {
               const name = String(emp.name ?? "");
               const roleColor = String(emp.role_color ?? "#888");
               const roleName = String(emp.role_name ?? "");
-              const rowShifts = dayShifts.filter((s) => Number(s.employee_id) === eid);
+              const rowShifts = dayShifts.filter((s) => {
+                const se = s.employee_id;
+                if (se === null || se === undefined || se === "") return false;
+                return Number(se) === eid;
+              });
               return (
                 <tr key={eid}>
                   <td className="col-emp-sticky">
@@ -202,13 +227,7 @@ export function ScheduleView() {
                     return (
                       <td
                         key={hour}
-                        className={shift ? "matrix-cell filled" : "matrix-cell empty"}
-                        style={{
-                          cursor: "pointer",
-                          background: shift ? "rgba(59,130,246,0.2)" : undefined,
-                          fontSize: "0.65rem",
-                          textAlign: "center",
-                        }}
+                        className={`hour-cell ${shift ? "shift-cell-hour" : "empty-cell-hour"}`}
                         onClick={() => {
                           if (shift) {
                             setModal({
@@ -230,7 +249,11 @@ export function ScheduleView() {
                           }
                         }}
                       >
-                        {isStart ? String(shift!.type_name ?? "").slice(0, 10) : ""}
+                        {isStart ? (
+                          <span className="hour-label-shift">
+                            {String(shift!.type_name ?? "").slice(0, 10)}
+                          </span>
+                        ) : null}
                       </td>
                     );
                   })}
@@ -246,11 +269,13 @@ export function ScheduleView() {
         <div className="workload-items">
           {workload.map((w) => {
             const c = String(w.color ?? "green");
+            const wid = w.employee_id ?? w.employeeId;
             return (
-              <div key={String(w.employee_id)} className={`wl-item ${c}`}>
-                <span>{String(w.employee_name)}</span>
+              <div key={String(wid)} className={`wl-item ${c}`}>
+                <span>{String(w.employee_name ?? w.employeeName ?? "")}</span>
                 <span>
-                  {String(w.total_shifts)} משמרות · {String(w.total_hours)} שעות
+                  {String(w.total_shifts ?? w.totalShifts ?? "")} משמרות ·{" "}
+                  {String(w.total_hours ?? w.totalHours ?? "")} שעות
                 </span>
               </div>
             );

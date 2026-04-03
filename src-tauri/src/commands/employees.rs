@@ -17,13 +17,13 @@ pub struct EmployeeCreate {
     pub notes: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
-pub struct EmployeeUpdate {
-    pub name: Option<String>,
+/// Full row replace on edit — avoids partial Option updates that skip `null`/cleared fields.
+#[derive(Debug, Deserialize)]
+pub struct EmployeeReplace {
+    pub name: String,
     pub phone: Option<String>,
-    pub role_id: Option<i64>,
-    pub always_present: Option<bool>,
-    pub is_active: Option<bool>,
+    pub role_id: i64,
+    pub always_present: bool,
     pub affiliation: Option<String>,
     pub notes: Option<String>,
 }
@@ -92,7 +92,7 @@ pub fn create_employee(state: State<'_, AppState>, payload: EmployeeCreate) -> R
 pub fn update_employee(
     state: State<'_, AppState>,
     emp_id: i64,
-    payload: EmployeeUpdate,
+    payload: EmployeeReplace,
 ) -> Result<Value, String> {
     state
         .with_db(|conn| {
@@ -105,39 +105,19 @@ pub fn update_employee(
                 return Err(AppError::msg("עובד לא נמצא"));
             }
 
-            if let Some(ref n) = payload.name {
-                conn.execute("UPDATE employees SET name = ? WHERE id = ?", params![n, emp_id])?;
-            }
-            if let Some(ref p) = payload.phone {
-                conn.execute("UPDATE employees SET phone = ? WHERE id = ?", params![p, emp_id])?;
-            }
-            if let Some(rid) = payload.role_id {
-                conn.execute(
-                    "UPDATE employees SET role_id = ? WHERE id = ?",
-                    params![rid, emp_id],
-                )?;
-            }
-            if let Some(b) = payload.always_present {
-                conn.execute(
-                    "UPDATE employees SET always_present = ? WHERE id = ?",
-                    params![b as i32, emp_id],
-                )?;
-            }
-            if let Some(b) = payload.is_active {
-                conn.execute(
-                    "UPDATE employees SET is_active = ? WHERE id = ?",
-                    params![b as i32, emp_id],
-                )?;
-            }
-            if let Some(ref a) = payload.affiliation {
-                conn.execute(
-                    "UPDATE employees SET affiliation = ? WHERE id = ?",
-                    params![a, emp_id],
-                )?;
-            }
-            if let Some(ref n) = payload.notes {
-                conn.execute("UPDATE employees SET notes = ? WHERE id = ?", params![n, emp_id])?;
-            }
+            conn.execute(
+                "UPDATE employees SET name = ?, phone = ?, role_id = ?, always_present = ?, affiliation = ?, notes = ?
+                 WHERE id = ?",
+                params![
+                    payload.name,
+                    payload.phone,
+                    payload.role_id,
+                    payload.always_present as i32,
+                    payload.affiliation,
+                    payload.notes,
+                    emp_id,
+                ],
+            )?;
 
             Ok(json!({"ok": true}))
         })

@@ -1,6 +1,7 @@
 /**
  * Typed wrappers around Tauri `invoke`.
- * Argument keys must match Rust parameter names (snake_case).
+ * Top-level argument keys use camelCase (Tauri v2 IPC); nested payload fields
+ * stay snake_case to match Rust struct fields (e.g. EmployeeCreate.role_id).
  */
 import { invoke } from "@tauri-apps/api/core";
 
@@ -18,11 +19,11 @@ export async function updateRole(
   role_id: number,
   payload: JsonObject,
 ): Promise<JsonObject> {
-  return invoke("update_role", { role_id, payload });
+  return invoke("update_role", { roleId: role_id, payload });
 }
 
 export async function getEmployees(active_only = true): Promise<JsonObject[]> {
-  return invoke("get_employees", { active_only });
+  return invoke("get_employees", { activeOnly: active_only });
 }
 
 export async function createEmployee(payload: JsonObject): Promise<JsonObject> {
@@ -33,11 +34,11 @@ export async function updateEmployee(
   emp_id: number,
   payload: JsonObject,
 ): Promise<JsonObject> {
-  return invoke("update_employee", { emp_id, payload });
+  return invoke("update_employee", { empId: emp_id, payload });
 }
 
 export async function deleteEmployee(emp_id: number): Promise<JsonObject> {
-  return invoke("delete_employee", { emp_id });
+  return invoke("delete_employee", { empId: emp_id });
 }
 
 export async function getShiftTypes(): Promise<JsonObject[]> {
@@ -49,7 +50,7 @@ export async function createShiftType(payload: JsonObject): Promise<JsonObject> 
 }
 
 export async function getShifts(week_start: string): Promise<JsonObject[]> {
-  return invoke("get_shifts", { week_start });
+  return invoke("get_shifts", { weekStart: week_start });
 }
 
 export async function createShift(payload: JsonObject): Promise<JsonObject> {
@@ -60,11 +61,11 @@ export async function updateShift(
   shift_id: number,
   payload: JsonObject,
 ): Promise<JsonObject> {
-  return invoke("update_shift", { shift_id, payload });
+  return invoke("update_shift", { shiftId: shift_id, payload });
 }
 
 export async function deleteShift(shift_id: number): Promise<JsonObject> {
-  return invoke("delete_shift", { shift_id });
+  return invoke("delete_shift", { shiftId: shift_id });
 }
 
 export async function getDayViolations(date: string): Promise<JsonObject[]> {
@@ -73,7 +74,7 @@ export async function getDayViolations(date: string): Promise<JsonObject[]> {
 
 export async function getConstraints(employee_id?: number): Promise<JsonObject[]> {
   if (employee_id !== undefined) {
-    return invoke("get_constraints", { employee_id });
+    return invoke("get_constraints", { employeeId: employee_id });
   }
   return invoke("get_constraints", {});
 }
@@ -86,37 +87,37 @@ export async function updateConstraint(
   con_id: number,
   payload: JsonObject,
 ): Promise<JsonObject> {
-  return invoke("update_constraint", { con_id, payload });
+  return invoke("update_constraint", { conId: con_id, payload });
 }
 
 export async function deleteConstraint(con_id: number): Promise<JsonObject> {
-  return invoke("delete_constraint", { con_id });
+  return invoke("delete_constraint", { conId: con_id });
 }
 
 export async function getWorkloadReport(week_start: string): Promise<JsonObject[]> {
-  return invoke("get_workload_report", { week_start });
+  return invoke("get_workload_report", { weekStart: week_start });
 }
 
 export async function getShiftCountReport(week_start: string): Promise<JsonObject[]> {
-  return invoke("get_shift_count_report", { week_start });
+  return invoke("get_shift_count_report", { weekStart: week_start });
 }
 
 export async function getEmployeeHistory(
   employee_id: number,
   limit?: number,
 ): Promise<JsonObject[]> {
-  return invoke("get_employee_history", { employee_id, limit });
+  return invoke("get_employee_history", { employeeId: employee_id, limit });
 }
 
 export async function sendWhatsapp(week_start: string): Promise<JsonObject[]> {
-  return invoke("send_whatsapp", { week_start });
+  return invoke("send_whatsapp", { weekStart: week_start });
 }
 
 export async function getRemoteRegistrations(
   week_start?: string,
   status?: string,
 ): Promise<JsonObject[]> {
-  return invoke("get_remote_registrations", { week_start, status });
+  return invoke("get_remote_registrations", { weekStart: week_start, status });
 }
 
 export async function createRegSession(payload: JsonObject): Promise<JsonObject> {
@@ -135,11 +136,11 @@ export async function updateRemoteRegistration(
   reg_id: number,
   payload: JsonObject,
 ): Promise<JsonObject> {
-  return invoke("update_remote_registration", { reg_id, payload });
+  return invoke("update_remote_registration", { regId: reg_id, payload });
 }
 
 export async function deleteRemoteRegistration(reg_id: number): Promise<JsonObject> {
-  return invoke("delete_remote_registration", { reg_id });
+  return invoke("delete_remote_registration", { regId: reg_id });
 }
 
 export async function getSheetConfig(): Promise<{ sheet_url: string }> {

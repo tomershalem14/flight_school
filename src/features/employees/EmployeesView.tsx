@@ -3,11 +3,32 @@ import { useState } from "react";
 import * as api from "../../shared/api";
 import type { JsonObject } from "../../shared/api";
 
+/** Normalize API row into modal state (stable types; drop joined role columns). */
+function employeeRowToModal(e: JsonObject): JsonObject {
+  return {
+    id: Number(e.id),
+    name: String(e.name ?? ""),
+    phone: e.phone != null ? String(e.phone) : "",
+    role_id: Number(e.role_id),
+    always_present: Number(e.always_present) === 1 || e.always_present === true,
+    affiliation: e.affiliation != null ? String(e.affiliation) : "",
+    notes: e.notes != null ? String(e.notes) : "",
+  };
+}
+
+function rowIsActive(e: JsonObject): boolean {
+  const v = e.is_active;
+  if (v === true) return true;
+  if (typeof v === "number") return v !== 0;
+  if (typeof v === "string") return v !== "0" && v !== "";
+  return false;
+}
+
 export function EmployeesView() {
   const qc = useQueryClient();
   const { data: employees = [] } = useQuery({
     queryKey: ["employees"],
-    queryFn: () => api.getEmployees(false),
+    queryFn: () => api.getEmployees(true),
   });
   const { data: roles = [] } = useQuery({
     queryKey: ["roles"],
@@ -17,23 +38,52 @@ export function EmployeesView() {
   const [modal, setModal] = useState<JsonObject | null>(null);
 
   const saveMut = useMutation({
-    mutationFn: async () => {
-      if (!modal) return;
-      const id = modal.id as number | undefined;
+    mutationFn: async (m: JsonObject) => {
+      const rawId = m.id;
+      const id =
+        rawId != null && rawId !== "" && !Number.isNaN(Number(rawId)) ? Number(rawId) : 0;
+
+      const name = String(m.name ?? "").trim();
+      const phoneTrim = String(m.phone ?? "").trim();
+      const roleId = Number(m.role_id);
+      if (!name) {
+        throw new Error("נא להזין שם");
+      }
+      if (!Number.isFinite(roleId)) {
+        throw new Error("נא לבחור דרג");
+      }
+
       const payload = {
-        name: modal.name,
-        phone: modal.phone || null,
-        role_id: Number(modal.role_id),
-        always_present: Boolean(modal.always_present),
-        affiliation: modal.affiliation || null,
-        notes: modal.notes || null,
+        name,
+        phone: phoneTrim === "" ? null : phoneTrim,
+        role_id: roleId,
+        always_present: Boolean(m.always_present),
+        affiliation: String(m.affiliation ?? "").trim() || null,
+        notes: String(m.notes ?? "").trim() || null,
       };
-      if (id) return api.updateEmployee(id, payload);
-      return api.createEmployee(payload);
+
+      if (id > 0) {
+        return api.updateEmployee(id, payload);
+      }
+      return api.createEmployee({
+        name: payload.name,
+        phone: payload.phone,
+        role_id: payload.role_id,
+        always_present: payload.always_present,
+        affiliation: payload.affiliation,
+        notes: payload.notes,
+      });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["employees"] });
       setModal(null);
+    },
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: (empId: number) => api.deleteEmployee(empId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["employees"] });
     },
   });
 
@@ -49,7 +99,7 @@ export function EmployeesView() {
             setModal({
               name: "",
               phone: "",
-              role_id: roles[0] ? roles[0].id : 1,
+              role_id: roles[0] ? Number(roles[0].id) : 1,
               always_present: false,
               affiliation: "",
               notes: "",
@@ -74,20 +124,27 @@ export function EmployeesView() {
               <td>{String(e.name)}</td>
               <td dir="ltr">{String(e.phone ?? "")}</td>
               <td>{String(e.role_name ?? "")}</td>
-              <td>
+              <td className="action-btns">
                 <button
                   type="button"
                   className="btn-secondary"
-                  onClick={() => setModal({ ...e })}
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    setModal(employeeRowToModal(e));
+                  }}
                 >
                   ערוך
                 </button>
-                {Number(e.is_active) === 1 ? (
+                {rowIsActive(e) ? (
                   <button
                     type="button"
                     className="btn-danger"
                     style={{ marginRight: 8 }}
-                    onClick={() => api.deleteEmployee(Number(e.id)).then(() => qc.invalidateQueries({ queryKey: ["employees"] }))}
+                    disabled={deleteMut.isPending}
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      deleteMut.mutate(Number(e.id));
+                    }}
                   >
                     השבת
                   </button>
@@ -99,10 +156,19 @@ export function EmployeesView() {
       </table>
 
       {modal && (
-        <div className="modal-overlay">
-          <div className="modal">
+        <div
+          className="modal-overlay"
+          role="presentation"
+          onClick={() => setModal(null)}
+        >
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            onClick={(ev) => ev.stopPropagation()}
+          >
             <div className="modal-header">
-              <h3>{modal.id ? "עריכת מפעיל" : "מפעיל חדש"}</h3>
+              <h3>{Number(modal.id) > 0 ? "עריכת מפעיל" : "מפעיל חדש"}</h3>
               <button type="button" className="modal-close" onClick={() => setModal(null)}>
                 ✕
               </button>
@@ -161,6 +227,11 @@ export function EmployeesView() {
                 />
               </div>
             </div>
+            {saveMut.isError ? (
+              <p className="hint" style={{ color: "var(--danger)", padding: "0 20px 8px" }}>
+                {saveMut.error instanceof Error ? saveMut.error.message : String(saveMut.error)}
+              </p>
+            ) : null}
             <div className="modal-footer">
               <button type="button" className="btn-secondary" onClick={() => setModal(null)}>
                 ביטול
@@ -168,7 +239,7 @@ export function EmployeesView() {
               <button
                 type="button"
                 className="btn-primary"
-                onClick={() => saveMut.mutate()}
+                onClick={() => saveMut.mutate(modal)}
                 disabled={saveMut.isPending}
               >
                 שמור
