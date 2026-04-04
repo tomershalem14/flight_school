@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { getMonday, formatYmd } from "../shared/dates";
 
-export type AppView = "manning" | "employees" | "reports" | "settings";
+export type AppView = "manning" | "management" | "reports";
 
 export type ManningMode = "matrix" | "board";
 

@@ -101,10 +101,6 @@ export function FlightBoardView() {
 
   return (
     <div className="mx-auto flex max-w-[1800px] flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="font-heading text-xl font-bold text-ink">לוח</h1>
-      </div>
-
       {types.length === 0 ? (
         <div className="rounded-card border border-line bg-surface p-8 text-center text-muted shadow-airy">
           אין סוגי משמרת ליום זה.

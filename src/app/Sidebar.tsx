@@ -2,9 +2,8 @@ import { useAppStore, type AppView } from "./store";
 
 const NAV: { id: AppView; label: string }[] = [
   { id: "manning", label: "משמרות" },
-  { id: "employees", label: "מפעילים" },
+  { id: "management", label: "ניהול" },
   { id: "reports", label: "דוחות" },
-  { id: "settings", label: "הגדרות" },
 ];
 
 export function Sidebar() {

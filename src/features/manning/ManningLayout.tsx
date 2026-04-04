@@ -40,7 +40,7 @@ export function ManningLayout({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="sticky top-0 z-30 border-b border-line bg-surface/95 px-4 py-3 shadow-airy backdrop-blur-sm">
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex min-h-11 flex-wrap items-center gap-3">
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"

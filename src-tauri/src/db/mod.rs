@@ -71,5 +71,56 @@ fn apply_schema(conn: &Connection) -> AppResult<()> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (3)", [])?;
     }
 
+    let v4: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 4",
+        [],
+        |r| r.get(0),
+    )?;
+    if v4 == 0 {
+        migrate_employees_employee_type_v4(conn)?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (4)", [])?;
+    }
+
+    let v5: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 5",
+        [],
+        |r| r.get(0),
+    )?;
+    if v5 == 0 {
+        const M5: &str = include_str!("../../migrations/005_affiliation_regular_only.sql");
+        conn.execute_batch(M5)?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (5)", [])?;
+    }
+
+    Ok(())
+}
+
+fn employees_column_names(conn: &Connection) -> AppResult<Vec<String>> {
+    let mut stmt = conn.prepare("PRAGMA table_info(employees)")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Replace `always_present` with `employee_type` on databases created before 001 was updated.
+fn migrate_employees_employee_type_v4(conn: &Connection) -> AppResult<()> {
+    let cols = employees_column_names(conn)?;
+    let has_ap = cols.iter().any(|c| c == "always_present");
+    let has_et = cols.iter().any(|c| c == "employee_type");
+    if has_ap && !has_et {
+        conn.execute(
+            "ALTER TABLE employees ADD COLUMN employee_type TEXT NOT NULL DEFAULT 'regular'",
+            [],
+        )?;
+        conn.execute("ALTER TABLE employees DROP COLUMN always_present", [])?;
+    } else if !has_et {
+        conn.execute(
+            "ALTER TABLE employees ADD COLUMN employee_type TEXT NOT NULL DEFAULT 'regular'",
+            [],
+        )?;
+    }
     Ok(())
 }

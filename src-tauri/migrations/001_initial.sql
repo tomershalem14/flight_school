@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS employees (
     phone TEXT,
     role_id INTEGER NOT NULL,
     is_active INTEGER DEFAULT 1,
-    always_present INTEGER DEFAULT 0,
+    employee_type TEXT NOT NULL DEFAULT 'regular' CHECK (employee_type IN ('admin','regular','extra','reserve')),
     affiliation TEXT,
     notes TEXT,
     created_at TEXT DEFAULT (datetime('now')),

@@ -41,6 +41,10 @@ export async function deleteEmployee(emp_id: number): Promise<JsonObject> {
   return invoke("delete_employee", { empId: emp_id });
 }
 
+export async function reactivateEmployee(emp_id: number): Promise<JsonObject> {
+  return invoke("reactivate_employee", { empId: emp_id });
+}
+
 export async function getShiftTypes(date?: string): Promise<JsonObject[]> {
   if (date === undefined) {
     return invoke("get_shift_types", {});

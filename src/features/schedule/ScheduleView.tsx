@@ -861,8 +861,6 @@ export function ScheduleView() {
 
   return (
     <div className="mx-auto flex max-w-[1600px] flex-col gap-4">
-      <h1 className="font-heading text-xl font-bold text-ink">מטריצה</h1>
-
       {hours.length === 0 ? (
         <button
           type="button"

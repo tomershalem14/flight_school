@@ -1,0 +1,765 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import * as api from "../../shared/api";
+import type { JsonObject } from "../../shared/api";
+
+const PAGE_SIZE = 10;
+/** Narrow column for two icon buttons (edit + deactivate). */
+const ACTIONS_COL_CSS = "5.5rem";
+const DATA_COL_CSS = `calc((100% - ${ACTIONS_COL_CSS}) / 5)`;
+
+type ManagementTab = "employees" | "roles";
+
+type EmployeeKind = "admin" | "regular" | "extra" | "reserve";
+
+const EMPLOYEE_KIND_OPTIONS: { value: EmployeeKind; label: string }[] = [
+  { value: "admin", label: "הנהלה" },
+  { value: "regular", label: "סדיר" },
+  { value: "extra", label: 'הצ"ח' },
+  { value: "reserve", label: "מילואים" },
+];
+
+const EMPLOYEE_KIND_LABELS: Record<EmployeeKind, string> = {
+  admin: "הנהלה",
+  regular: "סדיר",
+  extra: 'הצ"ח',
+  reserve: "מילואים",
+};
+
+function parseEmployeeKind(v: unknown): EmployeeKind {
+  const s = String(v ?? "")
+    .trim()
+    .toLowerCase();
+  if (s === "admin" || s === "regular" || s === "extra" || s === "reserve") {
+    return s;
+  }
+  return "regular";
+}
+
+function employeeRowToModal(e: JsonObject): JsonObject {
+  const kind = parseEmployeeKind(e.employee_type);
+  return {
+    id: Number(e.id),
+    name: String(e.name ?? ""),
+    phone: e.phone != null ? String(e.phone) : "",
+    role_id: Number(e.role_id),
+    employee_type: kind,
+    affiliation:
+      kind === "regular" && e.affiliation != null ? String(e.affiliation) : "",
+    notes: e.notes != null ? String(e.notes) : "",
+  };
+}
+
+function rowIsActive(e: JsonObject): boolean {
+  const v = e.is_active;
+  if (v === true) return true;
+  if (typeof v === "number") return v !== 0;
+  if (typeof v === "string") return v !== "0" && v !== "";
+  return false;
+}
+
+export function ManagementView() {
+  const qc = useQueryClient();
+  const [tab, setTab] = useState<ManagementTab>("employees");
+  const [search, setSearch] = useState("");
+  const [showInactive, setShowInactive] = useState(false);
+  const [page, setPage] = useState(1);
+  const [empModal, setEmpModal] = useState<JsonObject | null>(null);
+  const [roleDraft, setRoleDraft] = useState<JsonObject | null>(null);
+
+  const { data: employeesRaw = [] } = useQuery({
+    queryKey: ["employees", "management"],
+    queryFn: () => api.getEmployees(false),
+  });
+  const { data: roles = [] } = useQuery({
+    queryKey: ["roles"],
+    queryFn: api.getRoles,
+  });
+
+  const employees = useMemo(() => employeesRaw as JsonObject[], [employeesRaw]);
+
+  const filtered = useMemo(() => {
+    const activeOnly = showInactive
+      ? employees
+      : employees.filter((e) => rowIsActive(e));
+    const q = search.trim().toLowerCase();
+    if (!q) return activeOnly;
+    return activeOnly.filter((e) => {
+      const name = String(e.name ?? "").toLowerCase();
+      const phone = String(e.phone ?? "").toLowerCase();
+      const aff = String(e.affiliation ?? "").toLowerCase();
+      const kind = parseEmployeeKind(e.employee_type);
+      return (
+        name.includes(q) ||
+        phone.includes(q) ||
+        (kind === "regular" && aff.includes(q))
+      );
+    });
+  }, [employees, search, showInactive]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, showInactive, employees.length]);
+
+  const total = filtered.length;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+  const pageSlice = useMemo(() => {
+    const start = (safePage - 1) * PAGE_SIZE;
+    return filtered.slice(start, start + PAGE_SIZE);
+  }, [filtered, safePage]);
+
+  useEffect(() => {
+    if (page !== safePage) setPage(safePage);
+  }, [page, safePage]);
+
+  const saveEmpMut = useMutation({
+    mutationFn: async (m: JsonObject) => {
+      const rawId = m.id;
+      const id =
+        rawId != null && rawId !== "" && !Number.isNaN(Number(rawId)) ? Number(rawId) : 0;
+      const name = String(m.name ?? "").trim();
+      const phoneTrim = String(m.phone ?? "").trim();
+      const roleId = Number(m.role_id);
+      if (!name) throw new Error("נא להזין שם");
+      if (!Number.isFinite(roleId)) throw new Error("נא לבחור דרג");
+      const employee_type = parseEmployeeKind(m.employee_type);
+      const payload = {
+        name,
+        phone: phoneTrim === "" ? null : phoneTrim,
+        role_id: roleId,
+        employee_type,
+        affiliation:
+          employee_type === "regular"
+            ? String(m.affiliation ?? "").trim() || null
+            : null,
+        notes: String(m.notes ?? "").trim() || null,
+      };
+      if (id > 0) return api.updateEmployee(id, payload);
+      return api.createEmployee({
+        name: payload.name,
+        phone: payload.phone,
+        role_id: payload.role_id,
+        employee_type: payload.employee_type,
+        affiliation: payload.affiliation,
+        notes: payload.notes,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["employees"] });
+      setEmpModal(null);
+    },
+  });
+
+  const deleteEmpMut = useMutation({
+    mutationFn: (empId: number) => api.deleteEmployee(empId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["employees"] });
+    },
+  });
+
+  const reactivateEmpMut = useMutation({
+    mutationFn: (empId: number) => api.reactivateEmployee(empId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["employees"] });
+    },
+  });
+
+  const employeeActionPending =
+    deleteEmpMut.isPending || reactivateEmpMut.isPending;
+
+  const saveRoleMut = useMutation({
+    mutationFn: async () => {
+      if (!roleDraft) return;
+      if (!roleDraft.id) {
+        return api.createRole({
+          name: roleDraft.name,
+          can_fly: Boolean(roleDraft.can_fly ?? true),
+          is_management: Boolean(roleDraft.is_management ?? false),
+          color: roleDraft.color ?? "#3B82F6",
+        });
+      }
+      return api.updateRole(Number(roleDraft.id), {
+        name: roleDraft.name,
+        can_fly: Boolean(roleDraft.can_fly),
+        is_management: Boolean(roleDraft.is_management),
+        color: roleDraft.color,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["roles"] });
+      setRoleDraft(null);
+    },
+  });
+
+  const openNewEmployee = () => {
+    setEmpModal({
+      name: "",
+      phone: "",
+      role_id: roles[0] ? Number(roles[0].id) : 1,
+      employee_type: "regular" satisfies EmployeeKind,
+      affiliation: "",
+      notes: "",
+    });
+  };
+
+  const rangeStart = total === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1;
+  const rangeEnd = Math.min(safePage * PAGE_SIZE, total);
+
+  return (
+    <div
+      id="app"
+      className="flex min-h-0 min-w-0 flex-1 flex-col bg-background"
+    >
+      <header className="sticky top-0 z-30 flex gap-3 border-b border-line bg-surface/95 px-4 pb-0 shadow-airy backdrop-blur-sm">
+        <div className="flex min-h-[4.25rem] min-w-0 flex-1 flex-col pt-3">
+          <div className="flex h-14 min-h-14 flex-col justify-between">
+            <h1 className="m-0 shrink-0 font-heading text-lg font-bold leading-tight text-ink">
+              ניהול
+            </h1>
+            <div
+              role="tablist"
+              aria-label="מקטעי ניהול"
+              className="flex shrink-0 items-end gap-6"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === "employees"}
+                className={`border-b-2 pb-1.5 text-sm font-heading font-semibold leading-none transition-colors ${
+                  tab === "employees"
+                    ? "border-primary text-primary"
+                    : "border-line text-muted hover:border-primary/50 hover:text-primary"
+                }`}
+                onClick={() => setTab("employees")}
+              >
+                מפעילים
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === "roles"}
+                className={`border-b-2 pb-1.5 text-sm font-heading font-semibold leading-none transition-colors ${
+                  tab === "roles"
+                    ? "border-primary text-primary"
+                    : "border-line text-muted hover:border-primary/50 hover:text-primary"
+                }`}
+                onClick={() => setTab("roles")}
+              >
+                דרגים
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className="flex min-h-[4.25rem] shrink-0 items-center">
+            {tab === "employees" ? (
+              <button
+                type="button"
+                className="rounded-pill bg-primary px-3 py-1.5 text-sm font-heading font-bold text-white shadow-sm hover:opacity-90"
+                onClick={openNewEmployee}
+              >
+                + הוסף מפעיל
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="rounded-pill bg-primary px-3 py-1.5 text-sm font-heading font-bold text-white shadow-sm hover:opacity-90"
+                onClick={() =>
+                  setRoleDraft({
+                    name: "",
+                    can_fly: true,
+                    is_management: false,
+                    color: "#3B82F6",
+                  })
+                }
+              >
+                + דרג
+              </button>
+            )}
+        </div>
+      </header>
+
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto p-4">
+        <div className="flex w-full min-w-0 flex-col gap-4">
+        {tab === "employees" && (
+          <div className="flex flex-col gap-4">
+            <div className="flex w-full max-w-none overflow-hidden rounded-pill border border-line bg-surface shadow-sm">
+              <div className="relative min-w-0 flex-1">
+                <span className="pointer-events-none absolute inset-y-0 end-3 flex items-center text-muted">
+                  ⌕
+                </span>
+                <input
+                  id="mgmt-emp-search"
+                  type="search"
+                  className="w-full border-0 bg-transparent py-2.5 pe-10 ps-4 text-sm text-ink placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary/20"
+                  placeholder="חיפוש מפעילים…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  aria-label="חיפוש מפעילים"
+                />
+              </div>
+              <label
+                htmlFor="mgmt-show-inactive"
+                className="flex shrink-0 cursor-pointer items-center gap-2 border-s border-line px-3 py-2.5 text-sm text-ink"
+              >
+                <input
+                  id="mgmt-show-inactive"
+                  type="checkbox"
+                  checked={showInactive}
+                  onChange={(e) => setShowInactive(e.target.checked)}
+                  className="size-4 shrink-0 rounded border-line text-primary focus:ring-2 focus:ring-primary/30"
+                  aria-label="הצג מושבתים"
+                />
+                הצג מושבתים
+              </label>
+            </div>
+
+            <div className="overflow-hidden rounded-card border border-line bg-surface shadow-airy">
+              <div className="overflow-x-auto">
+                <table className="table-fixed w-full border-collapse text-center text-sm">
+                  <colgroup>
+                    <col style={{ width: DATA_COL_CSS }} />
+                    <col style={{ width: DATA_COL_CSS }} />
+                    <col style={{ width: DATA_COL_CSS }} />
+                    <col style={{ width: DATA_COL_CSS }} />
+                    <col style={{ width: DATA_COL_CSS }} />
+                    <col style={{ width: ACTIONS_COL_CSS }} />
+                  </colgroup>
+                  <thead>
+                    <tr className="border-b border-line bg-background/60">
+                      <th className="min-w-0 px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                        שם
+                      </th>
+                      <th className="min-w-0 px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                        דרג
+                      </th>
+                      <th className="min-w-0 px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                        טלפון
+                      </th>
+                      <th className="min-w-0 px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                        שיוך
+                      </th>
+                      <th className="min-w-0 px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                        אוכלוסיה
+                      </th>
+                      <th className="px-1 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                        פעולות
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pageSlice.map((e) => {
+                      const eid = Number(e.id);
+                      const name = String(e.name ?? "");
+                      const aff = String(e.affiliation ?? "").trim();
+                      const active = rowIsActive(e);
+                      const kind = parseEmployeeKind(e.employee_type);
+                      return (
+                        <tr
+                          key={eid}
+                          className={`border-b border-line last:border-0 ${
+                            active
+                              ? "hover:bg-background/40"
+                              : "bg-muted/15 hover:bg-muted/25"
+                          }`}
+                        >
+                          <td className="min-w-0 truncate px-4 py-3 text-ink">{name}</td>
+                          <td className="min-w-0 truncate px-4 py-3 text-ink">
+                            {String(e.role_name ?? "")}
+                          </td>
+                          <td className="min-w-0 truncate px-4 py-3 font-mono text-ink" dir="ltr">
+                            {String(e.phone ?? "") || "—"}
+                          </td>
+                          <td className="min-w-0 truncate px-4 py-3 text-ink">
+                            {kind === "regular" ? aff || "—" : "—"}
+                          </td>
+                          <td className="min-w-0 truncate px-4 py-3 text-ink">
+                            {EMPLOYEE_KIND_LABELS[kind]}
+                          </td>
+                          <td className="px-1 py-3">
+                            <div className="flex items-center justify-center gap-1">
+                              <button
+                                type="button"
+                                className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border border-line bg-background text-ink hover:bg-background/80"
+                                aria-label="ערוך"
+                                onClick={() => setEmpModal(employeeRowToModal(e))}
+                              >
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  strokeWidth={1.5}
+                                  stroke="currentColor"
+                                  className="size-4"
+                                  aria-hidden
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125"
+                                  />
+                                </svg>
+                              </button>
+                              {active ? (
+                                <button
+                                  type="button"
+                                  className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border border-line bg-background text-peach-4 hover:bg-peach-1/40"
+                                  aria-label="השבת"
+                                  disabled={employeeActionPending}
+                                  onClick={() => deleteEmpMut.mutate(eid)}
+                                >
+                                  <svg
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    strokeWidth={1.5}
+                                    stroke="currentColor"
+                                    className="size-4"
+                                    aria-hidden
+                                  >
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14" />
+                                  </svg>
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border border-line bg-background text-primary hover:bg-primary/10"
+                                  aria-label="הפעל מחדש"
+                                  disabled={employeeActionPending}
+                                  onClick={() => reactivateEmpMut.mutate(eid)}
+                                >
+                                  <svg
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    strokeWidth={1.5}
+                                    stroke="currentColor"
+                                    className="size-4"
+                                    aria-hidden
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 6 6v9"
+                                    />
+                                  </svg>
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-4 py-3 text-xs text-muted">
+                <span className="uppercase tracking-wide">
+                  מציג {rangeStart}–{rangeEnd} מתוך {total} מפעילים
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="flex size-8 items-center justify-center rounded-full border border-line bg-background text-ink hover:bg-background/80 disabled:opacity-40"
+                    disabled={safePage <= 1}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    aria-label="עמוד קודם"
+                  >
+                    ‹
+                  </button>
+                  <button
+                    type="button"
+                    className="flex size-8 items-center justify-center rounded-full border border-line bg-background text-ink hover:bg-background/80 disabled:opacity-40"
+                    disabled={safePage >= pageCount}
+                    onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                    aria-label="עמוד הבא"
+                  >
+                    ›
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "roles" && (
+          <div className="overflow-hidden rounded-card border border-line bg-surface shadow-airy">
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-center text-sm">
+                <thead>
+                  <tr className="border-b border-line bg-background/60">
+                    <th className="px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                      שם
+                    </th>
+                    <th className="px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                      טיסה
+                    </th>
+                    <th className="px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                      ניהול
+                    </th>
+                    <th className="px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                      צבע
+                    </th>
+                    <th className="px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                      פעולות
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {roles.map((r) => (
+                    <tr
+                      key={String(r.id)}
+                      className="border-b border-line last:border-0 hover:bg-background/40"
+                    >
+                      <td className="px-4 py-3 font-medium text-ink">{String(r.name)}</td>
+                      <td className="px-4 py-3 text-ink">{Number(r.can_fly) ? "כן" : "לא"}</td>
+                      <td className="px-4 py-3 text-ink">{Number(r.is_management) ? "כן" : "לא"}</td>
+                      <td className="px-4 py-3">
+                        <span
+                          className="inline-block size-6 rounded-md border border-line shadow-sm"
+                          style={{ backgroundColor: String(r.color) }}
+                          title={String(r.color)}
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          type="button"
+                          className="rounded-pill border border-line bg-background px-3 py-1.5 text-xs font-semibold text-ink hover:bg-background/80"
+                          onClick={() => setRoleDraft({ ...r })}
+                        >
+                          ערוך
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+        </div>
+      </div>
+
+      {empModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/25 p-4 backdrop-blur-[2px]"
+          role="presentation"
+          onClick={() => setEmpModal(null)}
+        >
+          <div
+            className="flex w-full max-w-md flex-col rounded-card border border-line bg-surface shadow-airy"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="emp-modal-title"
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-line px-4 py-3">
+              <h2 id="emp-modal-title" className="font-heading text-lg font-bold text-ink">
+                {Number(empModal.id) > 0 ? "עריכת מפעיל" : "מפעיל חדש"}
+              </h2>
+              <button
+                type="button"
+                className="rounded-pill px-2 text-muted hover:bg-background hover:text-ink"
+                onClick={() => setEmpModal(null)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="max-h-[min(70vh,480px)] space-y-3 overflow-y-auto px-4 py-4">
+              <div className="form-row">
+                <label className="text-sm font-semibold text-ink">שם</label>
+                <input
+                  value={String(empModal.name ?? "")}
+                  onChange={(ev) => setEmpModal({ ...empModal, name: ev.target.value })}
+                />
+              </div>
+              <div className="form-row">
+                <label className="text-sm font-semibold text-ink">טלפון</label>
+                <input
+                  dir="ltr"
+                  value={String(empModal.phone ?? "")}
+                  onChange={(ev) => setEmpModal({ ...empModal, phone: ev.target.value })}
+                />
+              </div>
+              <div className="form-row">
+                <label className="text-sm font-semibold text-ink">דרג</label>
+                <select
+                  value={String(empModal.role_id ?? "")}
+                  onChange={(ev) =>
+                    setEmpModal({ ...empModal, role_id: Number(ev.target.value) })
+                  }
+                >
+                  {roles.map((r) => (
+                    <option key={String(r.id)} value={String(r.id)}>
+                      {String(r.name)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-row">
+                <label className="text-sm font-semibold text-ink" htmlFor="emp-modal-type">
+                  אוכלוסיה
+                </label>
+                <select
+                  id="emp-modal-type"
+                  value={String(empModal.employee_type ?? "regular")}
+                  onChange={(ev) => {
+                    const next = parseEmployeeKind(ev.target.value);
+                    setEmpModal({
+                      ...empModal,
+                      employee_type: next,
+                      affiliation: next === "regular" ? String(empModal.affiliation ?? "") : "",
+                    });
+                  }}
+                >
+                  {EMPLOYEE_KIND_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {parseEmployeeKind(empModal.employee_type) === "regular" ? (
+                <div className="form-row">
+                  <label className="text-sm font-semibold text-ink" htmlFor="emp-modal-affiliation">
+                    שיוך
+                  </label>
+                  <input
+                    id="emp-modal-affiliation"
+                    value={String(empModal.affiliation ?? "")}
+                    onChange={(ev) =>
+                      setEmpModal({ ...empModal, affiliation: ev.target.value })
+                    }
+                  />
+                </div>
+              ) : null}
+              <div className="form-row">
+                <label className="text-sm font-semibold text-ink">הערות</label>
+                <input
+                  value={String(empModal.notes ?? "")}
+                  onChange={(ev) => setEmpModal({ ...empModal, notes: ev.target.value })}
+                />
+              </div>
+            </div>
+            {saveEmpMut.isError ? (
+              <p className="px-4 text-sm text-peach-4">
+                {saveEmpMut.error instanceof Error
+                  ? saveEmpMut.error.message
+                  : String(saveEmpMut.error)}
+              </p>
+            ) : null}
+            <div className="flex flex-wrap justify-end gap-2 border-t border-line px-4 py-3">
+              <button
+                type="button"
+                className="rounded-pill border border-line px-4 py-2 text-sm font-semibold text-ink hover:bg-background"
+                onClick={() => setEmpModal(null)}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                className="rounded-pill bg-primary px-4 py-2 text-sm font-heading font-bold text-white hover:opacity-90 disabled:opacity-50"
+                onClick={() => saveEmpMut.mutate(empModal)}
+                disabled={saveEmpMut.isPending}
+              >
+                שמור
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {roleDraft && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/25 p-4 backdrop-blur-[2px]"
+          role="presentation"
+          onClick={() => setRoleDraft(null)}
+        >
+          <div
+            className="flex w-full max-w-md flex-col rounded-card border border-line bg-surface shadow-airy"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="role-modal-title"
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-line px-4 py-3">
+              <h2 id="role-modal-title" className="font-heading text-lg font-bold text-ink">
+                {roleDraft.id ? "עריכת דרג" : "דרג חדש"}
+              </h2>
+              <button
+                type="button"
+                className="rounded-pill px-2 text-muted hover:bg-background hover:text-ink"
+                onClick={() => setRoleDraft(null)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="space-y-3 px-4 py-4">
+              <div className="form-row">
+                <label className="text-sm font-semibold text-ink">שם</label>
+                <input
+                  value={String(roleDraft.name ?? "")}
+                  onChange={(e) => setRoleDraft({ ...roleDraft, name: e.target.value })}
+                />
+              </div>
+              <div className="form-row">
+                <label className="flex items-center gap-2 text-sm font-semibold text-ink">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(Number(roleDraft.can_fly))}
+                    onChange={(e) => setRoleDraft({ ...roleDraft, can_fly: e.target.checked })}
+                  />
+                  יכול לטוס
+                </label>
+              </div>
+              <div className="form-row">
+                <label className="flex items-center gap-2 text-sm font-semibold text-ink">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(Number(roleDraft.is_management))}
+                    onChange={(e) =>
+                      setRoleDraft({ ...roleDraft, is_management: e.target.checked })
+                    }
+                  />
+                  ניהול
+                </label>
+              </div>
+              <div className="form-row">
+                <label className="text-sm font-semibold text-ink">צבע</label>
+                <input
+                  type="color"
+                  value={String(roleDraft.color ?? "#3B82F6")}
+                  onChange={(e) => setRoleDraft({ ...roleDraft, color: e.target.value })}
+                />
+              </div>
+            </div>
+            {saveRoleMut.isError ? (
+              <p className="px-4 text-sm text-peach-4">
+                {saveRoleMut.error instanceof Error
+                  ? saveRoleMut.error.message
+                  : String(saveRoleMut.error)}
+              </p>
+            ) : null}
+            <div className="flex flex-wrap justify-end gap-2 border-t border-line px-4 py-3">
+              <button
+                type="button"
+                className="rounded-pill border border-line px-4 py-2 text-sm font-semibold text-ink hover:bg-background"
+                onClick={() => setRoleDraft(null)}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                className="rounded-pill bg-primary px-4 py-2 text-sm font-heading font-bold text-white hover:opacity-90 disabled:opacity-50"
+                onClick={() => saveRoleMut.mutate()}
+                disabled={saveRoleMut.isPending}
+              >
+                שמור
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

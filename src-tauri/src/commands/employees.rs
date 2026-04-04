@@ -6,15 +6,44 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::State;
 
+fn normalize_employee_type(raw: &str) -> Result<&'static str, AppError> {
+    match raw.trim().to_lowercase().as_str() {
+        "admin" => Ok("admin"),
+        "regular" => Ok("regular"),
+        "extra" => Ok("extra"),
+        "reserve" => Ok("reserve"),
+        _ => Err(AppError::msg("סוג מפעיל לא חוקי")),
+    }
+}
+
+/// Only `regular` employees may have an affiliation; others store NULL.
+fn affiliation_for_type(et: &str, affiliation: Option<String>) -> Option<String> {
+    if et != "regular" {
+        return None;
+    }
+    affiliation.and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    })
+}
+
 #[derive(Debug, Deserialize)]
 pub struct EmployeeCreate {
     pub name: String,
     pub phone: Option<String>,
     pub role_id: i64,
-    #[serde(default)]
-    pub always_present: bool,
+    #[serde(default = "default_employee_type")]
+    pub employee_type: String,
     pub affiliation: Option<String>,
     pub notes: Option<String>,
+}
+
+fn default_employee_type() -> String {
+    "regular".to_string()
 }
 
 /// Full row replace on edit — avoids partial Option updates that skip `null`/cleared fields.
@@ -23,7 +52,7 @@ pub struct EmployeeReplace {
     pub name: String,
     pub phone: Option<String>,
     pub role_id: i64,
-    pub always_present: bool,
+    pub employee_type: String,
     pub affiliation: Option<String>,
     pub notes: Option<String>,
 }
@@ -62,15 +91,17 @@ pub fn get_employees(state: State<'_, AppState>, active_only: Option<bool>) -> R
 pub fn create_employee(state: State<'_, AppState>, payload: EmployeeCreate) -> Result<Value, String> {
     state
         .with_db(|conn| {
+            let et = normalize_employee_type(&payload.employee_type)?;
+            let affiliation = affiliation_for_type(et, payload.affiliation);
             conn.execute(
-                "INSERT INTO employees (name, phone, role_id, always_present, affiliation, notes)
+                "INSERT INTO employees (name, phone, role_id, employee_type, affiliation, notes)
                  VALUES (?,?,?,?,?,?)",
                 params![
                     payload.name,
                     payload.phone,
                     payload.role_id,
-                    payload.always_present as i32,
-                    payload.affiliation,
+                    et,
+                    affiliation,
                     payload.notes,
                 ],
             )?;
@@ -80,8 +111,8 @@ pub fn create_employee(state: State<'_, AppState>, payload: EmployeeCreate) -> R
                 "name": payload.name,
                 "phone": payload.phone,
                 "role_id": payload.role_id,
-                "always_present": payload.always_present,
-                "affiliation": payload.affiliation,
+                "employee_type": et,
+                "affiliation": affiliation,
                 "notes": payload.notes,
             }))
         })
@@ -105,15 +136,17 @@ pub fn update_employee(
                 return Err(AppError::msg("עובד לא נמצא"));
             }
 
+            let et = normalize_employee_type(&payload.employee_type)?;
+            let affiliation = affiliation_for_type(et, payload.affiliation);
             conn.execute(
-                "UPDATE employees SET name = ?, phone = ?, role_id = ?, always_present = ?, affiliation = ?, notes = ?
+                "UPDATE employees SET name = ?, phone = ?, role_id = ?, employee_type = ?, affiliation = ?, notes = ?
                  WHERE id = ?",
                 params![
                     payload.name,
                     payload.phone,
                     payload.role_id,
-                    payload.always_present as i32,
-                    payload.affiliation,
+                    et,
+                    affiliation,
                     payload.notes,
                     emp_id,
                 ],
@@ -132,6 +165,22 @@ pub fn delete_employee(state: State<'_, AppState>, emp_id: i64) -> Result<Value,
                 "UPDATE employees SET is_active = 0 WHERE id = ?",
                 [emp_id],
             )?;
+            Ok(json!({"ok": true}))
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn reactivate_employee(state: State<'_, AppState>, emp_id: i64) -> Result<Value, String> {
+    state
+        .with_db(|conn| {
+            let n = conn.execute(
+                "UPDATE employees SET is_active = 1 WHERE id = ?",
+                [emp_id],
+            )?;
+            if n == 0 {
+                return Err(AppError::msg("עובד לא נמצא"));
+            }
             Ok(json!({"ok": true}))
         })
         .map_err(|e| e.to_string())

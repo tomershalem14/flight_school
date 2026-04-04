@@ -4,9 +4,8 @@ import { AppShell } from "./AppShell";
 import { ManningLayout } from "../features/manning/ManningLayout";
 import { ScheduleView } from "../features/schedule/ScheduleView";
 import { FlightBoardView } from "../features/flightBoard/FlightBoardView";
-import { EmployeesView } from "../features/employees/EmployeesView";
+import { ManagementView } from "../features/management/ManagementView";
 import { ReportsView } from "../features/reports/ReportsView";
-import { SettingsView } from "../features/settings/SettingsView";
 import { RegisterPage } from "../features/remoteRegistration/RegisterPage";
 import "./App.css";
 
@@ -21,19 +20,10 @@ function MainApp() {
           {manningMode === "matrix" ? <ScheduleView /> : <FlightBoardView />}
         </ManningLayout>
       )}
-      {activeView === "employees" && (
-        <main id="app" className="main-content min-h-0 flex-1 overflow-auto">
-          <EmployeesView />
-        </main>
-      )}
+      {activeView === "management" && <ManagementView />}
       {activeView === "reports" && (
         <main id="app" className="main-content min-h-0 flex-1 overflow-auto">
           <ReportsView />
-        </main>
-      )}
-      {activeView === "settings" && (
-        <main id="app" className="main-content min-h-0 flex-1 overflow-auto">
-          <SettingsView />
         </main>
       )}
     </AppShell>
