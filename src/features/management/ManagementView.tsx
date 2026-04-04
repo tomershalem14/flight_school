@@ -9,7 +9,8 @@ const PAGE_SIZE = 10;
 /** Narrow column for two icon buttons (edit + deactivate). */
 const ACTIONS_COL_CSS = "5.5rem";
 const DATA_COL_CSS = `calc((100% - ${ACTIONS_COL_CSS}) / 5)`;
-type ManagementTab = "employees" | "roles";
+const SYLLABUS_DATA_COL = `calc((100% - ${ACTIONS_COL_CSS}) / 8)`;
+type ManagementTab = "employees" | "roles" | "syllabi";
 
 type EmployeeKind = "admin" | "regular" | "extra" | "reserve";
 
@@ -90,6 +91,10 @@ function nameCellWithRoleDot(name: string, roleColor: string) {
   );
 }
 
+function syllabusMinutesLabel(n: number): string {
+  return `${n} דק'`;
+}
+
 export function ManagementView() {
   const qc = useQueryClient();
   const [tab, setTab] = useState<ManagementTab>("employees");
@@ -99,6 +104,9 @@ export function ManagementView() {
   const [empModal, setEmpModal] = useState<JsonObject | null>(null);
   const [roleDraft, setRoleDraft] = useState<JsonObject | null>(null);
   const [roleSwatchOpen, setRoleSwatchOpen] = useState(false);
+  const [syllabusSearch, setSyllabusSearch] = useState("");
+  const [syllabusPage, setSyllabusPage] = useState(1);
+  const [presetDraft, setPresetDraft] = useState<JsonObject | null>(null);
 
   const { data: employeesRaw = [] } = useQuery({
     queryKey: ["employees", "management"],
@@ -109,7 +117,35 @@ export function ManagementView() {
     queryFn: api.getRoles,
   });
 
+  const { data: syllabusRaw = [] } = useQuery({
+    queryKey: ["syllabus_presets"],
+    queryFn: () => api.getSyllabusPresets(),
+  });
+
   const employees = useMemo(() => employeesRaw as JsonObject[], [employeesRaw]);
+  const syllabi = useMemo(() => syllabusRaw as JsonObject[], [syllabusRaw]);
+
+  const syllabusFiltered = useMemo(() => {
+    const q = syllabusSearch.trim().toLowerCase();
+    if (!q) return syllabi;
+    return syllabi.filter((p) => String(p.name ?? "").toLowerCase().includes(q));
+  }, [syllabi, syllabusSearch]);
+
+  useEffect(() => {
+    setSyllabusPage(1);
+  }, [syllabusSearch, syllabi.length]);
+
+  const syllabusTotal = syllabusFiltered.length;
+  const syllabusPageCount = Math.max(1, Math.ceil(syllabusTotal / PAGE_SIZE));
+  const syllabusSafePage = Math.min(syllabusPage, syllabusPageCount);
+  const syllabusSlice = useMemo(() => {
+    const start = (syllabusSafePage - 1) * PAGE_SIZE;
+    return syllabusFiltered.slice(start, start + PAGE_SIZE);
+  }, [syllabusFiltered, syllabusSafePage]);
+
+  useEffect(() => {
+    if (syllabusPage !== syllabusSafePage) setSyllabusPage(syllabusSafePage);
+  }, [syllabusPage, syllabusSafePage]);
 
   const filtered = useMemo(() => {
     const activeOnly = showInactive
@@ -242,6 +278,57 @@ export function ManagementView() {
     },
   });
 
+  const savePresetMut = useMutation({
+    mutationFn: async () => {
+      if (!presetDraft) return;
+      const locked = Number(presetDraft.system_locked ?? presetDraft.systemLocked) === 1;
+      if (locked) throw new Error("סילבוס מערכת לא ניתן לעריכה");
+      const rawId = presetDraft.id;
+      const id =
+        rawId != null && rawId !== "" && !Number.isNaN(Number(rawId)) ? Number(rawId) : 0;
+      const name = String(presetDraft.name ?? "").trim();
+      if (!name) throw new Error("נא להזין שם");
+      const maxInRow = Math.max(1, Number(presetDraft.max_in_row ?? 1));
+      const roleVal = presetDraft.min_role_id;
+      const min_role_id =
+        roleVal === "" || roleVal == null ? null : Number(roleVal);
+      const body: JsonObject = {
+        name,
+        min_role_id,
+        duration_minutes: Number(presetDraft.duration_minutes ?? 60),
+        prep_minutes: Number(presetDraft.prep_minutes ?? 0),
+        recovery_minutes: Number(presetDraft.recovery_minutes ?? 0),
+        max_in_row: maxInRow,
+        joint_prep: Boolean(presetDraft.joint_prep),
+        joint_recovery: Boolean(presetDraft.joint_recovery),
+        notes: String(presetDraft.notes ?? "").trim() || null,
+      };
+      if (id > 0) return api.updateSyllabusPreset(id, body);
+      return api.createSyllabusPreset(body);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["syllabus_presets"] });
+      qc.invalidateQueries({ queryKey: ["shift_windows"] });
+      setPresetDraft(null);
+    },
+  });
+
+  const deletePresetMut = useMutation({
+    mutationFn: (pid: number) => api.deleteSyllabusPreset(pid),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["syllabus_presets"] });
+      qc.invalidateQueries({ queryKey: ["shift_windows"] });
+    },
+  });
+
+  function rowIsSystemPreset(p: JsonObject): boolean {
+    const v = p.system_locked ?? p.systemLocked;
+    if (v === true) return true;
+    if (typeof v === "number") return v !== 0;
+    if (typeof v === "string") return v !== "0" && v !== "";
+    return false;
+  }
+
   const openNewEmployee = () => {
     setEmpModal({
       name: "",
@@ -256,6 +343,9 @@ export function ManagementView() {
 
   const rangeStart = total === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1;
   const rangeEnd = Math.min(safePage * PAGE_SIZE, total);
+  const syllabusRangeStart =
+    syllabusTotal === 0 ? 0 : (syllabusSafePage - 1) * PAGE_SIZE + 1;
+  const syllabusRangeEnd = Math.min(syllabusSafePage * PAGE_SIZE, syllabusTotal);
 
   return (
     <div
@@ -299,6 +389,19 @@ export function ManagementView() {
               >
                 דרגים
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === "syllabi"}
+                className={`border-b-2 pb-1.5 text-sm font-heading font-semibold leading-none transition-colors ${
+                  tab === "syllabi"
+                    ? "border-primary text-primary"
+                    : "border-line text-muted hover:border-primary/50 hover:text-primary"
+                }`}
+                onClick={() => setTab("syllabi")}
+              >
+                סילבוסים
+              </button>
             </div>
           </div>
         </div>
@@ -311,7 +414,7 @@ export function ManagementView() {
               >
                 + הוסף מפעיל
               </button>
-            ) : (
+            ) : tab === "roles" ? (
               <button
                 type="button"
                 className="rounded-pill bg-primary px-3 py-1.5 text-sm font-heading font-bold text-white shadow-sm hover:opacity-90"
@@ -324,6 +427,26 @@ export function ManagementView() {
                 }
               >
                 + דרג
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="rounded-pill bg-primary px-3 py-1.5 text-sm font-heading font-bold text-white shadow-sm hover:opacity-90"
+                onClick={() =>
+                  setPresetDraft({
+                    name: "",
+                    min_role_id: "",
+                    duration_minutes: 60,
+                    prep_minutes: 0,
+                    recovery_minutes: 0,
+                    max_in_row: 1,
+                    joint_prep: false,
+                    joint_recovery: false,
+                    notes: "",
+                  })
+                }
+              >
+                + הוסף סילבוס
               </button>
             )}
         </div>
@@ -534,6 +657,186 @@ export function ManagementView() {
                     className="flex size-8 items-center justify-center rounded-full border border-line bg-background text-ink hover:bg-background/80 disabled:opacity-40"
                     disabled={safePage >= pageCount}
                     onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                    aria-label="עמוד הבא"
+                  >
+                    ›
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "syllabi" && (
+          <div className="flex flex-col gap-4">
+            <div className="flex w-full max-w-none overflow-hidden rounded-pill border border-line bg-surface shadow-sm">
+              <div className="relative min-w-0 flex-1">
+                <span className="pointer-events-none absolute inset-y-0 end-3 flex items-center text-muted">
+                  ⌕
+                </span>
+                <input
+                  type="search"
+                  placeholder="חיפוש סילבוסים…"
+                  value={syllabusSearch}
+                  onChange={(e) => setSyllabusSearch(e.target.value)}
+                  aria-label="חיפוש סילבוסים"
+                />
+              </div>
+            </div>
+            <div className="overflow-hidden rounded-card border border-line bg-surface shadow-airy">
+              <div className="overflow-x-auto">
+                <table className="table-fixed w-full border-collapse text-center text-sm">
+                  <colgroup>
+                    <col style={{ width: SYLLABUS_DATA_COL }} />
+                    <col style={{ width: SYLLABUS_DATA_COL }} />
+                    <col style={{ width: SYLLABUS_DATA_COL }} />
+                    <col style={{ width: SYLLABUS_DATA_COL }} />
+                    <col style={{ width: SYLLABUS_DATA_COL }} />
+                    <col style={{ width: SYLLABUS_DATA_COL }} />
+                    <col style={{ width: SYLLABUS_DATA_COL }} />
+                    <col style={{ width: SYLLABUS_DATA_COL }} />
+                    <col style={{ width: ACTIONS_COL_CSS }} />
+                  </colgroup>
+                  <thead>
+                    <tr className="border-b border-line bg-background/60">
+                      <th className="min-w-0 px-2 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                        שם
+                      </th>
+                      <th className="min-w-0 px-2 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                        דרג מינ׳
+                      </th>
+                      <th className="min-w-0 px-2 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                        משך
+                      </th>
+                      <th className="min-w-0 px-2 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                        תדריך
+                      </th>
+                      <th className="min-w-0 px-2 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                        תחקיר
+                      </th>
+                      <th className="min-w-0 px-2 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                        מקס׳ ברצף
+                      </th>
+                      <th className="min-w-0 px-2 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                        תדריך משותף
+                      </th>
+                      <th className="min-w-0 px-2 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                        תחקיר משותף
+                      </th>
+                      <th className="px-1 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                        פעולות
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {syllabusSlice.map((p) => {
+                      const pid = Number(p.id);
+                      const locked = rowIsSystemPreset(p);
+                      return (
+                        <tr
+                          key={pid}
+                          className="border-b border-line last:border-0 hover:bg-background/40"
+                        >
+                          <td className="min-w-0 px-2 py-3 text-start font-medium text-ink">
+                            {String(p.name ?? "")}
+                          </td>
+                          <td className="min-w-0 truncate px-2 py-3 text-ink">
+                            {String(p.min_role_name ?? "—")}
+                          </td>
+                          <td className="min-w-0 px-2 py-3 tabular-nums text-ink">
+                            {syllabusMinutesLabel(Number(p.duration_minutes ?? 0))}
+                          </td>
+                          <td className="min-w-0 px-2 py-3 tabular-nums text-ink">
+                            {syllabusMinutesLabel(Number(p.prep_minutes ?? 0))}
+                          </td>
+                          <td className="min-w-0 px-2 py-3 tabular-nums text-ink">
+                            {syllabusMinutesLabel(Number(p.recovery_minutes ?? 0))}
+                          </td>
+                          <td className="min-w-0 px-2 py-3 tabular-nums text-ink">
+                            {Math.max(1, Number(p.max_in_row ?? 1))}
+                          </td>
+                          <td className="min-w-0 px-2 py-3 text-ink">
+                            {Number(p.joint_prep ?? 0) !== 0 ? "כן" : "לא"}
+                          </td>
+                          <td className="min-w-0 px-2 py-3 text-ink">
+                            {Number(p.joint_recovery ?? 0) !== 0 ? "כן" : "לא"}
+                          </td>
+                          <td className="px-1 py-3">
+                            {locked ? (
+                              <span className="text-xs text-muted">—</span>
+                            ) : (
+                              <div className="flex items-center justify-center gap-1">
+                                <button
+                                  type="button"
+                                  className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border border-line bg-background text-ink hover:bg-background/80"
+                                  aria-label="ערוך"
+                                  onClick={() => setPresetDraft({ ...p })}
+                                >
+                                  <svg
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    strokeWidth={1.5}
+                                    stroke="currentColor"
+                                    className="size-4"
+                                    aria-hidden
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125"
+                                    />
+                                  </svg>
+                                </button>
+                                <button
+                                  type="button"
+                                  className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border border-line bg-background text-peach-4 hover:bg-peach-1/40"
+                                  aria-label="מחק סילבוס"
+                                  disabled={deletePresetMut.isPending}
+                                  onClick={() => deletePresetMut.mutate(pid)}
+                                >
+                                  <svg
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    strokeWidth={1.5}
+                                    stroke="currentColor"
+                                    className="size-4"
+                                    aria-hidden
+                                  >
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14" />
+                                  </svg>
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-4 py-3 text-xs text-muted">
+                <span className="uppercase tracking-wide">
+                  מציג {syllabusRangeStart}–{syllabusRangeEnd} מתוך {syllabusTotal} סילבוסים
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="flex size-8 items-center justify-center rounded-full border border-line bg-background text-ink hover:bg-background/80 disabled:opacity-40"
+                    disabled={syllabusSafePage <= 1}
+                    onClick={() => setSyllabusPage((pg) => Math.max(1, pg - 1))}
+                    aria-label="עמוד קודם"
+                  >
+                    ‹
+                  </button>
+                  <button
+                    type="button"
+                    className="flex size-8 items-center justify-center rounded-full border border-line bg-background text-ink hover:bg-background/80 disabled:opacity-40"
+                    disabled={syllabusSafePage >= syllabusPageCount}
+                    onClick={() =>
+                      setSyllabusPage((pg) => Math.min(syllabusPageCount, pg + 1))
+                    }
                     aria-label="עמוד הבא"
                   >
                     ›
@@ -797,6 +1100,186 @@ export function ManagementView() {
                 className="rounded-pill bg-primary px-4 py-2 text-sm font-heading font-bold text-white hover:opacity-90 disabled:opacity-50"
                 onClick={() => saveEmpMut.mutate(empModal)}
                 disabled={saveEmpMut.isPending}
+              >
+                שמור
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {presetDraft && !rowIsSystemPreset(presetDraft) && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/25 p-4 backdrop-blur-[2px]"
+          role="presentation"
+          onClick={() => setPresetDraft(null)}
+        >
+          <div
+            className="flex w-full max-w-md flex-col rounded-card border border-line bg-surface shadow-airy"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="preset-modal-title"
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-line px-4 py-3">
+              <h2 id="preset-modal-title" className="font-heading text-lg font-bold text-ink">
+                {presetDraft.id ? "עריכת סילבוס" : "סילבוס חדש"}
+              </h2>
+              <button
+                type="button"
+                className="rounded-pill px-2 text-muted hover:bg-background hover:text-ink"
+                onClick={() => setPresetDraft(null)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="max-h-[min(70vh,520px)] space-y-3 overflow-y-auto px-4 py-4">
+              <div className="form-row">
+                <label className="text-sm font-semibold text-ink">שם</label>
+                <input
+                  value={String(presetDraft.name ?? "")}
+                  onChange={(e) => setPresetDraft({ ...presetDraft, name: e.target.value })}
+                />
+              </div>
+              <div className="form-row">
+                <label className="text-sm font-semibold text-ink">דרג מינימלי</label>
+                <select
+                  value={
+                    presetDraft.min_role_id === "" || presetDraft.min_role_id == null
+                      ? ""
+                      : String(presetDraft.min_role_id)
+                  }
+                  onChange={(e) =>
+                    setPresetDraft({
+                      ...presetDraft,
+                      min_role_id: e.target.value ? Number(e.target.value) : "",
+                    })
+                  }
+                >
+                  <option value="">—</option>
+                  {roles.map((r) => (
+                    <option key={String(r.id)} value={String(r.id)}>
+                      {String(r.name)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="form-row">
+                  <label className="text-sm font-semibold text-ink">משך (דק׳)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    className="tabular-nums"
+                    value={String(presetDraft.duration_minutes ?? 60)}
+                    onChange={(e) =>
+                      setPresetDraft({
+                        ...presetDraft,
+                        duration_minutes: Number(e.target.value),
+                      })
+                    }
+                  />
+                </div>
+                <div className="form-row">
+                  <label className="text-sm font-semibold text-ink">מקס׳ ברצף</label>
+                  <input
+                    type="number"
+                    min={1}
+                    className="tabular-nums"
+                    value={String(presetDraft.max_in_row ?? 1)}
+                    onChange={(e) =>
+                      setPresetDraft({
+                        ...presetDraft,
+                        max_in_row: Math.max(1, Number(e.target.value) || 1),
+                      })
+                    }
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="form-row">
+                  <label className="text-sm font-semibold text-ink">תדריך (דק׳)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    className="tabular-nums"
+                    value={String(presetDraft.prep_minutes ?? 0)}
+                    onChange={(e) =>
+                      setPresetDraft({
+                        ...presetDraft,
+                        prep_minutes: Number(e.target.value),
+                      })
+                    }
+                  />
+                </div>
+                <div className="form-row">
+                  <label className="text-sm font-semibold text-ink">תחקיר (דק׳)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    className="tabular-nums"
+                    value={String(presetDraft.recovery_minutes ?? 0)}
+                    onChange={(e) =>
+                      setPresetDraft({
+                        ...presetDraft,
+                        recovery_minutes: Number(e.target.value),
+                      })
+                    }
+                  />
+                </div>
+              </div>
+              <div className="form-row">
+                <label className="flex items-center gap-2 text-sm font-semibold text-ink">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(presetDraft.joint_prep)}
+                    onChange={(e) =>
+                      setPresetDraft({ ...presetDraft, joint_prep: e.target.checked })
+                    }
+                  />
+                  תדריך משותף
+                </label>
+              </div>
+              <div className="form-row">
+                <label className="flex items-center gap-2 text-sm font-semibold text-ink">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(presetDraft.joint_recovery)}
+                    onChange={(e) =>
+                      setPresetDraft({ ...presetDraft, joint_recovery: e.target.checked })
+                    }
+                  />
+                  תחקיר משותף
+                </label>
+              </div>
+              <div className="form-row">
+                <label className="text-sm font-semibold text-ink">הערות</label>
+                <input
+                  value={String(presetDraft.notes ?? "")}
+                  onChange={(e) => setPresetDraft({ ...presetDraft, notes: e.target.value })}
+                />
+              </div>
+            </div>
+            {savePresetMut.isError ? (
+              <p className="px-4 text-sm text-peach-4">
+                {savePresetMut.error instanceof Error
+                  ? savePresetMut.error.message
+                  : String(savePresetMut.error)}
+              </p>
+            ) : null}
+            <div className="flex flex-wrap justify-end gap-2 border-t border-line px-4 py-3">
+              <button
+                type="button"
+                className="rounded-pill border border-line px-4 py-2 text-sm font-semibold text-ink hover:bg-background"
+                onClick={() => setPresetDraft(null)}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                className="rounded-pill bg-primary px-4 py-2 text-sm font-heading font-bold text-white hover:opacity-90 disabled:opacity-50"
+                onClick={() => savePresetMut.mutate()}
+                disabled={savePresetMut.isPending}
               >
                 שמור
               </button>

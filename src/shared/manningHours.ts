@@ -1,4 +1,5 @@
 import type { JsonObject } from "./api";
+import { coverageIsoToHm, formatTimeForInput } from "./timeFormat";
 
 export function timeToMin(t: string): number {
   const parts = String(t).trim().split(":");
@@ -108,4 +109,435 @@ export function typesCoveringHourSlot(
     if (!w) return false;
     return slotStart < w.end.getTime() && slotEnd > w.start.getTime();
   });
+}
+
+export function parseSlotPresetIdsFromWindow(w: JsonObject): number[] {
+  const raw = w.syllabus_slot_preset_ids ?? w.syllabusSlotPresetIds;
+  const s = typeof raw === "string" ? raw : JSON.stringify(raw ?? []);
+  try {
+    const v = JSON.parse(s) as unknown;
+    if (!Array.isArray(v)) return [];
+    return v.map((x) => Number(x)).filter((n) => Number.isFinite(n));
+  } catch {
+    return [];
+  }
+}
+
+export function presetDurationById(presets: JsonObject[]): Map<number, number> {
+  const m = new Map<number, number>();
+  for (const p of presets) {
+    m.set(Number(p.id), Number(p.duration_minutes ?? 60));
+  }
+  return m;
+}
+
+/** Fields from `syllabus_presets` needed for matrix-start helpers. */
+export type MatrixStartPresetMeta = {
+  maxInRow: number;
+  jointPrep: boolean;
+  prepMinutes: number;
+};
+
+function readMatrixStartPresetMeta(p: JsonObject): MatrixStartPresetMeta {
+  const maxInRow = Math.max(1, Number(p.max_in_row ?? p.maxInRow ?? 1));
+  const jointPrep = Number(p.joint_prep ?? p.jointPrep ?? 0) !== 0;
+  const prepMinutes = Math.max(0, Number(p.prep_minutes ?? p.prepMinutes ?? 0));
+  return { maxInRow, jointPrep, prepMinutes };
+}
+
+/**
+ * Build preset id → meta for {@link matrixStartingBunchPresetIds} / {@link matrixStartPrepMinutesSum}.
+ * Call once per day/matrix when iterating many windows.
+ */
+export function matrixStartPresetMetaMap(presets: JsonObject[]): Map<number, MatrixStartPresetMeta> {
+  const m = new Map<number, MatrixStartPresetMeta>();
+  for (const p of presets) {
+    const id = Number(p.id);
+    if (Number.isFinite(id)) m.set(id, readMatrixStartPresetMeta(p));
+  }
+  return m;
+}
+
+function defaultMetaForMissingPreset(): MatrixStartPresetMeta {
+  return { maxInRow: 1, jointPrep: false, prepMinutes: 0 };
+}
+
+const DEFAULT_MAX_IN_ROW = 1;
+
+/**
+ * Prefix of `slotPresetIds` (window slot list from the start) that forms the “starting bunch”:
+ * walk syllabi in order with `startingBunch` initially 1; after each prefix, let M = min(max_in_row)
+ * among presets in that prefix (tracked incrementally as each slot is appended). If `startingBunch > M`,
+ * decrement `startingBunch` by 1 and **stop** (break). Otherwise stop when M === `startingBunch`, or when
+ * the list ends without that equality (full prefix built so far).
+ */
+export function matrixStartingBunchPresetIds(
+  slotPresetIds: number[],
+  presetMeta: Map<number, MatrixStartPresetMeta>,
+): number[] {
+  const iterated: number[] = [];
+  let startingBunch = 1;
+  /** Running min(max_in_row) over the prefix; updated in O(1) per slot (no full prefix rescan). */
+  let prefixMinMaxInRow: number | null = null;
+  for (let i = 0; i < slotPresetIds.length; i++) {
+    const pid = slotPresetIds[i]!;
+    const row = presetMeta.get(pid)?.maxInRow ?? DEFAULT_MAX_IN_ROW;
+    prefixMinMaxInRow =
+      prefixMinMaxInRow === null ? row : Math.min(prefixMinMaxInRow, row);
+    const m = prefixMinMaxInRow;
+    iterated.push(pid);
+    if (startingBunch > m) {
+      startingBunch -= 1;
+      break;
+    }
+    if (m === startingBunch) {
+      break;
+    }
+    startingBunch += 1;
+  }
+  return iterated;
+}
+
+/**
+ * Sum prep minutes for slots in the starting bunch: each non–joint_prep slot adds its prep;
+ * for joint_prep, add prep only for the first occurrence of that preset id in the bunch.
+ */
+export function matrixStartPrepMinutesSum(
+  startingBunchPresetIds: number[],
+  presetMeta: Map<number, MatrixStartPresetMeta>,
+): number {
+  let sum = 0;
+  const jointPrepCharged = new Set<number>();
+  for (const pid of startingBunchPresetIds) {
+    const meta = presetMeta.get(pid) ?? defaultMetaForMissingPreset();
+    if (meta.jointPrep) {
+      if (!jointPrepCharged.has(pid)) {
+        sum += meta.prepMinutes;
+        jointPrepCharged.add(pid);
+      }
+    } else {
+      sum += meta.prepMinutes;
+    }
+  }
+  return sum;
+}
+
+/** Wall time on `dateStr` matching coverage_start clock (time-of-day from ISO). */
+export function anchorCoverageOnDate(dateStr: string, coverageStartIso: string): Date {
+  const hm = formatTimeForInput(coverageIsoToHm(coverageStartIso)) || "00:00";
+  const [y, m, d] = dateStr.split("-").map((x) => parseInt(x, 10));
+  const [hh, mm] = hm.split(":").map((x) => parseInt(x, 10));
+  return new Date(y, m - 1, d, hh, mm, 0, 0);
+}
+
+/**
+ * Segment wall time on the coverage timeline (same day as anchor, or next calendar day if before anchor).
+ */
+export function segmentInstantOnDay(
+  dateStr: string,
+  coverageStartHm: string,
+  segmentHm: string,
+): number {
+  const ach = formatTimeForInput(coverageStartHm) || "00:00";
+  const [y, m, d] = dateStr.split("-").map((x) => parseInt(x, 10));
+  const [ah, am] = ach.split(":").map((x) => parseInt(x, 10));
+  const anchor = new Date(y, m - 1, d, ah, am, 0, 0).getTime();
+  const sh = formatTimeForInput(segmentHm) || "00:00";
+  const [th, tm] = sh.split(":").map((x) => parseInt(x, 10));
+  let seg = new Date(y, m - 1, d, th, tm, 0, 0).getTime();
+  if (seg < anchor) seg += 24 * 3600_000;
+  return seg;
+}
+
+/** `endHm` 00:00 with `isEndNextDay` means midnight at start of next calendar day (schedule convention). */
+export function coverageEndInstantOnDay(
+  dateStr: string,
+  endHm: string,
+  isEndNextDayMidnight: boolean,
+): number {
+  const sh = formatTimeForInput(endHm) || "00:00";
+  const [y, m, d] = dateStr.split("-").map((x) => parseInt(x, 10));
+  const [h, mi] = sh.split(":").map((x) => parseInt(x, 10));
+  if (h === 0 && mi === 0 && isEndNextDayMidnight) {
+    return new Date(y, m - 1, d + 1, 0, 0, 0, 0).getTime();
+  }
+  return new Date(y, m - 1, d, h, mi, 0, 0).getTime();
+}
+
+/** Hour labels where a materialized slot intersects the calendar-day coverage window. */
+export function hourSlotsForWindowMaterializedOnDay(
+  dateStr: string,
+  ty: JsonObject,
+  durationByPresetId: Map<number, number>,
+): string[] {
+  const { start, end } = coverageOf(ty);
+  const w = intersectCoverageOnDay(dateStr, start, end);
+  if (!w) return [];
+  const slotIds = parseSlotPresetIdsFromWindow(ty);
+  if (slotIds.length === 0) {
+    return hourSlotsForTypeOnDay(ty, dateStr);
+  }
+  const anchorMs = anchorCoverageOnDate(dateStr, start).getTime();
+  const wStart = w.start.getTime();
+  const wEnd = w.end.getTime();
+  const set = new Set<string>();
+  let t = anchorMs;
+  for (const pid of slotIds) {
+    const dur = durationByPresetId.get(pid) ?? 60;
+    const slotStart = t;
+    const slotEnd = t + dur * 60_000;
+    const is = Math.max(slotStart, wStart);
+    const ie = Math.min(slotEnd, wEnd);
+    if (ie > is) {
+      for (const h of hourSlotsInWindow(new Date(is), new Date(ie))) {
+        set.add(h);
+      }
+    }
+    t = slotEnd;
+  }
+  const list = [...set];
+  list.sort((a, b) => timeToMin(a) - timeToMin(b));
+  return list;
+}
+
+/** Union of materialized slot hours for all windows; falls back to coverage-only union when empty. */
+export function unionHourSlotsForDayMaterialized(
+  dateStr: string,
+  windows: JsonObject[],
+  presets: JsonObject[],
+): string[] {
+  const durs = presetDurationById(presets);
+  const set = new Set<string>();
+  for (const w of windows) {
+    for (const h of hourSlotsForWindowMaterializedOnDay(dateStr, w, durs)) {
+      set.add(h);
+    }
+  }
+  if (set.size === 0 && windows.length > 0) {
+    return unionHourSlotsForDay(dateStr, windows);
+  }
+  const list = [...set];
+  list.sort((a, b) => timeToMin(a) - timeToMin(b));
+  return list;
+}
+
+/** Ceil to hour boundary measured from `dayStartMs` (e.g. 22:15 → start of 23:00 that day). */
+function ceilMsToHourFromDayStart(absoluteMs: number, dayStartMs: number): number {
+  const span = absoluteMs - dayStartMs;
+  if (span <= 0) return dayStartMs;
+  const hourMs = 3600_000;
+  const hoursCeiled = Math.ceil(span / hourMs);
+  return dayStartMs + hoursCeiled * hourMs;
+}
+
+/**
+ * Matrix time range for the schedule: [frameStartMs, frameEndMs).
+ * Start: earliest across windows of `(coverage start on day) − prepLead`, floored to a full hour,
+ * then clamped to **not before** 00:00 of `dateStr`.
+ * End: latest coverage end on this calendar day, then **ceiled** to the next hour (22:15 → 23:00),
+ * then clamped to **at most** 00:00 the following day (exclusive cap).
+ */
+export function matrixFrameBoundsMs(
+  dateStr: string,
+  windows: JsonObject[],
+  presets: JsonObject[],
+): { frameStartMs: number; frameEndMs: number } | null {
+  if (windows.length === 0) return null;
+
+  const { start: dayStart, endExcl: dayEndExcl } = dayBounds(dateStr);
+  const dayStartMs = dayStart.getTime();
+  const dayEndExclMs = dayEndExcl.getTime();
+
+  const meta = matrixStartPresetMetaMap(presets);
+  let rawEndMs: number | null = null;
+  let earliestPrepAwareMs: number | null = null;
+
+  for (const w of windows) {
+    const { start, end } = coverageOf(w);
+    const inter = intersectCoverageOnDay(dateStr, start, end);
+    if (!inter) continue;
+
+    const e = inter.end.getTime();
+    if (rawEndMs === null || e > rawEndMs) {
+      rawEndMs = e;
+    }
+
+    const slots = parseSlotPresetIdsFromWindow(w);
+    const bunch = matrixStartingBunchPresetIds(slots, meta);
+    const prepLead = matrixStartPrepMinutesSum(bunch, meta);
+    const t0 = inter.start.getTime() - prepLead * 60_000;
+    if (earliestPrepAwareMs === null || t0 < earliestPrepAwareMs) {
+      earliestPrepAwareMs = t0;
+    }
+  }
+
+  if (rawEndMs === null || earliestPrepAwareMs === null) {
+    return null;
+  }
+
+  const floored = new Date(earliestPrepAwareMs);
+  floored.setMinutes(0, 0, 0);
+  floored.setMilliseconds(0);
+  const frameStartMs = Math.max(floored.getTime(), dayStartMs);
+
+  let frameEndMs = ceilMsToHourFromDayStart(rawEndMs, dayStartMs);
+  frameEndMs = Math.min(frameEndMs, dayEndExclMs);
+
+  if (frameStartMs >= frameEndMs) {
+    return null;
+  }
+
+  return { frameStartMs, frameEndMs };
+}
+
+/**
+ * Hour columns: every hour bucket from matrix frame start through frame end (see {@link matrixFrameBoundsMs}).
+ */
+export function matrixPrepAwareHourSlotsForDay(
+  dateStr: string,
+  windows: JsonObject[],
+  presets: JsonObject[],
+): string[] {
+  const bounds = matrixFrameBoundsMs(dateStr, windows, presets);
+  if (!bounds) {
+    return unionHourSlotsForDayMaterialized(dateStr, windows, presets);
+  }
+  const list = hourSlotsInWindow(new Date(bounds.frameStartMs), new Date(bounds.frameEndMs));
+  list.sort((a, b) => timeToMin(a) - timeToMin(b));
+  return list;
+}
+
+/** Valid start times for segment row `rowIndex` (row 0 is fixed to coverage start). */
+export function validSegmentStartTimes(
+  dateStr: string,
+  coverageStartHm: string,
+  coverageEndHm: string,
+  endIsNextDayMidnight: boolean,
+  segments: { syllabus_preset_id: number; segment_start_time: string }[],
+  rowIndex: number,
+  durationByPresetId: Map<number, number>,
+): string[] {
+  if (rowIndex <= 0) {
+    return [formatTimeForInput(coverageStartHm) || "06:00"];
+  }
+  const prev = segments[rowIndex - 1];
+  if (!prev) return [];
+  const prevDur = durationByPresetId.get(prev.syllabus_preset_id) ?? 60;
+  const covEnd = coverageEndInstantOnDay(dateStr, coverageEndHm, endIsNextDayMidnight);
+  const prevMs = segmentInstantOnDay(dateStr, coverageStartHm, prev.segment_start_time);
+  const step = prevDur * 60_000;
+  const out: string[] = [];
+  for (let n = 1; n <= 200; n++) {
+    const t = prevMs + n * step;
+    if (t >= covEnd) break;
+    const d = new Date(t);
+    out.push(
+      `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`,
+    );
+  }
+  return out;
+}
+
+/** Preset id → hex color for timeline pills. */
+export function presetColorById(presets: JsonObject[]): Map<number, string> {
+  const m = new Map<number, string>();
+  for (const p of presets) {
+    m.set(Number(p.id), String(p.color ?? "#6366F1"));
+  }
+  return m;
+}
+
+export type WindowDaySegment = {
+  syllabusNum: number;
+  presetId: number;
+  startMs: number;
+  endMs: number;
+  color: string;
+};
+
+/** Clipped materialized slots + optional tail gap before coverage end on this calendar day. */
+export function windowDayTimeline(
+  dateStr: string,
+  ty: JsonObject,
+  durationByPresetId: Map<number, number>,
+  /** Shift window color (#hex); segment `color` matches this (per-slot preset colors are not used for display). */
+  windowColor: string,
+): { segments: WindowDaySegment[]; tailGap: { startMs: number; endMs: number } | null } {
+  const { start, end } = coverageOf(ty);
+  const w = intersectCoverageOnDay(dateStr, start, end);
+  if (!w) return { segments: [], tailGap: null };
+  const slotIds = parseSlotPresetIdsFromWindow(ty);
+  const wStart = w.start.getTime();
+  const wEnd = w.end.getTime();
+  if (slotIds.length === 0) {
+    return wEnd > wStart
+      ? { segments: [], tailGap: { startMs: wStart, endMs: wEnd } }
+      : { segments: [], tailGap: null };
+  }
+  const anchorMs = anchorCoverageOnDate(dateStr, start).getTime();
+  const segments: WindowDaySegment[] = [];
+  let t = anchorMs;
+  let lastClipEnd = wStart;
+  for (let i = 0; i < slotIds.length; i++) {
+    const pid = slotIds[i];
+    const dur = durationByPresetId.get(pid) ?? 60;
+    const slotStart = t;
+    const slotEnd = t + dur * 60_000;
+    const is = Math.max(slotStart, wStart);
+    const ie = Math.min(slotEnd, wEnd);
+    if (ie > is) {
+      segments.push({
+        syllabusNum: i,
+        presetId: pid,
+        startMs: is,
+        endMs: ie,
+        color: windowColor,
+      });
+      lastClipEnd = Math.max(lastClipEnd, ie);
+    }
+    t = slotEnd;
+  }
+  const tailGap =
+    lastClipEnd < wEnd ? { startMs: lastClipEnd, endMs: wEnd } : null;
+  return { segments, tailGap };
+}
+
+/** Hour labels (HH:00) whose bucket start lies inside [startMs, endMs). */
+export function hourLabelsTouchingRange(startMs: number, endMs: number): string[] {
+  if (endMs <= startMs) return [];
+  return hourSlotsInWindow(new Date(startMs), new Date(endMs));
+}
+
+/** 0-based slot index for the materialized slot covering this hour on `dateStr`, or null. */
+export function syllabusNumForHourInWindow(
+  dateStr: string,
+  ty: JsonObject,
+  hourLabel: string,
+  durationByPresetId: Map<number, number>,
+): number | null {
+  const { start, end } = coverageOf(ty);
+  const w = intersectCoverageOnDay(dateStr, start, end);
+  if (!w) return null;
+  const slotIds = parseSlotPresetIdsFromWindow(ty);
+  if (slotIds.length === 0) return null;
+  const anchorMs = anchorCoverageOnDate(dateStr, start).getTime();
+  const wStart = w.start.getTime();
+  const wEnd = w.end.getTime();
+  const hMin = timeToMin(hourLabel);
+  const { start: d0 } = dayBounds(dateStr);
+  const probe = d0.getTime() + hMin * 60_000;
+  let t = anchorMs;
+  for (let i = 0; i < slotIds.length; i++) {
+    const pid = slotIds[i];
+    const dur = durationByPresetId.get(pid) ?? 60;
+    const slotStart = t;
+    const slotEnd = t + dur * 60_000;
+    const is = Math.max(slotStart, wStart);
+    const ie = Math.min(slotEnd, wEnd);
+    if (ie > is && probe >= is && probe < ie) {
+      return i;
+    }
+    t = slotEnd;
+  }
+  return null;
 }

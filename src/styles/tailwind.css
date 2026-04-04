@@ -79,6 +79,17 @@
   #emp-modal-affiliation:focus-visible {
     @apply border-transparent outline-none ring-2 ring-inset ring-primary/20;
   }
+
+  /* Stale shifts + uncovered window tail — red stripes only; use same h-2.5 + ring-black/10 as solid pills */
+  .schedule-striped-warn-pill {
+    background: repeating-linear-gradient(
+      -45deg,
+      rgb(254 202 202),
+      rgb(254 202 202) 3px,
+      rgb(252 165 165) 3px,
+      rgb(252 165 165) 6px
+    );
+  }
 }
 
 @layer utilities {

@@ -29,7 +29,7 @@ pub fn send_whatsapp(state: State<'_, AppState>, week_start: String) -> Result<V
                 let mut sstmt = conn.prepare(
                     "SELECT s.shift_date, s.start_time, s.end_time, st.name as type_name
                      FROM shifts s
-                     JOIN shift_types st ON s.shift_type_id = st.id
+                     JOIN shift_windows st ON s.shift_window_id = st.id
                      WHERE s.employee_id = ? AND s.shift_date BETWEEN ? AND ?
                      ORDER BY s.shift_date, s.start_time",
                 )?;

@@ -49,26 +49,45 @@ export async function reactivateEmployee(emp_id: number): Promise<JsonObject> {
   return invoke("reactivate_employee", { empId: emp_id });
 }
 
-export async function getShiftTypes(date?: string): Promise<JsonObject[]> {
+export async function getShiftWindows(date?: string): Promise<JsonObject[]> {
   if (date === undefined) {
-    return invoke("get_shift_types", {});
+    return invoke("get_shift_windows", {});
   }
-  return invoke("get_shift_types", { date });
+  return invoke("get_shift_windows", { date });
 }
 
-export async function createShiftType(payload: JsonObject): Promise<JsonObject> {
-  return invoke("create_shift_type", { payload });
+export async function createShiftWindow(payload: JsonObject): Promise<JsonObject> {
+  return invoke("create_shift_window", { payload });
 }
 
-export async function updateShiftType(
-  shift_type_id: number,
+export async function updateShiftWindow(
+  shiftWindowId: number,
   payload: JsonObject,
 ): Promise<JsonObject> {
-  return invoke("update_shift_type", { shiftTypeId: shift_type_id, payload });
+  return invoke("update_shift_window", { shiftWindowId, payload });
 }
 
-export async function deleteShiftType(shift_type_id: number): Promise<JsonObject> {
-  return invoke("delete_shift_type", { shiftTypeId: shift_type_id });
+export async function deleteShiftWindow(shiftWindowId: number): Promise<JsonObject> {
+  return invoke("delete_shift_window", { shiftWindowId });
+}
+
+export async function getSyllabusPresets(): Promise<JsonObject[]> {
+  return invoke("get_syllabus_presets");
+}
+
+export async function createSyllabusPreset(payload: JsonObject): Promise<JsonObject> {
+  return invoke("create_syllabus_preset", { payload });
+}
+
+export async function updateSyllabusPreset(
+  presetId: number,
+  payload: JsonObject,
+): Promise<JsonObject> {
+  return invoke("update_syllabus_preset", { presetId, payload });
+}
+
+export async function deleteSyllabusPreset(presetId: number): Promise<JsonObject> {
+  return invoke("delete_syllabus_preset", { presetId });
 }
 
 export async function getShifts(week_start: string): Promise<JsonObject[]> {
@@ -79,11 +98,8 @@ export async function createShift(payload: JsonObject): Promise<JsonObject> {
   return invoke("create_shift", { payload });
 }
 
-export async function updateShift(
-  shift_id: number,
-  payload: JsonObject,
-): Promise<JsonObject> {
-  return invoke("update_shift", { shiftId: shift_id, payload });
+export async function reassignShiftEmployee(payload: JsonObject): Promise<JsonObject> {
+  return invoke("reassign_shift_employee", { payload });
 }
 
 export async function deleteShift(shift_id: number): Promise<JsonObject> {

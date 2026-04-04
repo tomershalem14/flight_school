@@ -1,5 +1,6 @@
-//! Default roles and shift types when the database is empty.
+//! Default roles and shift windows when the database is empty.
 
+use crate::domain::syllabus::{coverage_daily_span_minutes, floor_slot_count, json_preset_slot_array};
 use crate::error::{AppError, AppResult};
 use rusqlite::{params, Connection};
 
@@ -22,103 +23,65 @@ pub fn seed_if_empty(conn: &Connection) -> AppResult<()> {
         stmt.execute(params![name, level, specials, col])?;
     }
 
-    let default_shifts = [
+    let default_preset_id: i64 = conn.query_row(
+        "SELECT id FROM syllabus_presets WHERE system_locked = 1 LIMIT 1",
+        [],
+        |r| r.get(0),
+    )?;
+
+    let default_windows = [
         (
             "משמרת שעה",
-            60i32,
-            30,
-            30,
             "#3B82F6",
-            None::<i64>,
-            1,
-            0,
             "משמרת טיסה - שעה",
         ),
         (
             "משמרת שעתיים",
-            120,
-            60,
-            60,
             "#6366F1",
-            None,
-            1,
-            0,
             "משמרת טיסה - שעתיים רצופות",
         ),
         (
             "שעה + שעה (הפסקה 2 שעות)",
-            60,
-            30,
-            30,
             "#8B5CF6",
-            None,
-            1,
-            0,
             "שעה, 2 שעות מנוחה, עוד שעה",
         ),
         (
             "שעתיים + שעה (הפסקה 3 שעות)",
-            120,
-            60,
-            60,
             "#A855F7",
-            None,
-            1,
-            0,
             "שעתיים, 3 שעות מנוחה, עוד שעה",
         ),
-        ("פתיחת יום", 30, 0, 0, "#F59E0B", Some(4), 0, 0, "אחראי יום - בוקר"),
-        ("סגירת יום", 30, 0, 0, "#EF4444", Some(4), 0, 0, "אחראי יום - ערב"),
+        ("פתיחת יום", "#F59E0B", "אחראי יום - בוקר"),
+        ("סגירת יום", "#EF4444", "אחראי יום - ערב"),
         (
             "משמרת ניהול",
-            60,
-            0,
-            0,
             "#10B981",
-            None,
-            0,
-            1,
-            "איוש ניהולי - לא יכול לטוס",
+            "איוש ניהולי",
         ),
     ];
 
-    let mut st = conn.prepare(
-        "INSERT INTO shift_types
-        (name, duration_minutes, prep_minutes, recovery_minutes, color,
-         min_role_id, allow_fly, max_concurrent_management, notes,
-         coverage_start, coverage_end)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-    )?;
-
     let cov_start = "2000-01-01T06:00:00";
     let cov_end = "2099-12-31T21:00:00";
+    let span = coverage_daily_span_minutes(cov_start, cov_end)
+        .map_err(|e| AppError::msg(e))?;
+    let slot_n = floor_slot_count(span, 60);
+    let slots_json = json_preset_slot_array(default_preset_id, slot_n);
 
-    for (
-        name,
-        dur,
-        prep,
-        rec,
-        color,
-        min_role,
-        allow_fly,
-        max_mgmt,
-        notes,
-    ) in default_shifts
-    {
+    let mut st = conn.prepare(
+        "INSERT INTO shift_windows
+        (name, color, notes, coverage_start, coverage_end, syllabus_slot_preset_ids)
+        VALUES (?,?,?,?,?,?)",
+    )?;
+
+    for (name, color, notes) in default_windows {
         st.execute(rusqlite::params![
             name,
-            dur,
-            prep,
-            rec,
             color,
-            min_role,
-            allow_fly,
-            max_mgmt,
             notes,
             cov_start,
-            cov_end
+            cov_end,
+            slots_json.clone()
         ])
-        .map_err(|e| AppError::msg(format!("seed shift_types: {e}")))?;
+        .map_err(|e| AppError::msg(format!("seed shift_windows: {e}")))?;
     }
 
     Ok(())

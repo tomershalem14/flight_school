@@ -42,7 +42,7 @@ pub fn get_employee_history(
                 "SELECT s.id, s.shift_date, s.start_time, s.end_time,
                         st.name as type_name, st.color as type_color
                  FROM shifts s
-                 JOIN shift_types st ON s.shift_type_id = st.id
+                 JOIN shift_windows st ON s.shift_window_id = st.id
                  WHERE s.employee_id = ?
                  ORDER BY s.shift_date DESC, s.start_time DESC
                  LIMIT ?",
@@ -64,7 +64,7 @@ pub fn get_last_shift(state: State<'_, AppState>, employee_id: i64) -> Result<Op
             let row = conn.query_row(
                 "SELECT s.shift_date, s.start_time, s.end_time, st.name as type_name
                  FROM shifts s
-                 JOIN shift_types st ON s.shift_type_id = st.id
+                 JOIN shift_windows st ON s.shift_window_id = st.id
                  WHERE s.employee_id = ? AND s.shift_date <= date('now')
                  ORDER BY s.shift_date DESC, s.start_time DESC
                  LIMIT 1",
@@ -89,7 +89,7 @@ pub fn get_shift_count_report(state: State<'_, AppState>, week_start: String) ->
                 "SELECT e.name as emp_name, st.name as type_name, COUNT(*) as count
                  FROM shifts s
                  JOIN employees e ON s.employee_id = e.id
-                 JOIN shift_types st ON s.shift_type_id = st.id
+                 JOIN shift_windows st ON s.shift_window_id = st.id
                  WHERE s.shift_date BETWEEN ? AND ? AND s.employee_id IS NOT NULL
                  GROUP BY e.id, st.id
                  ORDER BY e.name, st.name",

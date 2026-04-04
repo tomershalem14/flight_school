@@ -47,7 +47,7 @@ pub fn parse_iso_datetime(s: &str) -> Option<NaiveDateTime> {
         .or_else(|| NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M:%S%.6f").ok())
 }
 
-fn parse_hms(t: &str) -> Option<NaiveTime> {
+pub(crate) fn parse_hms(t: &str) -> Option<NaiveTime> {
     let t = t.trim();
     NaiveTime::parse_from_str(t, "%H:%M:%S").ok()
         .or_else(|| NaiveTime::parse_from_str(t, "%H:%M").ok())
@@ -61,9 +61,15 @@ pub fn shift_span_on_calendar(
 ) -> Option<(NaiveDateTime, NaiveDateTime)> {
     let d = NaiveDate::parse_from_str(shift_date, "%Y-%m-%d").ok()?;
     let st = parse_hms(start_time)?;
-    let et = parse_hms(end_time)?;
+    let end_trim = end_time.trim();
+    let (et, end_next_day) = if end_trim == "24:00" || end_trim == "24:00:00" {
+        (NaiveTime::from_hms_opt(0, 0, 0)?, true)
+    } else {
+        let et = parse_hms(end_time)?;
+        (et, et <= st)
+    };
     let start_dt = d.and_time(st);
-    let end_date = if et <= st {
+    let end_date = if end_next_day {
         d + Duration::days(1)
     } else {
         d
@@ -72,27 +78,14 @@ pub fn shift_span_on_calendar(
     Some((start_dt, end_dt))
 }
 
-/// Shift must lie fully inside the shift type coverage window (inclusive bounds).
-pub fn ensure_shift_within_type_coverage(
-    coverage_start: &str,
-    coverage_end: &str,
-    shift_date: &str,
-    start_time: &str,
-    end_time: &str,
-) -> Result<(), String> {
-    let cs = parse_iso_datetime(coverage_start)
-        .ok_or_else(|| "חלון כיסוי סוג משמרת לא תקין".to_string())?;
-    let ce = parse_iso_datetime(coverage_end)
-        .ok_or_else(|| "חלון כיסוי סוג משמרת לא תקין".to_string())?;
-    if ce <= cs {
-        return Err("חלון כיסוי סוג משמרת ריק או הפוך".to_string());
+fn wall_shift_duration_minutes(start_time: &str, end_time: &str) -> i32 {
+    let a = time_to_minutes(start_time);
+    let b = time_to_minutes(end_time);
+    let mut d = b - a;
+    if d < 0 {
+        d += 24 * 60;
     }
-    let (ss, se) = shift_span_on_calendar(shift_date, start_time, end_time)
-        .ok_or_else(|| "תאריך או שעות משמרת לא תקינים".to_string())?;
-    if ss < cs || se > ce {
-        return Err("המשמרת מחוץ לחלון הכיסוי של סוג המשמרת".to_string());
-    }
-    Ok(())
+    d
 }
 
 /// Check rules for a single shift row (joined columns match Python query).
@@ -101,14 +94,13 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
 
     let shift = match conn.query_row(
         "SELECT s.id, s.shift_date, s.start_time, s.end_time, s.employee_id,
-                st.name AS type_name,
-                st.coverage_start AS type_coverage_start,
-                st.coverage_end AS type_coverage_end,
-                st.prep_minutes, st.recovery_minutes,
-                st.min_role_id, e.name AS emp_name, e.role_id,
+                s.prep_start, s.rest_end,
+                w.name AS type_name,
+                sp.min_role_id, e.name AS emp_name, e.role_id,
                 r.name AS role_name
          FROM shifts s
-         JOIN shift_types st ON s.shift_type_id = st.id
+         JOIN shift_windows w ON s.shift_window_id = w.id
+         JOIN syllabus_presets sp ON s.syllabus_preset_id = sp.id
          LEFT JOIN employees e ON s.employee_id = e.id
          LEFT JOIN roles r ON e.role_id = r.id
          WHERE s.id = ?",
@@ -120,29 +112,12 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
         Err(e) => return Err(e),
     };
 
-    if let Err(msg) = ensure_shift_within_type_coverage(
-        &shift.type_coverage_start,
-        &shift.type_coverage_end,
-        &shift.shift_date,
-        &shift.start_time,
-        &shift.end_time,
-    ) {
-        violations.push(Violation {
-            rule: "shift_type_coverage".into(),
-            severity: "error".into(),
-            message: msg,
-            shift_id: Some(shift_id),
-        });
-    }
-
     let Some(emp_id) = shift.employee_id else {
         return Ok(violations);
     };
 
-    let start_min = time_to_minutes(&shift.start_time);
-    let end_min = time_to_minutes(&shift.end_time);
-    let prep = shift.prep_minutes;
-    let recovery = shift.recovery_minutes;
+    let window_start = time_to_minutes(&shift.prep_start);
+    let window_end = time_to_minutes(&shift.rest_end);
     let shift_date = shift.shift_date.clone();
 
     // Rule 1: min role
@@ -162,40 +137,33 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
         }
     }
 
-    // Rule 3: prep/recovery overlap
-    let window_start = start_min - prep;
-    let window_end = end_min + recovery;
-
+    // Rule 3: prep/recovery overlap (uses denormalized prep_start / rest_end on each shift)
     let mut stmt = conn.prepare(
-        "SELECT s.id, s.start_time, s.end_time, st.prep_minutes, st.recovery_minutes, st.name
+        "SELECT s.id, s.prep_start, s.rest_end, w.name
          FROM shifts s
-         JOIN shift_types st ON s.shift_type_id = st.id
+         JOIN shift_windows w ON s.shift_window_id = w.id
          WHERE s.employee_id = ? AND s.shift_date = ? AND s.id != ?",
     )?;
     let others = stmt.query_map(params![emp_id, shift_date, shift_id], |r| {
         Ok((
             r.get::<_, String>(1)?,
             r.get::<_, String>(2)?,
-            r.get::<_, i32>(3)?,
-            r.get::<_, i32>(4)?,
-            r.get::<_, String>(5)?,
+            r.get::<_, String>(3)?,
         ))
     })?;
 
     let en = shift.emp_name.as_deref().unwrap_or("");
     let tn = &shift.type_name;
     for o in others.flatten() {
-        let (ost, oet, oprep, orec, oname) = o;
-        let other_start = time_to_minutes(&ost);
-        let other_end = time_to_minutes(&oet);
-        let other_ws = other_start - oprep;
-        let other_we = other_end + orec;
+        let (ops, ore, oname) = o;
+        let other_ws = time_to_minutes(&ops);
+        let other_we = time_to_minutes(&ore);
         if window_start < other_we && window_end > other_ws {
             violations.push(Violation {
                 rule: "prep_recovery_overlap".into(),
                 severity: "error".into(),
                 message: format!(
-                    "'{en}' - חפיפה בין זמן הכנה/תאוששות של '{tn}' ל'{oname}'"
+                    "'{en}' - חפיפה בין זמן תדריך/תחקיר של '{tn}' ל'{oname}'"
                 ),
                 shift_id: Some(shift_id),
             });
@@ -204,6 +172,7 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
 
     // Rule 4: no consecutive evening (end >= 18:00)
     const LATE_THRESHOLD: i32 = 18 * 60;
+    let end_min = time_to_minutes(&shift.end_time);
     if end_min >= LATE_THRESHOLD {
         if let Some(dt) = parse_shift_date(&shift_date) {
             for (check_date, direction) in [
@@ -237,36 +206,7 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
         }
     }
 
-    // Rule 5: last shift vs first 5
-    let mut stmt = conn.prepare(
-        "SELECT s.id, s.start_time, s.employee_id
-         FROM shifts s
-         WHERE s.shift_date = ? AND s.employee_id IS NOT NULL
-         ORDER BY s.start_time",
-    )?;
-    let all_day: Vec<(i64, Option<i64>)> = stmt
-        .query_map([&shift_date], |r| Ok((r.get(0)?, r.get(2)?)))?
-        .filter_map(|x| x.ok())
-        .collect();
-
-    if all_day.len() >= 5 {
-        let first_5: std::collections::HashSet<i64> =
-            all_day.iter().take(5).filter_map(|(_, eid)| *eid).collect();
-        if let Some((_, Some(last_eid))) = all_day.last() {
-            if last_eid == &emp_id && first_5.contains(&emp_id) {
-                violations.push(Violation {
-                    rule: "last_shift_not_in_first_5".into(),
-                    severity: "error".into(),
-                    message: format!(
-                        "'{en}' - מאויש במשמרת האחרונה וגם באחת מ-5 המשמרות הראשונות"
-                    ),
-                    shift_id: Some(shift_id),
-                });
-            }
-        }
-    }
-
-    // Rule 7: constraints
+    // Rule 5: constraints
     let mut cstmt = conn.prepare(
         "SELECT constraint_type, reason FROM constraints
          WHERE employee_id = ?
@@ -300,11 +240,9 @@ struct ShiftRow {
     start_time: String,
     end_time: String,
     employee_id: Option<i64>,
+    prep_start: String,
+    rest_end: String,
     type_name: String,
-    type_coverage_start: String,
-    type_coverage_end: String,
-    prep_minutes: i32,
-    recovery_minutes: i32,
     min_role_id: Option<i64>,
     emp_name: Option<String>,
     role_id: Option<i64>,
@@ -318,11 +256,9 @@ impl ShiftRow {
             start_time: r.get("start_time")?,
             end_time: r.get("end_time")?,
             employee_id: r.get("employee_id")?,
+            prep_start: r.get("prep_start")?,
+            rest_end: r.get("rest_end")?,
             type_name: r.get("type_name")?,
-            type_coverage_start: r.get("type_coverage_start")?,
-            type_coverage_end: r.get("type_coverage_end")?,
-            prep_minutes: r.get("prep_minutes")?,
-            recovery_minutes: r.get("recovery_minutes")?,
             min_role_id: r.get("min_role_id")?,
             emp_name: r.get("emp_name")?,
             role_id: r.get("role_id")?,
@@ -367,16 +303,15 @@ pub fn get_weekly_workload(
 
     let mut stmt = conn
         .prepare(
-            "SELECT s.shift_date, s.start_time, s.end_time, st.name as type_name,
-                st.duration_minutes
+            "SELECT s.shift_date, s.start_time, s.end_time, w.name as type_name
          FROM shifts s
-         JOIN shift_types st ON s.shift_type_id = st.id
+         JOIN shift_windows w ON s.shift_window_id = w.id
          WHERE s.employee_id = ? AND s.shift_date BETWEEN ? AND ?",
         )
         .map_err(|e| e.to_string())?;
-    let rows: Vec<(String, String, String, String, i32)> = stmt
+    let rows: Vec<(String, String, String, String)> = stmt
         .query_map(params![employee_id, week_start, week_end], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
         })
         .map_err(|e| e.to_string())?
         .filter_map(|x| x.ok())
@@ -387,7 +322,10 @@ pub fn get_weekly_workload(
         .iter()
         .filter(|r| time_to_minutes(&r.2) >= 18 * 60)
         .count() as i32;
-    let total_minutes: i32 = rows.iter().map(|r| r.4).sum();
+    let total_minutes: i32 = rows
+        .iter()
+        .map(|r| wall_shift_duration_minutes(&r.1, &r.2))
+        .sum();
 
     Ok(json!({
         "total_shifts": total_shifts,
@@ -417,26 +355,30 @@ mod tests {
     }
 
     #[test]
-    fn coverage_accepts_shift_inside_window() {
-        assert!(ensure_shift_within_type_coverage(
-            "2025-06-01T08:00:00",
-            "2025-06-01T18:00:00",
-            "2025-06-01",
-            "09:00",
-            "10:00",
-        )
-        .is_ok());
+    fn shift_span_parses_24_00_as_next_midnight() {
+        let (s, e) =
+            shift_span_on_calendar("2025-06-01", "23:00", "24:00").expect("span");
+        assert_eq!(s, NaiveDate::from_ymd_opt(2025, 6, 1).unwrap().and_hms_opt(23, 0, 0).unwrap());
+        assert_eq!(e, NaiveDate::from_ymd_opt(2025, 6, 2).unwrap().and_hms_opt(0, 0, 0).unwrap());
     }
 
     #[test]
-    fn coverage_rejects_shift_outside_window() {
-        assert!(ensure_shift_within_type_coverage(
-            "2025-06-01T08:00:00",
-            "2025-06-01T12:00:00",
-            "2025-06-01",
-            "11:00",
-            "13:00",
-        )
-        .is_err());
+    fn shift_span_midnight_end_next_day() {
+        let (start, end) =
+            shift_span_on_calendar("2025-06-01", "23:00", "00:00").expect("span");
+        assert_eq!(
+            start,
+            NaiveDate::from_ymd_opt(2025, 6, 1)
+                .unwrap()
+                .and_hms_opt(23, 0, 0)
+                .unwrap()
+        );
+        assert_eq!(
+            end,
+            NaiveDate::from_ymd_opt(2025, 6, 2)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+        );
     }
 }

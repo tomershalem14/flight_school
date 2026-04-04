@@ -143,7 +143,7 @@ pub fn delete_role(state: State<'_, AppState>, role_id: i64) -> Result<Value, St
                 params![fallback, role_id],
             )?;
             conn.execute(
-                "UPDATE shift_types SET min_role_id = NULL WHERE min_role_id = ?",
+                "UPDATE syllabus_presets SET min_role_id = NULL WHERE min_role_id = ?",
                 [role_id],
             )?;
             conn.execute("DELETE FROM roles WHERE id = ?", [role_id])?;

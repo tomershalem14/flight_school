@@ -1,3 +1,13 @@
+/**
+ * End of a 1-hour slot that starts at `hour` (`HH:00`).
+ * The 23:00 slot ends at midnight next calendar day (`00:00`), not `24:00` (not parseable server-side).
+ */
+export function hourSlotEndHm(hour: string): string {
+  const nh = (parseInt(hour.slice(0, 2), 10) % 24) + 1;
+  if (nh === 24) return "00:00";
+  return `${String(nh).padStart(2, "0")}:00`;
+}
+
 /** Normalize API time strings to `HH:mm` for `<input type="time" />` (empty stays empty). */
 export function formatTimeForInput(value: string): string {
   const t = String(value ?? "").trim();

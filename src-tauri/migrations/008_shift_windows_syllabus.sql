@@ -1,0 +1,2 @@
+-- v8: Legacy DBs are migrated in Rust (`migrate_shift_windows_syllabus_v8` in `db/mod.rs`).
+-- This file documents the target layout: `syllabus_presets`, `shift_windows`, `shifts` columns.

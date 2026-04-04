@@ -3,8 +3,12 @@ import { useMemo, useState } from "react";
 import { useAppStore, weekStartString } from "../../app/store";
 import * as api from "../../shared/api";
 import { formatYmd } from "../../shared/dates";
-import { hourSlotsForTypeOnDay, shiftCoversHour } from "../../shared/manningHours";
-import { formatTimeForInput } from "../../shared/timeFormat";
+import {
+  hourSlotsForWindowMaterializedOnDay,
+  presetDurationById,
+  shiftCoversHour,
+  syllabusNumForHourInWindow,
+} from "../../shared/manningHours";
 import type { JsonObject } from "../../shared/api";
 
 function normalizeShiftRow(s: JsonObject): JsonObject {
@@ -15,14 +19,36 @@ function normalizeShiftRow(s: JsonObject): JsonObject {
     start_time: s.start_time ?? s.startTime,
     end_time: s.end_time ?? s.endTime,
     type_name: s.type_name ?? s.typeName,
-    shift_type_id: s.shift_type_id ?? s.shiftTypeId,
+    shift_window_id: s.shift_window_id ?? s.shiftWindowId,
     emp_name: s.emp_name ?? s.empName,
+    up_to_date: s.up_to_date ?? s.upToDate,
   };
+}
+
+function shiftIsUpToDate(s: JsonObject): boolean {
+  const v = s.up_to_date ?? s.upToDate;
+  if (v === false || v === 0 || v === "0") return false;
+  return true;
 }
 
 function typeId(ty: JsonObject): number {
   return Number(ty.id);
 }
+
+type BoardModal =
+  | {
+      mode: "create";
+      shift_window_id: number;
+      syllabus_num: number;
+      hourLabel: string;
+      employee_id: number | "";
+    }
+  | {
+      mode: "assigned";
+      shiftId: number;
+      empName: string;
+      upToDate: boolean;
+    };
 
 export function FlightBoardView() {
   const currentDay = useAppStore((s) => s.currentDay);
@@ -30,11 +56,21 @@ export function FlightBoardView() {
   const dateStr = formatYmd(currentDay);
   const weekStr = weekStartString(currentDay);
 
-  const { data: typesRaw = [] } = useQuery({
-    queryKey: ["shift_types", dateStr],
-    queryFn: () => api.getShiftTypes(dateStr),
+  const { data: presetsRaw = [] } = useQuery({
+    queryKey: ["syllabus_presets"],
+    queryFn: () => api.getSyllabusPresets(),
   });
-  const types = useMemo(() => (typesRaw as JsonObject[]).slice().sort((a, b) => typeId(a) - typeId(b)), [typesRaw]);
+  const presets = useMemo(() => presetsRaw as JsonObject[], [presetsRaw]);
+
+  const { data: typesRaw = [] } = useQuery({
+    queryKey: ["shift_windows", dateStr],
+    queryFn: () => api.getShiftWindows(dateStr),
+  });
+  const types = useMemo(
+    () => (typesRaw as JsonObject[]).slice().sort((a, b) => typeId(a) - typeId(b)),
+    [typesRaw],
+  );
+  const durationByPreset = useMemo(() => presetDurationById(presets), [presets]);
 
   const { data: employees = [] } = useQuery({
     queryKey: ["employees"],
@@ -55,38 +91,27 @@ export function FlightBoardView() {
     [shifts, dateStr],
   );
 
-  const [modal, setModal] = useState<{
-    mode: "create" | "edit";
-    shiftId?: number;
-    shift_type_id: number;
-    employee_id: number | "";
-    start: string;
-    end: string;
-  } | null>(null);
+  const [modal, setModal] = useState<BoardModal | null>(null);
 
-  const saveMut = useMutation({
-    mutationFn: async () => {
-      if (!modal) return;
-      const body: api.JsonObject = {
+  const createMut = useMutation({
+    mutationFn: (args: {
+      shift_window_id: number;
+      syllabus_num: number;
+      employee_id: number;
+    }) =>
+      api.createShift({
         shift_date: dateStr,
-        shift_type_id: modal.shift_type_id,
-        start_time: modal.start,
-        end_time: modal.end,
-        employee_id: modal.employee_id === "" ? null : modal.employee_id,
-      };
-      if (modal.mode === "create") {
-        return api.createShift(body);
-      }
-      return api.updateShift(modal.shiftId!, {
-        employee_id: modal.employee_id === "" ? null : modal.employee_id,
-        start_time: modal.start,
-        end_time: modal.end,
-      });
-    },
+        shift_window_id: args.shift_window_id,
+        syllabus_num: args.syllabus_num,
+        employee_id: args.employee_id,
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["shifts"] });
       qc.invalidateQueries({ queryKey: ["violations"] });
       setModal(null);
+    },
+    onError: (err) => {
+      window.alert(err instanceof Error ? err.message : String(err));
     },
   });
 
@@ -96,6 +121,9 @@ export function FlightBoardView() {
       qc.invalidateQueries({ queryKey: ["shifts"] });
       qc.invalidateQueries({ queryKey: ["violations"] });
       setModal(null);
+    },
+    onError: (err) => {
+      window.alert(err instanceof Error ? err.message : String(err));
     },
   });
 
@@ -110,8 +138,8 @@ export function FlightBoardView() {
           {types.map((ty) => {
             const tid = typeId(ty);
             const colColor = String(ty.color ?? "#7BA3B5");
-            const slots = hourSlotsForTypeOnDay(ty, dateStr);
-            const colShifts = dayShifts.filter((s) => Number(s.shift_type_id) === tid);
+            const slots = hourSlotsForWindowMaterializedOnDay(dateStr, ty, durationByPreset);
+            const colShifts = dayShifts.filter((s) => Number(s.shift_window_id) === tid);
             return (
               <div
                 key={tid}
@@ -128,11 +156,13 @@ export function FlightBoardView() {
                     <div className="p-3 text-center text-xs text-muted">אין שעות ביום זה</div>
                   ) : (
                     slots.map((hour) => {
+                      const sn = syllabusNumForHourInWindow(dateStr, ty, hour, durationByPreset);
                       const cellShifts = colShifts.filter((s) =>
                         shiftCoversHour(String(s.start_time), String(s.end_time), hour),
                       );
                       const primary = cellShifts[0];
                       const extra = cellShifts.length > 1 ? cellShifts.length - 1 : 0;
+                      const stale = primary && !shiftIsUpToDate(primary);
                       return (
                         <button
                           key={hour}
@@ -141,41 +171,40 @@ export function FlightBoardView() {
                           onClick={() => {
                             if (primary) {
                               setModal({
-                                mode: "edit",
+                                mode: "assigned",
                                 shiftId: Number(primary.id),
-                                shift_type_id: tid,
-                                employee_id:
-                                  primary.employee_id === null ||
-                                  primary.employee_id === undefined ||
-                                  primary.employee_id === ""
-                                    ? ""
-                                    : Number(primary.employee_id),
-                                start: String(primary.start_time),
-                                end: String(primary.end_time),
+                                empName: String(primary.emp_name ?? "—"),
+                                upToDate: shiftIsUpToDate(primary),
                               });
-                            } else {
-                              const nh = (parseInt(hour.slice(0, 2), 10) % 24) + 1;
+                            } else if (sn != null) {
                               setModal({
                                 mode: "create",
-                                shift_type_id: tid,
+                                shift_window_id: tid,
+                                syllabus_num: sn,
+                                hourLabel: hour,
                                 employee_id: "",
-                                start: hour,
-                                end: `${String(nh).padStart(2, "0")}:00`,
                               });
                             }
                           }}
+                          disabled={!primary && sn == null}
                         >
                           <div className="text-xs font-bold text-muted">{hour.slice(0, 2)}:00</div>
                           {primary ? (
                             <div
-                              className="rounded-pill px-2 py-1 text-center font-heading text-[11px] font-bold text-white"
-                              style={{ backgroundColor: colColor }}
+                              className={`rounded-pill px-2 py-0.5 text-center font-heading text-[10px] font-bold leading-none text-white ${
+                                stale ? "schedule-striped-warn-pill text-ink shadow-sm ring-1 ring-black/10" : "shadow-sm ring-1 ring-black/10"
+                              }`}
+                              style={stale ? undefined : { backgroundColor: colColor }}
                             >
                               {String(primary.emp_name ?? "—")}
                               {extra > 0 ? ` +${extra}` : ""}
                             </div>
-                          ) : (
+                          ) : sn != null ? (
                             <div className="text-xs text-muted">ריק</div>
+                          ) : (
+                            <div className="schedule-striped-warn-pill rounded-pill px-2 py-0.5 text-center text-[10px] font-semibold leading-none text-ink shadow-sm ring-1 ring-black/10">
+                              ללא סלוט
+                            </div>
                           )}
                         </button>
                       );
@@ -188,16 +217,14 @@ export function FlightBoardView() {
         </div>
       )}
 
-      {modal && (
+      {modal && modal.mode === "create" && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-ink/25 p-4 backdrop-blur-[2px]"
           role="dialog"
         >
           <div className="w-full max-w-md rounded-card border border-line bg-surface shadow-airy">
             <div className="flex items-center justify-between border-b border-line px-4 py-3">
-              <h3 className="font-heading text-lg font-bold text-ink">
-                {modal.mode === "create" ? "משמרת חדשה" : "עריכת משמרת"}
-              </h3>
+              <h3 className="font-heading text-lg font-bold text-ink">משמרת חדשה</h3>
               <button
                 type="button"
                 className="rounded-pill px-2 text-muted hover:bg-background"
@@ -207,6 +234,7 @@ export function FlightBoardView() {
               </button>
             </div>
             <div className="space-y-3 px-4 py-4">
+              <p className="text-sm text-muted">שעת סלוט: {modal.hourLabel}</p>
               <div className="flex flex-col gap-1">
                 <label className="text-sm font-semibold text-ink">מפעיל</label>
                 <select
@@ -226,26 +254,6 @@ export function FlightBoardView() {
                   ))}
                 </select>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="flex flex-col gap-1">
-                  <label className="text-sm font-semibold text-ink">התחלה</label>
-                  <input
-                    type="time"
-                    dir="ltr"
-                    value={formatTimeForInput(modal.start)}
-                    onChange={(e) => setModal({ ...modal, start: e.target.value })}
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-sm font-semibold text-ink">סיום</label>
-                  <input
-                    type="time"
-                    dir="ltr"
-                    value={formatTimeForInput(modal.end)}
-                    onChange={(e) => setModal({ ...modal, end: e.target.value })}
-                  />
-                </div>
-              </div>
             </div>
             <div className="flex flex-wrap justify-end gap-2 border-t border-line px-4 py-3">
               <button
@@ -255,22 +263,68 @@ export function FlightBoardView() {
               >
                 ביטול
               </button>
-              {modal.mode === "edit" && modal.shiftId != null && (
-                <button
-                  type="button"
-                  className="rounded-pill bg-peach-3 px-4 py-2 text-sm font-bold text-white"
-                  onClick={() => deleteMut.mutate(modal.shiftId!)}
-                >
-                  מחק
-                </button>
-              )}
               <button
                 type="button"
                 className="rounded-pill bg-primary px-4 py-2 text-sm font-bold text-white"
-                onClick={() => saveMut.mutate()}
-                disabled={saveMut.isPending}
+                disabled={createMut.isPending || modal.employee_id === ""}
+                onClick={() => {
+                  if (modal.employee_id === "") return;
+                  createMut.mutate({
+                    shift_window_id: modal.shift_window_id,
+                    syllabus_num: modal.syllabus_num,
+                    employee_id: modal.employee_id,
+                  });
+                }}
               >
                 שמור
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {modal && modal.mode === "assigned" && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/25 p-4 backdrop-blur-[2px]"
+          role="dialog"
+        >
+          <div className="w-full max-w-md rounded-card border border-line bg-surface shadow-airy">
+            <div className="flex items-center justify-between border-b border-line px-4 py-3">
+              <h3 className="font-heading text-lg font-bold text-ink">משמרת</h3>
+              <button
+                type="button"
+                className="rounded-pill px-2 text-muted hover:bg-background"
+                onClick={() => setModal(null)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="space-y-3 px-4 py-4">
+              <p className="text-sm text-ink">
+                <span className="font-semibold">מפעיל: </span>
+                {modal.empName}
+              </p>
+              {!modal.upToDate ? (
+                <p className="text-xs text-muted">
+                  המשמרת אינה מעודכנת לסילבוס הנוכחי; מומלץ למחוק וליצור מחדש.
+                </p>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 border-t border-line px-4 py-3">
+              <button
+                type="button"
+                className="rounded-pill border border-line px-4 py-2 text-sm"
+                onClick={() => setModal(null)}
+              >
+                סגור
+              </button>
+              <button
+                type="button"
+                className="rounded-pill bg-peach-3 px-4 py-2 text-sm font-bold text-white"
+                disabled={deleteMut.isPending}
+                onClick={() => deleteMut.mutate(modal.shiftId)}
+              >
+                מחק משמרת
               </button>
             </div>
           </div>

@@ -1,5 +1,6 @@
 use crate::db::AppState;
-use crate::domain::rules::{check_shift_violations, ensure_shift_within_type_coverage};
+use crate::domain::rules::check_shift_violations;
+use crate::domain::syllabus::shift_row_from_syllabus_num;
 use crate::error::AppError;
 use crate::json_util::sqlite_row_to_object;
 use chrono::NaiveDate;
@@ -11,18 +12,15 @@ use tauri::State;
 #[derive(Debug, Deserialize)]
 pub struct ShiftCreate {
     pub shift_date: String,
-    pub shift_type_id: i64,
-    pub start_time: String,
-    pub end_time: String,
+    pub shift_window_id: i64,
+    pub syllabus_num: i64,
     pub employee_id: Option<i64>,
 }
 
-/// Partial update. `employee_id`: omitted = no change, number = set, JSON `null` = clear assignment.
-#[derive(Debug, Deserialize, Default)]
-pub struct ShiftUpdate {
-    pub employee_id: Option<Value>,
-    pub start_time: Option<String>,
-    pub end_time: Option<String>,
+#[derive(Debug, Deserialize)]
+pub struct ReassignShiftEmployee {
+    pub shift_id: i64,
+    pub employee_id: i64,
 }
 
 #[tauri::command]
@@ -31,11 +29,12 @@ pub fn get_shifts(state: State<'_, AppState>, week_start: String) -> Result<Vec<
     state
         .with_db(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT s.*, st.name as type_name, st.color as type_color,
-                        st.duration_minutes, st.prep_minutes, st.recovery_minutes,
+                "SELECT s.*, w.name as type_name, w.color as type_color,
+                        sp.duration_minutes, sp.prep_minutes, sp.recovery_minutes,
                         e.name as emp_name, r.name as role_name, r.color as role_color
                  FROM shifts s
-                 JOIN shift_types st ON s.shift_type_id = st.id
+                 JOIN shift_windows w ON s.shift_window_id = w.id
+                 JOIN syllabus_presets sp ON s.syllabus_preset_id = sp.id
                  LEFT JOIN employees e ON s.employee_id = e.id
                  LEFT JOIN roles r ON e.role_id = r.id
                  WHERE s.shift_date BETWEEN ? AND ?
@@ -53,22 +52,6 @@ pub fn get_shifts(state: State<'_, AppState>, week_start: String) -> Result<Vec<
         .map_err(|e| e.to_string())
 }
 
-fn validate_shift_against_type(
-    conn: &rusqlite::Connection,
-    shift_type_id: i64,
-    shift_date: &str,
-    start_time: &str,
-    end_time: &str,
-) -> Result<(), AppError> {
-    let (cs, ce): (String, String) = conn.query_row(
-        "SELECT coverage_start, coverage_end FROM shift_types WHERE id = ?",
-        [shift_type_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    ensure_shift_within_type_coverage(&cs, &ce, shift_date, start_time, end_time)
-        .map_err(AppError::msg)
-}
-
 pub(crate) fn parse_week_end(week_start: &str) -> Result<String, AppError> {
     let dt = NaiveDate::parse_from_str(week_start, "%Y-%m-%d")
         .map_err(|_| AppError::msg("פורמט תאריך שגוי - השתמש ב-YYYY-MM-DD"))?;
@@ -77,26 +60,47 @@ pub(crate) fn parse_week_end(week_start: &str) -> Result<String, AppError> {
         .to_string())
 }
 
+fn ensure_employee_exists(conn: &rusqlite::Connection, employee_id: Option<i64>) -> Result<(), String> {
+    let Some(eid) = employee_id else {
+        return Ok(());
+    };
+    if eid <= 0 {
+        return Err("מזהה מפעיל לא תקין".to_string());
+    }
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM employees WHERE id = ?", [eid], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("מפעיל לא נמצא במסד הנתונים".to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn create_shift(state: State<'_, AppState>, payload: ShiftCreate) -> Result<Value, String> {
     state
         .with_db(|conn| {
-            validate_shift_against_type(
+            let (st, et, pid, ps, re) = shift_row_from_syllabus_num(
                 conn,
-                payload.shift_type_id,
+                payload.shift_window_id,
                 &payload.shift_date,
-                &payload.start_time,
-                &payload.end_time,
-            )?;
+                payload.syllabus_num,
+            )
+            .map_err(AppError::msg)?;
+            ensure_employee_exists(conn, payload.employee_id).map_err(AppError::msg)?;
             conn.execute(
-                "INSERT INTO shifts (shift_date, shift_type_id, start_time, end_time, employee_id)
-                 VALUES (?,?,?,?,?)",
+                "INSERT INTO shifts (shift_date, shift_window_id, start_time, end_time, syllabus_preset_id, prep_start, rest_end, employee_id, up_to_date, syllabus_num)
+                 VALUES (?,?,?,?,?,?,?,?,1,?)",
                 params![
                     payload.shift_date,
-                    payload.shift_type_id,
-                    payload.start_time,
-                    payload.end_time,
+                    payload.shift_window_id,
+                    st,
+                    et,
+                    pid,
+                    ps,
+                    re,
                     payload.employee_id,
+                    payload.syllabus_num,
                 ],
             )?;
             let new_id = conn.last_insert_rowid();
@@ -112,78 +116,81 @@ pub fn create_shift(state: State<'_, AppState>, payload: ShiftCreate) -> Result<
 }
 
 #[tauri::command]
-pub fn update_shift(
+pub fn reassign_shift_employee(
     state: State<'_, AppState>,
-    shift_id: i64,
-    payload: ShiftUpdate,
+    payload: ReassignShiftEmployee,
 ) -> Result<Value, String> {
     state
-        .with_db(|conn| {
-            let (stid, sd, mut st, mut et, existing_emp): (i64, String, String, String, Option<i64>) =
-                match conn.query_row(
-                    "SELECT shift_type_id, shift_date, start_time, end_time, employee_id FROM shifts WHERE id = ?",
-                    [shift_id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-                ) {
-                    Ok(v) => v,
-                    Err(rusqlite::Error::QueryReturnedNoRows) => {
-                        return Err(AppError::msg("משמרת לא נמצאה"));
-                    }
-                    Err(e) => return Err(AppError::from(e)),
-                };
+        .with_db_mut(|conn| {
+            let (shift_date, wid, syllabus_num, old_emp): (String, i64, Option<i64>, Option<i64>) =
+                conn.query_row(
+                    "SELECT shift_date, shift_window_id, syllabus_num, employee_id FROM shifts WHERE id = ?",
+                    [payload.shift_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .map_err(|_| AppError::msg("המשמרת לא נמצאה"))?;
 
-            if let Some(ref s) = payload.start_time {
-                st.clone_from(s);
-            }
-            if let Some(ref e) = payload.end_time {
-                et.clone_from(e);
-            }
-            validate_shift_against_type(conn, stid, &sd, &st, &et)?;
-
-            let mut emp_after = existing_emp;
-
-            if let Some(ref ev) = payload.employee_id {
-                match ev {
-                    Value::Null => {
-                        conn.execute(
-                            "UPDATE shifts SET employee_id = NULL WHERE id = ?",
-                            [shift_id],
-                        )?;
-                        emp_after = None;
-                    }
-                    Value::Number(n) => {
-                        let eid = n.as_i64().ok_or_else(|| AppError::msg("employee_id לא תקין"))?;
-                        conn.execute(
-                            "UPDATE shifts SET employee_id = ? WHERE id = ?",
-                            params![eid, shift_id],
-                        )?;
-                        emp_after = Some(eid);
-                    }
-                    _ => return Err(AppError::msg("employee_id לא תקין")),
-                }
+            let Some(old) = old_emp else {
+                return Err(AppError::msg("לא ניתן להעביר משמרת ללא מפעיל"));
+            };
+            let Some(sn) = syllabus_num else {
+                return Err(AppError::msg(
+                    "לא ניתן להעביר משמרת זו — חסר מספר סילבוס במסד (נסה ליצור משמרת חדשה)",
+                ));
+            };
+            if old == payload.employee_id {
+                return Err(AppError::msg("המפעיל כבר משויך למשמרת זו"));
             }
 
-            if let Some(ref s) = payload.start_time {
-                conn.execute(
-                    "UPDATE shifts SET start_time = ? WHERE id = ?",
-                    params![s, shift_id],
-                )?;
+            ensure_employee_exists(conn, Some(payload.employee_id)).map_err(AppError::msg)?;
+
+            let dup: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM shifts WHERE shift_date = ?1 AND shift_window_id = ?2 AND syllabus_num = ?3 AND employee_id = ?4 AND id != ?5",
+                    params![
+                        &shift_date,
+                        wid,
+                        sn,
+                        payload.employee_id,
+                        payload.shift_id
+                    ],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            if dup > 0 {
+                return Err(AppError::msg(
+                    "למפעיל היעד כבר יש משמרת באותו חלון ובאותו מקום סילבוס",
+                ));
             }
-            if let Some(ref e) = payload.end_time {
-                conn.execute(
-                    "UPDATE shifts SET end_time = ? WHERE id = ?",
-                    params![e, shift_id],
-                )?;
-            }
+
+            let (st, et, pid, ps, re) = shift_row_from_syllabus_num(conn, wid, &shift_date, sn)
+                .map_err(AppError::msg)?;
+
+            let tx = conn.transaction().map_err(AppError::from)?;
+            tx.execute("DELETE FROM shifts WHERE id = ?", [payload.shift_id])?;
+            tx.execute(
+                "INSERT INTO shifts (shift_date, shift_window_id, start_time, end_time, syllabus_preset_id, prep_start, rest_end, employee_id, up_to_date, syllabus_num)
+                 VALUES (?,?,?,?,?,?,?,?,1,?)",
+                params![
+                    shift_date,
+                    wid,
+                    st,
+                    et,
+                    pid,
+                    ps,
+                    re,
+                    payload.employee_id,
+                    sn,
+                ],
+            )?;
+            let new_id = tx.last_insert_rowid();
+            tx.commit().map_err(AppError::from)?;
 
             let mut violations = Vec::new();
-            if emp_after.is_some() {
-                for v in check_shift_violations(conn, shift_id).map_err(AppError::from)? {
-                    violations.push(v.to_json());
-                }
+            for v in check_shift_violations(conn, new_id).map_err(AppError::from)? {
+                violations.push(v.to_json());
             }
-
-            Ok(json!({ "ok": true, "violations": violations }))
+            Ok(json!({ "id": new_id, "violations": violations }))
         })
         .map_err(|e| e.to_string())
 }

@@ -107,7 +107,6 @@ CREATE TABLE IF NOT EXISTS remote_registrations (
     FOREIGN KEY (employee_id) REFERENCES employees(id)
 );
 
--- Replaces browser localStorage for flight board / UI prefs
 CREATE TABLE IF NOT EXISTS ui_kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
