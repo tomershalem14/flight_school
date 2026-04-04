@@ -92,7 +92,61 @@ fn apply_schema(conn: &Connection) -> AppResult<()> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (5)", [])?;
     }
 
+    let v6: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 6",
+        [],
+        |r| r.get(0),
+    )?;
+    if v6 == 0 {
+        migrate_roles_role_level_v6(conn)?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (6)", [])?;
+    }
+
+    let v7: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 7",
+        [],
+        |r| r.get(0),
+    )?;
+    if v7 == 0 {
+        migrate_employees_affiliation_leader_v7(conn)?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (7)", [])?;
+    }
+
     Ok(())
+}
+
+/// Old DBs: add `role_level` / `special_list`, backfill sort order, drop legacy flags.
+/// Fresh DBs from updated `001_initial.sql` already have the new columns — no-op.
+fn migrate_roles_role_level_v6(conn: &Connection) -> AppResult<()> {
+    let cols = roles_column_names(conn)?;
+    if cols.iter().any(|c| c == "role_level") {
+        return Ok(());
+    }
+    conn.execute(
+        "ALTER TABLE roles ADD COLUMN role_level INTEGER NOT NULL DEFAULT 0",
+        [],
+    )?;
+    conn.execute(
+        "ALTER TABLE roles ADD COLUMN special_list TEXT NOT NULL DEFAULT ''",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE roles SET role_level = 10 WHERE is_management = 1",
+        [],
+    )?;
+    conn.execute("ALTER TABLE roles DROP COLUMN can_fly", [])?;
+    conn.execute("ALTER TABLE roles DROP COLUMN is_management", [])?;
+    Ok(())
+}
+
+fn roles_column_names(conn: &Connection) -> AppResult<Vec<String>> {
+    let mut stmt = conn.prepare("PRAGMA table_info(roles)")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
 }
 
 fn employees_column_names(conn: &Connection) -> AppResult<Vec<String>> {
@@ -103,6 +157,19 @@ fn employees_column_names(conn: &Connection) -> AppResult<Vec<String>> {
         out.push(r?);
     }
     Ok(out)
+}
+
+/// Add `affiliation_leader`; fresh `001_initial` already includes it.
+fn migrate_employees_affiliation_leader_v7(conn: &Connection) -> AppResult<()> {
+    let cols = employees_column_names(conn)?;
+    if cols.iter().any(|c| c == "affiliation_leader") {
+        return Ok(());
+    }
+    conn.execute(
+        "ALTER TABLE employees ADD COLUMN affiliation_leader INTEGER NOT NULL DEFAULT 0",
+        [],
+    )?;
+    Ok(())
 }
 
 /// Replace `always_present` with `employee_type` on databases created before 001 was updated.

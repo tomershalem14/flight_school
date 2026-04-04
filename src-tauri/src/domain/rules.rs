@@ -104,10 +104,9 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
                 st.name AS type_name,
                 st.coverage_start AS type_coverage_start,
                 st.coverage_end AS type_coverage_end,
-                st.duration_minutes, st.prep_minutes,
-                st.recovery_minutes, st.allow_fly, st.max_concurrent_management,
+                st.prep_minutes, st.recovery_minutes,
                 st.min_role_id, e.name AS emp_name, e.role_id,
-                r.is_management, r.can_fly, r.name AS role_name
+                r.name AS role_name
          FROM shifts s
          JOIN shift_types st ON s.shift_type_id = st.id
          LEFT JOIN employees e ON s.employee_id = e.id
@@ -161,17 +160,6 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
                 shift_id: Some(shift_id),
             });
         }
-    }
-
-    // Rule 2: management cannot fly shift
-    if shift.is_management == Some(1) && shift.allow_fly == 1 {
-        let en = shift.emp_name.as_deref().unwrap_or("");
-        violations.push(Violation {
-            rule: "management_no_fly".into(),
-            severity: "error".into(),
-            message: format!("עובד ניהולי '{en}' לא יכול להיות מאויש במשמרת טיסה"),
-            shift_id: Some(shift_id),
-        });
     }
 
     // Rule 3: prep/recovery overlap
@@ -278,30 +266,6 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
         }
     }
 
-    // Rule 6: management overlap
-    if shift.is_management == Some(1) {
-        let cnt: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM shifts s
-             JOIN employees e ON s.employee_id = e.id
-             JOIN roles r ON e.role_id = r.id
-             WHERE s.shift_date = ? AND r.is_management = 1
-               AND s.id != ?
-               AND s.start_time < ? AND s.end_time > ?",
-            params![shift_date, shift_id, shift.end_time, shift.start_time],
-            |r| r.get(0),
-        )?;
-        if cnt >= 1 {
-            violations.push(Violation {
-                rule: "management_overlap".into(),
-                severity: "error".into(),
-                message: format!(
-                    "'{en}' - שני אנשי ניהול ביחד (חוץ מניהולי שמורשה לשבת)"
-                ),
-                shift_id: Some(shift_id),
-            });
-        }
-    }
-
     // Rule 7: constraints
     let mut cstmt = conn.prepare(
         "SELECT constraint_type, reason FROM constraints
@@ -341,11 +305,9 @@ struct ShiftRow {
     type_coverage_end: String,
     prep_minutes: i32,
     recovery_minutes: i32,
-    allow_fly: i32,
     min_role_id: Option<i64>,
     emp_name: Option<String>,
     role_id: Option<i64>,
-    is_management: Option<i32>,
     role_name: Option<String>,
 }
 
@@ -361,11 +323,9 @@ impl ShiftRow {
             type_coverage_end: r.get("type_coverage_end")?,
             prep_minutes: r.get("prep_minutes")?,
             recovery_minutes: r.get("recovery_minutes")?,
-            allow_fly: r.get("allow_fly")?,
             min_role_id: r.get("min_role_id")?,
             emp_name: r.get("emp_name")?,
             role_id: r.get("role_id")?,
-            is_management: r.get("is_management")?,
             role_name: r.get("role_name")?,
         })
     }

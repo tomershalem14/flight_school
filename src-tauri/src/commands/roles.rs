@@ -9,16 +9,12 @@ use tauri::State;
 #[derive(Debug, Deserialize)]
 pub struct RoleCreate {
     pub name: String,
-    #[serde(default = "default_true")]
-    pub can_fly: bool,
     #[serde(default)]
-    pub is_management: bool,
+    pub role_level: i64,
+    #[serde(default)]
+    pub special_list: String,
     #[serde(default = "default_role_color")]
     pub color: String,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 fn default_role_color() -> String {
@@ -28,8 +24,8 @@ fn default_role_color() -> String {
 #[derive(Debug, Deserialize, Default)]
 pub struct RoleUpdate {
     pub name: Option<String>,
-    pub can_fly: Option<bool>,
-    pub is_management: Option<bool>,
+    pub role_level: Option<i64>,
+    pub special_list: Option<String>,
     pub color: Option<String>,
 }
 
@@ -37,7 +33,8 @@ pub struct RoleUpdate {
 pub fn get_roles(state: State<'_, AppState>) -> Result<Vec<Value>, String> {
     state
         .with_db(|conn| {
-            let mut stmt = conn.prepare("SELECT * FROM roles ORDER BY id")?;
+            let mut stmt =
+                conn.prepare("SELECT * FROM roles ORDER BY role_level ASC, id ASC")?;
             let rows = stmt.query_map([], |row| sqlite_row_to_object(row))?;
             let mut out = Vec::new();
             for r in rows {
@@ -53,11 +50,11 @@ pub fn create_role(state: State<'_, AppState>, payload: RoleCreate) -> Result<Va
     state
         .with_db(|conn| {
             conn.execute(
-                "INSERT INTO roles (name, can_fly, is_management, color) VALUES (?,?,?,?)",
+                "INSERT INTO roles (name, role_level, special_list, color) VALUES (?,?,?,?)",
                 params![
                     payload.name,
-                    payload.can_fly as i32,
-                    payload.is_management as i32,
+                    payload.role_level,
+                    payload.special_list,
                     payload.color
                 ],
             )?;
@@ -65,8 +62,8 @@ pub fn create_role(state: State<'_, AppState>, payload: RoleCreate) -> Result<Va
             Ok(json!({
                 "id": id,
                 "name": payload.name,
-                "can_fly": payload.can_fly,
-                "is_management": payload.is_management,
+                "role_level": payload.role_level,
+                "special_list": payload.special_list,
                 "color": payload.color,
             }))
         })
@@ -96,16 +93,16 @@ pub fn update_role(
                     params![n, role_id],
                 )?;
             }
-            if let Some(b) = payload.can_fly {
+            if let Some(l) = payload.role_level {
                 conn.execute(
-                    "UPDATE roles SET can_fly = ? WHERE id = ?",
-                    params![b as i32, role_id],
+                    "UPDATE roles SET role_level = ? WHERE id = ?",
+                    params![l, role_id],
                 )?;
             }
-            if let Some(b) = payload.is_management {
+            if let Some(ref s) = payload.special_list {
                 conn.execute(
-                    "UPDATE roles SET is_management = ? WHERE id = ?",
-                    params![b as i32, role_id],
+                    "UPDATE roles SET special_list = ? WHERE id = ?",
+                    params![s, role_id],
                 )?;
             }
             if let Some(ref c) = payload.color {
@@ -115,6 +112,41 @@ pub fn update_role(
                 )?;
             }
 
+            Ok(json!({"ok": true}))
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_role(state: State<'_, AppState>, role_id: i64) -> Result<Value, String> {
+    state
+        .with_db(|conn| {
+            let total: i64 = conn.query_row("SELECT COUNT(*) FROM roles", [], |r| r.get(0))?;
+            if total <= 1 {
+                return Err(AppError::msg("לא ניתן למחוק את הדרג האחרון"));
+            }
+            let exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM roles WHERE id = ?",
+                [role_id],
+                |r| r.get(0),
+            )?;
+            if exists == 0 {
+                return Err(AppError::msg("דרג לא נמצא"));
+            }
+            let fallback: i64 = conn.query_row(
+                "SELECT id FROM roles WHERE id != ? ORDER BY id LIMIT 1",
+                [role_id],
+                |r| r.get(0),
+            )?;
+            conn.execute(
+                "UPDATE employees SET role_id = ?1 WHERE role_id = ?2",
+                params![fallback, role_id],
+            )?;
+            conn.execute(
+                "UPDATE shift_types SET min_role_id = NULL WHERE min_role_id = ?",
+                [role_id],
+            )?;
+            conn.execute("DELETE FROM roles WHERE id = ?", [role_id])?;
             Ok(json!({"ok": true}))
         })
         .map_err(|e| e.to_string())

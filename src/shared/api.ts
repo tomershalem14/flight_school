@@ -22,6 +22,10 @@ export async function updateRole(
   return invoke("update_role", { roleId: role_id, payload });
 }
 
+export async function deleteRole(role_id: number): Promise<JsonObject> {
+  return invoke("delete_role", { roleId: role_id });
+}
+
 export async function getEmployees(active_only = true): Promise<JsonObject[]> {
   return invoke("get_employees", { activeOnly: active_only });
 }

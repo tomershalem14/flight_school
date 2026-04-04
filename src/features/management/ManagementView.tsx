@@ -2,12 +2,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import * as api from "../../shared/api";
 import type { JsonObject } from "../../shared/api";
+import { DEFAULT_SHIFT_TYPE_PASTEL_HEX } from "../../shared/pastelPalette";
+import { PastelSwatchGridDropdown } from "../../shared/PastelSwatchGridDropdown";
 
 const PAGE_SIZE = 10;
 /** Narrow column for two icon buttons (edit + deactivate). */
 const ACTIONS_COL_CSS = "5.5rem";
 const DATA_COL_CSS = `calc((100% - ${ACTIONS_COL_CSS}) / 5)`;
-
 type ManagementTab = "employees" | "roles";
 
 type EmployeeKind = "admin" | "regular" | "extra" | "reserve";
@@ -36,6 +37,14 @@ function parseEmployeeKind(v: unknown): EmployeeKind {
   return "regular";
 }
 
+function rowIsAffiliationLeader(e: JsonObject): boolean {
+  const v = e.affiliation_leader;
+  if (v === true) return true;
+  if (typeof v === "number") return v !== 0;
+  if (typeof v === "string") return v !== "0" && v !== "";
+  return false;
+}
+
 function employeeRowToModal(e: JsonObject): JsonObject {
   const kind = parseEmployeeKind(e.employee_type);
   return {
@@ -46,6 +55,7 @@ function employeeRowToModal(e: JsonObject): JsonObject {
     employee_type: kind,
     affiliation:
       kind === "regular" && e.affiliation != null ? String(e.affiliation) : "",
+    affiliation_leader: rowIsAffiliationLeader(e),
     notes: e.notes != null ? String(e.notes) : "",
   };
 }
@@ -58,6 +68,28 @@ function rowIsActive(e: JsonObject): boolean {
   return false;
 }
 
+const DEFAULT_ROLE_HEX = "#3B82F6";
+
+function RoleColorDot({ color }: { color: string }) {
+  const c = color.trim() || DEFAULT_ROLE_HEX;
+  return (
+    <span
+      className="size-2.5 shrink-0 rounded-full border border-line shadow-sm ring-1 ring-black/10"
+      style={{ backgroundColor: c }}
+      aria-hidden
+    />
+  );
+}
+
+function nameCellWithRoleDot(name: string, roleColor: string) {
+  return (
+    <span className="inline-flex max-w-full items-center justify-center gap-2">
+      <RoleColorDot color={roleColor} />
+      <span className="min-w-0 truncate">{name}</span>
+    </span>
+  );
+}
+
 export function ManagementView() {
   const qc = useQueryClient();
   const [tab, setTab] = useState<ManagementTab>("employees");
@@ -66,6 +98,7 @@ export function ManagementView() {
   const [page, setPage] = useState(1);
   const [empModal, setEmpModal] = useState<JsonObject | null>(null);
   const [roleDraft, setRoleDraft] = useState<JsonObject | null>(null);
+  const [roleSwatchOpen, setRoleSwatchOpen] = useState(false);
 
   const { data: employeesRaw = [] } = useQuery({
     queryKey: ["employees", "management"],
@@ -113,6 +146,10 @@ export function ManagementView() {
     if (page !== safePage) setPage(safePage);
   }, [page, safePage]);
 
+  useEffect(() => {
+    if (!roleDraft) setRoleSwatchOpen(false);
+  }, [roleDraft]);
+
   const saveEmpMut = useMutation({
     mutationFn: async (m: JsonObject) => {
       const rawId = m.id;
@@ -124,15 +161,18 @@ export function ManagementView() {
       if (!name) throw new Error("נא להזין שם");
       if (!Number.isFinite(roleId)) throw new Error("נא לבחור דרג");
       const employee_type = parseEmployeeKind(m.employee_type);
+      const affTrim =
+        employee_type === "regular" ? String(m.affiliation ?? "").trim() : "";
       const payload = {
         name,
         phone: phoneTrim === "" ? null : phoneTrim,
         role_id: roleId,
         employee_type,
-        affiliation:
-          employee_type === "regular"
-            ? String(m.affiliation ?? "").trim() || null
-            : null,
+        affiliation: employee_type === "regular" ? affTrim || null : null,
+        affiliation_leader:
+          employee_type === "regular" &&
+          affTrim !== "" &&
+          Boolean(m.affiliation_leader),
         notes: String(m.notes ?? "").trim() || null,
       };
       if (id > 0) return api.updateEmployee(id, payload);
@@ -142,6 +182,7 @@ export function ManagementView() {
         role_id: payload.role_id,
         employee_type: payload.employee_type,
         affiliation: payload.affiliation,
+        affiliation_leader: payload.affiliation_leader,
         notes: payload.notes,
       });
     },
@@ -171,23 +212,32 @@ export function ManagementView() {
   const saveRoleMut = useMutation({
     mutationFn: async () => {
       if (!roleDraft) return;
+      const roleLevel = Number(roleDraft.role_level ?? 0);
+      const level = Number.isFinite(roleLevel) ? roleLevel : 0;
       if (!roleDraft.id) {
         return api.createRole({
-          name: roleDraft.name,
-          can_fly: Boolean(roleDraft.can_fly ?? true),
-          is_management: Boolean(roleDraft.is_management ?? false),
-          color: roleDraft.color ?? "#3B82F6",
+          name: String(roleDraft.name ?? ""),
+          role_level: level,
+          color: String(roleDraft.color ?? "#3B82F6"),
         });
       }
       return api.updateRole(Number(roleDraft.id), {
-        name: roleDraft.name,
-        can_fly: Boolean(roleDraft.can_fly),
-        is_management: Boolean(roleDraft.is_management),
-        color: roleDraft.color,
+        name: String(roleDraft.name ?? ""),
+        role_level: level,
+        color: String(roleDraft.color ?? "#3B82F6"),
       });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["roles"] });
+      setRoleDraft(null);
+    },
+  });
+
+  const deleteRoleMut = useMutation({
+    mutationFn: (rid: number) => api.deleteRole(rid),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["roles"] });
+      qc.invalidateQueries({ queryKey: ["employees"] });
       setRoleDraft(null);
     },
   });
@@ -199,6 +249,7 @@ export function ManagementView() {
       role_id: roles[0] ? Number(roles[0].id) : 1,
       employee_type: "regular" satisfies EmployeeKind,
       affiliation: "",
+      affiliation_leader: false,
       notes: "",
     });
   };
@@ -267,8 +318,7 @@ export function ManagementView() {
                 onClick={() =>
                   setRoleDraft({
                     name: "",
-                    can_fly: true,
-                    is_management: false,
+                    role_level: 0,
                     color: "#3B82F6",
                   })
                 }
@@ -291,7 +341,6 @@ export function ManagementView() {
                 <input
                   id="mgmt-emp-search"
                   type="search"
-                  className="w-full border-0 bg-transparent py-2.5 pe-10 ps-4 text-sm text-ink placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary/20"
                   placeholder="חיפוש מפעילים…"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
@@ -363,14 +412,27 @@ export function ManagementView() {
                               : "bg-muted/15 hover:bg-muted/25"
                           }`}
                         >
-                          <td className="min-w-0 truncate px-4 py-3 text-ink">{name}</td>
+                          <td className="min-w-0 px-4 py-3 text-ink">
+                            {nameCellWithRoleDot(
+                              name,
+                              String(e.role_color ?? DEFAULT_ROLE_HEX),
+                            )}
+                          </td>
                           <td className="min-w-0 truncate px-4 py-3 text-ink">
                             {String(e.role_name ?? "")}
                           </td>
                           <td className="min-w-0 truncate px-4 py-3 font-mono text-ink" dir="ltr">
                             {String(e.phone ?? "") || "—"}
                           </td>
-                          <td className="min-w-0 truncate px-4 py-3 text-ink">
+                          <td
+                            className={`min-w-0 truncate px-4 py-3 text-ink ${
+                              kind === "regular" &&
+                              aff &&
+                              rowIsAffiliationLeader(e)
+                                ? "font-bold"
+                                : ""
+                            }`}
+                          >
                             {kind === "regular" ? aff || "—" : "—"}
                           </td>
                           <td className="min-w-0 truncate px-4 py-3 text-ink">
@@ -485,22 +547,25 @@ export function ManagementView() {
         {tab === "roles" && (
           <div className="overflow-hidden rounded-card border border-line bg-surface shadow-airy">
             <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-center text-sm">
+              <table className="table-fixed w-full border-collapse text-center text-sm">
+                <colgroup>
+                  <col style={{ width: DATA_COL_CSS }} />
+                  <col style={{ width: DATA_COL_CSS }} />
+                  <col style={{ width: DATA_COL_CSS }} />
+                  <col style={{ width: DATA_COL_CSS }} />
+                  <col style={{ width: DATA_COL_CSS }} />
+                  <col style={{ width: ACTIONS_COL_CSS }} />
+                </colgroup>
                 <thead>
                   <tr className="border-b border-line bg-background/60">
-                    <th className="px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                    <th className="min-w-0 px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
                       שם
                     </th>
-                    <th className="px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
-                      טיסה
+                    <th className="min-w-0 px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                      רמה
                     </th>
-                    <th className="px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
-                      ניהול
-                    </th>
-                    <th className="px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
-                      צבע
-                    </th>
-                    <th className="px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                    <th colSpan={3} className="min-w-0 px-4 py-3" aria-hidden />
+                    <th className="px-1 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
                       פעולות
                     </th>
                   </tr>
@@ -511,24 +576,62 @@ export function ManagementView() {
                       key={String(r.id)}
                       className="border-b border-line last:border-0 hover:bg-background/40"
                     >
-                      <td className="px-4 py-3 font-medium text-ink">{String(r.name)}</td>
-                      <td className="px-4 py-3 text-ink">{Number(r.can_fly) ? "כן" : "לא"}</td>
-                      <td className="px-4 py-3 text-ink">{Number(r.is_management) ? "כן" : "לא"}</td>
-                      <td className="px-4 py-3">
-                        <span
-                          className="inline-block size-6 rounded-md border border-line shadow-sm"
-                          style={{ backgroundColor: String(r.color) }}
-                          title={String(r.color)}
-                        />
+                      <td className="min-w-0 px-4 py-3 text-ink">
+                        {nameCellWithRoleDot(
+                          String(r.name),
+                          String(r.color ?? DEFAULT_ROLE_HEX),
+                        )}
                       </td>
-                      <td className="px-4 py-3">
-                        <button
-                          type="button"
-                          className="rounded-pill border border-line bg-background px-3 py-1.5 text-xs font-semibold text-ink hover:bg-background/80"
-                          onClick={() => setRoleDraft({ ...r })}
-                        >
-                          ערוך
-                        </button>
+                      <td className="min-w-0 truncate px-4 py-3 text-ink">
+                        {Number(r.role_level ?? 0)}
+                      </td>
+                      <td className="min-w-0 truncate px-4 py-3 text-ink" aria-hidden />
+                      <td className="min-w-0 truncate px-4 py-3 text-ink" aria-hidden />
+                      <td className="min-w-0 truncate px-4 py-3 text-ink" aria-hidden />
+                      <td className="px-1 py-3">
+                        <div className="flex items-center justify-center gap-1">
+                          <button
+                            type="button"
+                            className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border border-line bg-background text-ink hover:bg-background/80"
+                            aria-label="ערוך"
+                            onClick={() => setRoleDraft({ ...r })}
+                          >
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              strokeWidth={1.5}
+                              stroke="currentColor"
+                              className="size-4"
+                              aria-hidden
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125"
+                              />
+                            </svg>
+                          </button>
+                          <button
+                            type="button"
+                            className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border border-line bg-background text-peach-4 hover:bg-peach-1/40"
+                            aria-label="מחק דרג"
+                            disabled={roles.length <= 1 || deleteRoleMut.isPending}
+                            onClick={() => deleteRoleMut.mutate(Number(r.id))}
+                          >
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              strokeWidth={1.5}
+                              stroke="currentColor"
+                              className="size-4"
+                              aria-hidden
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14" />
+                            </svg>
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -609,6 +712,8 @@ export function ManagementView() {
                       ...empModal,
                       employee_type: next,
                       affiliation: next === "regular" ? String(empModal.affiliation ?? "") : "",
+                      affiliation_leader:
+                        next === "regular" ? Boolean(empModal.affiliation_leader) : false,
                     });
                   }}
                 >
@@ -624,13 +729,44 @@ export function ManagementView() {
                   <label className="text-sm font-semibold text-ink" htmlFor="emp-modal-affiliation">
                     שיוך
                   </label>
-                  <input
-                    id="emp-modal-affiliation"
-                    value={String(empModal.affiliation ?? "")}
-                    onChange={(ev) =>
-                      setEmpModal({ ...empModal, affiliation: ev.target.value })
-                    }
-                  />
+                  <div className="flex w-full max-w-none overflow-hidden rounded-pill border border-line bg-surface shadow-sm">
+                    <div className="relative min-w-0 flex-1">
+                      <input
+                        id="emp-modal-affiliation"
+                        type="text"
+                        autoComplete="off"
+                        value={String(empModal.affiliation ?? "")}
+                        onChange={(ev) => {
+                          const v = ev.target.value;
+                          setEmpModal({
+                            ...empModal,
+                            affiliation: v,
+                            affiliation_leader:
+                              v.trim() === "" ? false : Boolean(empModal.affiliation_leader),
+                          });
+                        }}
+                      />
+                    </div>
+                    <label
+                      htmlFor="emp-modal-aff-leader"
+                      className="flex shrink-0 cursor-pointer items-center gap-2 border-s border-line px-3 py-2.5 text-sm text-ink"
+                    >
+                      <input
+                        id="emp-modal-aff-leader"
+                        type="checkbox"
+                        checked={Boolean(empModal.affiliation_leader)}
+                        onChange={(ev) =>
+                          setEmpModal({
+                            ...empModal,
+                            affiliation_leader: ev.target.checked,
+                          })
+                        }
+                        className="size-4 shrink-0 rounded border-line text-primary focus:ring-2 focus:ring-primary/30"
+                        aria-label="מפקד שיוך"
+                      />
+                      מפקד
+                    </label>
+                  </div>
                 </div>
               ) : null}
               <div className="form-row">
@@ -682,13 +818,25 @@ export function ManagementView() {
             aria-labelledby="role-modal-title"
             onClick={(ev) => ev.stopPropagation()}
           >
-            <div className="flex items-center justify-between border-b border-line px-4 py-3">
-              <h2 id="role-modal-title" className="font-heading text-lg font-bold text-ink">
-                {roleDraft.id ? "עריכת דרג" : "דרג חדש"}
-              </h2>
+            <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line px-4 py-3">
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <PastelSwatchGridDropdown
+                  value={String(roleDraft.color ?? DEFAULT_SHIFT_TYPE_PASTEL_HEX)}
+                  onChange={(hex) => setRoleDraft({ ...roleDraft, color: hex })}
+                  open={roleSwatchOpen}
+                  onOpenChange={setRoleSwatchOpen}
+                  trigger="dot"
+                />
+                <h2
+                  id="role-modal-title"
+                  className="min-w-0 font-heading text-lg font-bold text-ink"
+                >
+                  {roleDraft.id ? "עריכת דרג" : "דרג חדש"}
+                </h2>
+              </div>
               <button
                 type="button"
-                className="rounded-pill px-2 text-muted hover:bg-background hover:text-ink"
+                className="shrink-0 rounded-pill px-2 text-muted hover:bg-background hover:text-ink"
                 onClick={() => setRoleDraft(null)}
               >
                 ✕
@@ -703,33 +851,23 @@ export function ManagementView() {
                 />
               </div>
               <div className="form-row">
-                <label className="flex items-center gap-2 text-sm font-semibold text-ink">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(Number(roleDraft.can_fly))}
-                    onChange={(e) => setRoleDraft({ ...roleDraft, can_fly: e.target.checked })}
-                  />
-                  יכול לטוס
-                </label>
-              </div>
-              <div className="form-row">
-                <label className="flex items-center gap-2 text-sm font-semibold text-ink">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(Number(roleDraft.is_management))}
-                    onChange={(e) =>
-                      setRoleDraft({ ...roleDraft, is_management: e.target.checked })
-                    }
-                  />
-                  ניהול
-                </label>
-              </div>
-              <div className="form-row">
-                <label className="text-sm font-semibold text-ink">צבע</label>
+                <label className="text-sm font-semibold text-ink">רמה</label>
                 <input
-                  type="color"
-                  value={String(roleDraft.color ?? "#3B82F6")}
-                  onChange={(e) => setRoleDraft({ ...roleDraft, color: e.target.value })}
+                  type="number"
+                  inputMode="numeric"
+                  className="tabular-nums"
+                  value={
+                    roleDraft.role_level === undefined || roleDraft.role_level === ""
+                      ? ""
+                      : String(roleDraft.role_level)
+                  }
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setRoleDraft({
+                      ...roleDraft,
+                      role_level: v === "" ? "" : Number(v),
+                    });
+                  }}
                 />
               </div>
             </div>

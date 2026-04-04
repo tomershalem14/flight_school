@@ -31,6 +31,33 @@ fn affiliation_for_type(et: &str, affiliation: Option<String>) -> Option<String>
     })
 }
 
+/// Only `regular` with non-empty affiliation may be affiliation leader.
+fn affiliation_leader_for_type(et: &str, affiliation: &Option<String>, leader: bool) -> i32 {
+    if !leader {
+        return 0;
+    }
+    if et != "regular" {
+        return 0;
+    }
+    match affiliation {
+        Some(s) if !s.trim().is_empty() => 1,
+        _ => 0,
+    }
+}
+
+const EMPLOYEES_ORDER_BY: &str = "ORDER BY \
+    CASE e.employee_type \
+        WHEN 'regular' THEN 0 \
+        WHEN 'admin' THEN 1 \
+        WHEN 'extra' THEN 2 \
+        WHEN 'reserve' THEN 3 \
+        ELSE 4 \
+    END, \
+    CASE WHEN COALESCE(TRIM(e.affiliation), '') = '' THEN 0 ELSE 1 END, \
+    COALESCE(NULLIF(TRIM(e.affiliation), ''), '') COLLATE NOCASE, \
+    e.affiliation_leader DESC, \
+    e.name COLLATE NOCASE";
+
 #[derive(Debug, Deserialize)]
 pub struct EmployeeCreate {
     pub name: String,
@@ -39,6 +66,8 @@ pub struct EmployeeCreate {
     #[serde(default = "default_employee_type")]
     pub employee_type: String,
     pub affiliation: Option<String>,
+    #[serde(default)]
+    pub affiliation_leader: bool,
     pub notes: Option<String>,
 }
 
@@ -54,6 +83,8 @@ pub struct EmployeeReplace {
     pub role_id: i64,
     pub employee_type: String,
     pub affiliation: Option<String>,
+    #[serde(default)]
+    pub affiliation_leader: bool,
     pub notes: Option<String>,
 }
 
@@ -63,20 +94,22 @@ pub fn get_employees(state: State<'_, AppState>, active_only: Option<bool>) -> R
     state
         .with_db(|conn| {
             let sql = if active_only {
-                "SELECT e.*, r.name as role_name, r.color as role_color,
-                        r.is_management, r.can_fly
-                 FROM employees e
-                 JOIN roles r ON e.role_id = r.id
-                 WHERE e.is_active = 1
-                 ORDER BY r.id, e.name"
+                format!(
+                    "SELECT e.*, r.name as role_name, r.color as role_color
+                     FROM employees e
+                     JOIN roles r ON e.role_id = r.id
+                     WHERE e.is_active = 1
+                     {EMPLOYEES_ORDER_BY}"
+                )
             } else {
-                "SELECT e.*, r.name as role_name, r.color as role_color,
-                        r.is_management, r.can_fly
-                 FROM employees e
-                 JOIN roles r ON e.role_id = r.id
-                 ORDER BY r.id, e.name"
+                format!(
+                    "SELECT e.*, r.name as role_name, r.color as role_color
+                     FROM employees e
+                     JOIN roles r ON e.role_id = r.id
+                     {EMPLOYEES_ORDER_BY}"
+                )
             };
-            let mut stmt = conn.prepare(sql)?;
+            let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map([], |row| sqlite_row_to_object(row))?;
             let mut out = Vec::new();
             for r in rows {
@@ -93,15 +126,17 @@ pub fn create_employee(state: State<'_, AppState>, payload: EmployeeCreate) -> R
         .with_db(|conn| {
             let et = normalize_employee_type(&payload.employee_type)?;
             let affiliation = affiliation_for_type(et, payload.affiliation);
+            let aff_leader = affiliation_leader_for_type(et, &affiliation, payload.affiliation_leader);
             conn.execute(
-                "INSERT INTO employees (name, phone, role_id, employee_type, affiliation, notes)
-                 VALUES (?,?,?,?,?,?)",
+                "INSERT INTO employees (name, phone, role_id, employee_type, affiliation, affiliation_leader, notes)
+                 VALUES (?,?,?,?,?,?,?)",
                 params![
                     payload.name,
                     payload.phone,
                     payload.role_id,
                     et,
                     affiliation,
+                    aff_leader,
                     payload.notes,
                 ],
             )?;
@@ -113,6 +148,7 @@ pub fn create_employee(state: State<'_, AppState>, payload: EmployeeCreate) -> R
                 "role_id": payload.role_id,
                 "employee_type": et,
                 "affiliation": affiliation,
+                "affiliation_leader": aff_leader,
                 "notes": payload.notes,
             }))
         })
@@ -138,8 +174,9 @@ pub fn update_employee(
 
             let et = normalize_employee_type(&payload.employee_type)?;
             let affiliation = affiliation_for_type(et, payload.affiliation);
+            let aff_leader = affiliation_leader_for_type(et, &affiliation, payload.affiliation_leader);
             conn.execute(
-                "UPDATE employees SET name = ?, phone = ?, role_id = ?, employee_type = ?, affiliation = ?, notes = ?
+                "UPDATE employees SET name = ?, phone = ?, role_id = ?, employee_type = ?, affiliation = ?, affiliation_leader = ?, notes = ?
                  WHERE id = ?",
                 params![
                     payload.name,
@@ -147,6 +184,7 @@ pub fn update_employee(
                     payload.role_id,
                     et,
                     affiliation,
+                    aff_leader,
                     payload.notes,
                     emp_id,
                 ],

@@ -10,16 +10,16 @@ pub fn seed_if_empty(conn: &Connection) -> AppResult<()> {
     }
 
     let default_roles = [
-        ("מדריך", 1i32, 0i32, "#3B82F6"),
-        ("מדריך בכיר", 1, 0, "#8B5CF6"),
-        ("ניהול", 0, 1, "#EF4444"),
-        ("אחראי יום", 0, 1, "#F59E0B"),
+        ("מדריך", 0i64, "", "#3B82F6"),
+        ("מדריך בכיר", 1, "", "#8B5CF6"),
+        ("ניהול", 10, "", "#EF4444"),
+        ("אחראי יום", 11, "", "#F59E0B"),
     ];
     let mut stmt = conn.prepare(
-        "INSERT INTO roles (name, can_fly, is_management, color) VALUES (?,?,?,?)",
+        "INSERT INTO roles (name, role_level, special_list, color) VALUES (?,?,?,?)",
     )?;
-    for (name, cf, mg, col) in default_roles {
-        stmt.execute(params![name, cf, mg, col])?;
+    for (name, level, specials, col) in default_roles {
+        stmt.execute(params![name, level, specials, col])?;
     }
 
     let default_shifts = [

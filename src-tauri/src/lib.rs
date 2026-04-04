@@ -30,6 +30,7 @@ pub fn run() {
             commands::roles::get_roles,
             commands::roles::create_role,
             commands::roles::update_role,
+            commands::roles::delete_role,
             commands::employees::get_employees,
             commands::employees::create_employee,
             commands::employees::update_employee,

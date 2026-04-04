@@ -4,8 +4,8 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS roles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
-    can_fly INTEGER DEFAULT 1,
-    is_management INTEGER DEFAULT 0,
+    role_level INTEGER NOT NULL DEFAULT 0,
+    special_list TEXT NOT NULL DEFAULT '',
     color TEXT DEFAULT '#3B82F6'
 );
 
@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS employees (
     is_active INTEGER DEFAULT 1,
     employee_type TEXT NOT NULL DEFAULT 'regular' CHECK (employee_type IN ('admin','regular','extra','reserve')),
     affiliation TEXT,
+    affiliation_leader INTEGER NOT NULL DEFAULT 0,
     notes TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (role_id) REFERENCES roles(id)

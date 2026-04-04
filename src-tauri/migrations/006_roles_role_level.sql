@@ -1,0 +1,4 @@
+-- Migration v6 (roles: role_level, special_list; drop can_fly, is_management).
+-- Applied by `src-tauri/src/db/mod.rs` — `migrate_roles_role_level_v6()`.
+-- That function is idempotent: fresh DBs created from updated `001_initial.sql`
+-- already have `role_level` / `special_list`, so the ALTER steps are skipped.
