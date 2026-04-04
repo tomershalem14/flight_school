@@ -437,10 +437,10 @@ export function ManagementView() {
                     name: "",
                     min_role_id: "",
                     duration_minutes: 60,
-                    prep_minutes: 0,
-                    recovery_minutes: 0,
-                    max_in_row: 1,
-                    joint_prep: false,
+                    prep_minutes: 30,
+                    recovery_minutes: 45,
+                    max_in_row: 2,
+                    joint_prep: true,
                     joint_recovery: false,
                     notes: "",
                   })
@@ -1133,15 +1133,15 @@ export function ManagementView() {
                 ✕
               </button>
             </div>
-            <div className="max-h-[min(70vh,520px)] space-y-3 overflow-y-auto px-4 py-4">
-              <div className="form-row">
+            <div className="flex max-h-[min(70vh,480px)] flex-col gap-3 overflow-y-auto px-4 py-4">
+              <div className="form-row mb-0">
                 <label className="text-sm font-semibold text-ink">שם</label>
                 <input
                   value={String(presetDraft.name ?? "")}
                   onChange={(e) => setPresetDraft({ ...presetDraft, name: e.target.value })}
                 />
               </div>
-              <div className="form-row">
+              <div className="form-row mb-0">
                 <label className="text-sm font-semibold text-ink">דרג מינימלי</label>
                 <select
                   value={
@@ -1165,7 +1165,7 @@ export function ManagementView() {
                 </select>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <div className="form-row">
+                <div className="form-row mb-0">
                   <label className="text-sm font-semibold text-ink">משך (דק׳)</label>
                   <input
                     type="number"
@@ -1180,7 +1180,7 @@ export function ManagementView() {
                     }
                   />
                 </div>
-                <div className="form-row">
+                <div className="form-row mb-0">
                   <label className="text-sm font-semibold text-ink">מקס׳ ברצף</label>
                   <input
                     type="number"
@@ -1196,63 +1196,87 @@ export function ManagementView() {
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="form-row">
-                  <label className="text-sm font-semibold text-ink">תדריך (דק׳)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    className="tabular-nums"
-                    value={String(presetDraft.prep_minutes ?? 0)}
-                    onChange={(e) =>
-                      setPresetDraft({
-                        ...presetDraft,
-                        prep_minutes: Number(e.target.value),
-                      })
-                    }
-                  />
-                </div>
-                <div className="form-row">
-                  <label className="text-sm font-semibold text-ink">תחקיר (דק׳)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    className="tabular-nums"
-                    value={String(presetDraft.recovery_minutes ?? 0)}
-                    onChange={(e) =>
-                      setPresetDraft({
-                        ...presetDraft,
-                        recovery_minutes: Number(e.target.value),
-                      })
-                    }
-                  />
-                </div>
-              </div>
-              <div className="form-row">
-                <label className="flex items-center gap-2 text-sm font-semibold text-ink">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(presetDraft.joint_prep)}
-                    onChange={(e) =>
-                      setPresetDraft({ ...presetDraft, joint_prep: e.target.checked })
-                    }
-                  />
-                  תדריך משותף
+              <div className="form-row mb-0">
+                <label
+                  className="text-sm font-semibold text-ink"
+                  htmlFor="preset-modal-prep-mins"
+                >
+                  תדריך (דק׳)
                 </label>
+                <div className="flex w-full max-w-none overflow-hidden rounded-pill border border-line bg-surface shadow-sm">
+                  <div className="relative min-w-0 flex-1">
+                    <input
+                      id="preset-modal-prep-mins"
+                      type="number"
+                      min={0}
+                      value={String(presetDraft.prep_minutes ?? 0)}
+                      onChange={(e) =>
+                        setPresetDraft({
+                          ...presetDraft,
+                          prep_minutes: Number(e.target.value),
+                        })
+                      }
+                    />
+                  </div>
+                  <label
+                    htmlFor="preset-modal-joint-prep"
+                    className="flex shrink-0 cursor-pointer items-center gap-2 border-s border-line px-3 py-2.5 text-sm text-ink"
+                  >
+                    <input
+                      id="preset-modal-joint-prep"
+                      type="checkbox"
+                      checked={Boolean(presetDraft.joint_prep)}
+                      onChange={(e) =>
+                        setPresetDraft({ ...presetDraft, joint_prep: e.target.checked })
+                      }
+                      className="size-4 shrink-0 rounded border-line text-primary focus:ring-2 focus:ring-primary/30"
+                      aria-label="תדריך משותף"
+                    />
+                    משותף
+                  </label>
+                </div>
               </div>
-              <div className="form-row">
-                <label className="flex items-center gap-2 text-sm font-semibold text-ink">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(presetDraft.joint_recovery)}
-                    onChange={(e) =>
-                      setPresetDraft({ ...presetDraft, joint_recovery: e.target.checked })
-                    }
-                  />
-                  תחקיר משותף
+              <div className="form-row mb-0">
+                <label
+                  className="text-sm font-semibold text-ink"
+                  htmlFor="preset-modal-recovery-mins"
+                >
+                  תחקיר (דק׳)
                 </label>
+                <div className="flex w-full max-w-none overflow-hidden rounded-pill border border-line bg-surface shadow-sm">
+                  <div className="relative min-w-0 flex-1">
+                    <input
+                      id="preset-modal-recovery-mins"
+                      type="number"
+                      min={0}
+                      value={String(presetDraft.recovery_minutes ?? 0)}
+                      onChange={(e) =>
+                        setPresetDraft({
+                          ...presetDraft,
+                          recovery_minutes: Number(e.target.value),
+                        })
+                      }
+                    />
+                  </div>
+                  <label
+                    htmlFor="preset-modal-joint-recovery"
+                    className="flex shrink-0 cursor-pointer items-center gap-2 border-s border-line px-3 py-2.5 text-sm text-ink"
+                  >
+                    <input
+                      id="preset-modal-joint-recovery"
+                      type="checkbox"
+                      checked={Boolean(presetDraft.joint_recovery)}
+                      onChange={(e) =>
+                        setPresetDraft({ ...presetDraft, joint_recovery: e.target.checked })
+                      }
+                      className="size-4 shrink-0 rounded border-line text-primary focus:ring-2 focus:ring-primary/30"
+                      aria-label="תחקיר משותף"
+                    />
+                    משותף
+                  </label>
+                </div>
               </div>
-              <div className="form-row">
+              <div className="form-row mb-0">
                 <label className="text-sm font-semibold text-ink">הערות</label>
                 <input
                   value={String(presetDraft.notes ?? "")}

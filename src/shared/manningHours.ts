@@ -131,22 +131,27 @@ export function presetDurationById(presets: JsonObject[]): Map<number, number> {
   return m;
 }
 
-/** Fields from `syllabus_presets` needed for matrix-start helpers. */
+/** Fields from `syllabus_presets` needed for matrix start/end bunch + prep/rest sums. */
 export type MatrixStartPresetMeta = {
   maxInRow: number;
   jointPrep: boolean;
   prepMinutes: number;
+  /** When true, {@link matrixEndRestMinutesSum} charges `recoveryMinutes` only once per preset id in the ending bunch. */
+  jointRecovery: boolean;
+  recoveryMinutes: number;
 };
 
 function readMatrixStartPresetMeta(p: JsonObject): MatrixStartPresetMeta {
   const maxInRow = Math.max(1, Number(p.max_in_row ?? p.maxInRow ?? 1));
   const jointPrep = Number(p.joint_prep ?? p.jointPrep ?? 0) !== 0;
   const prepMinutes = Math.max(0, Number(p.prep_minutes ?? p.prepMinutes ?? 0));
-  return { maxInRow, jointPrep, prepMinutes };
+  const jointRecovery = Number(p.joint_recovery ?? p.jointRecovery ?? 0) !== 0;
+  const recoveryMinutes = Math.max(0, Number(p.recovery_minutes ?? p.recoveryMinutes ?? 0));
+  return { maxInRow, jointPrep, prepMinutes, jointRecovery, recoveryMinutes };
 }
 
 /**
- * Build preset id → meta for {@link matrixStartingBunchPresetIds} / {@link matrixStartPrepMinutesSum}.
+ * Build preset id → meta for matrix bunch helpers and prep/rest sums.
  * Call once per day/matrix when iterating many windows.
  */
 export function matrixStartPresetMetaMap(presets: JsonObject[]): Map<number, MatrixStartPresetMeta> {
@@ -159,7 +164,13 @@ export function matrixStartPresetMetaMap(presets: JsonObject[]): Map<number, Mat
 }
 
 function defaultMetaForMissingPreset(): MatrixStartPresetMeta {
-  return { maxInRow: 1, jointPrep: false, prepMinutes: 0 };
+  return {
+    maxInRow: 1,
+    jointPrep: false,
+    prepMinutes: 0,
+    jointRecovery: false,
+    recoveryMinutes: 0,
+  };
 }
 
 const DEFAULT_MAX_IN_ROW = 1;
@@ -217,6 +228,44 @@ export function matrixStartPrepMinutesSum(
       }
     } else {
       sum += meta.prepMinutes;
+    }
+  }
+  return sum;
+}
+
+/**
+ * Suffix of `slotPresetIds` that mirrors {@link matrixStartingBunchPresetIds} on the reversed list
+ * (same `max_in_row` / bunch rules, walking from the last slot backward).
+ */
+export function matrixEndingBunchPresetIds(
+  slotPresetIds: number[],
+  presetMeta: Map<number, MatrixStartPresetMeta>,
+): number[] {
+  if (slotPresetIds.length === 0) return [];
+  const rev = [...slotPresetIds].reverse();
+  const bunchRev = matrixStartingBunchPresetIds(rev, presetMeta);
+  return bunchRev.reverse();
+}
+
+/**
+ * Sum recovery (“rest”) minutes for slots in the ending bunch: each non–joint_recovery slot adds its recovery;
+ * for joint_recovery, add recovery only for the first occurrence of that preset id in the bunch.
+ */
+export function matrixEndRestMinutesSum(
+  endingBunchPresetIds: number[],
+  presetMeta: Map<number, MatrixStartPresetMeta>,
+): number {
+  let sum = 0;
+  const jointRecoveryCharged = new Set<number>();
+  for (const pid of endingBunchPresetIds) {
+    const meta = presetMeta.get(pid) ?? defaultMetaForMissingPreset();
+    if (meta.jointRecovery) {
+      if (!jointRecoveryCharged.has(pid)) {
+        sum += meta.recoveryMinutes;
+        jointRecoveryCharged.add(pid);
+      }
+    } else {
+      sum += meta.recoveryMinutes;
     }
   }
   return sum;
@@ -334,7 +383,9 @@ function ceilMsToHourFromDayStart(absoluteMs: number, dayStartMs: number): numbe
  * Matrix time range for the schedule: [frameStartMs, frameEndMs).
  * Start: earliest across windows of `(coverage start on day) − prepLead`, floored to a full hour,
  * then clamped to **not before** 00:00 of `dateStr`.
- * End: latest coverage end on this calendar day, then **ceiled** to the next hour (22:15 → 23:00),
+ * End: for each window, `(coverage end on day) + restTail` where `restTail` is the sum of recovery minutes
+ * for the ending bunch (see {@link matrixEndingBunchPresetIds} / {@link matrixEndRestMinutesSum});
+ * then the **latest** such instant across windows, **ceiled** to the next hour (22:15 → 23:00),
  * then clamped to **at most** 00:00 the following day (exclusive cap).
  */
 export function matrixFrameBoundsMs(
@@ -349,7 +400,7 @@ export function matrixFrameBoundsMs(
   const dayEndExclMs = dayEndExcl.getTime();
 
   const meta = matrixStartPresetMetaMap(presets);
-  let rawEndMs: number | null = null;
+  let latestRestAwareEndMs: number | null = null;
   let earliestPrepAwareMs: number | null = null;
 
   for (const w of windows) {
@@ -357,21 +408,23 @@ export function matrixFrameBoundsMs(
     const inter = intersectCoverageOnDay(dateStr, start, end);
     if (!inter) continue;
 
-    const e = inter.end.getTime();
-    if (rawEndMs === null || e > rawEndMs) {
-      rawEndMs = e;
-    }
-
     const slots = parseSlotPresetIdsFromWindow(w);
-    const bunch = matrixStartingBunchPresetIds(slots, meta);
-    const prepLead = matrixStartPrepMinutesSum(bunch, meta);
+    const startBunch = matrixStartingBunchPresetIds(slots, meta);
+    const prepLead = matrixStartPrepMinutesSum(startBunch, meta);
     const t0 = inter.start.getTime() - prepLead * 60_000;
     if (earliestPrepAwareMs === null || t0 < earliestPrepAwareMs) {
       earliestPrepAwareMs = t0;
     }
+
+    const endBunch = matrixEndingBunchPresetIds(slots, meta);
+    const restTail = matrixEndRestMinutesSum(endBunch, meta);
+    const t1 = inter.end.getTime() + restTail * 60_000;
+    if (latestRestAwareEndMs === null || t1 > latestRestAwareEndMs) {
+      latestRestAwareEndMs = t1;
+    }
   }
 
-  if (rawEndMs === null || earliestPrepAwareMs === null) {
+  if (latestRestAwareEndMs === null || earliestPrepAwareMs === null) {
     return null;
   }
 
@@ -380,7 +433,7 @@ export function matrixFrameBoundsMs(
   floored.setMilliseconds(0);
   const frameStartMs = Math.max(floored.getTime(), dayStartMs);
 
-  let frameEndMs = ceilMsToHourFromDayStart(rawEndMs, dayStartMs);
+  let frameEndMs = ceilMsToHourFromDayStart(latestRestAwareEndMs, dayStartMs);
   frameEndMs = Math.min(frameEndMs, dayEndExclMs);
 
   if (frameStartMs >= frameEndMs) {

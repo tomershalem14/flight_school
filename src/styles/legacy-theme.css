@@ -353,6 +353,11 @@ body {
   flex: 1;
   min-width: 0;
 }
+/* Native time/datetime controls reserve space for the picker icon; avoid clipping HH:MM */
+.form-row input[type="time"],
+.form-row input[type="datetime-local"] {
+  min-width: 10rem;
+}
 .hint { font-size: 0.78rem; color: var(--text-muted); }
 
 /* ─── VIOLATIONS LIST ─── */

@@ -19,7 +19,9 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
+  type RefObject,
 } from "react";
+import { createPortal } from "react-dom";
 import { useAppStore, weekStartString } from "../../app/store";
 import * as api from "../../shared/api";
 import { addDays, formatYmd } from "../../shared/dates";
@@ -94,6 +96,28 @@ function shiftWallIntervalMs(
 /** Half-open wall intervals [a0,a1) and [b0,b1) overlap with positive duration. */
 function wallIntervalsOverlap(a0: number, a1: number, b0: number, b1: number): boolean {
   return a1 > a0 && b1 > b0 && Math.max(a0, b0) < Math.min(a1, b1);
+}
+
+/** True if `employeeId` has an assigned shift whose wall interval overlaps `[intervalStartMs, intervalEndMs)`. */
+function employeeHasShiftIntersectingInterval(
+  dateStr: string,
+  dayShifts: JsonObject[],
+  employeeId: number,
+  intervalStartMs: number,
+  intervalEndMs: number,
+  excludeShiftId?: number,
+): boolean {
+  for (const s of dayShifts) {
+    if (excludeShiftId != null && Number(s.id) === excludeShiftId) continue;
+    const se = s.employee_id;
+    if (se === null || se === undefined || se === "") continue;
+    if (Number(se) !== employeeId) continue;
+    const iv = shiftWallIntervalMs(dateStr, String(s.start_time), String(s.end_time));
+    if (wallIntervalsOverlap(iv.startMs, iv.endMs, intervalStartMs, intervalEndMs)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function clipIntervalToFrame(
@@ -192,6 +216,13 @@ const PANEL_W = 280;
 
 const LONG_PRESS_MS = 600;
 const LONG_PRESS_MOVE_PX = 8;
+
+/** Horizontal inset inside matrix pills; keep on inner wrapper so % / flex positioning stays exact. */
+const MATRIX_PILL_INSET_X = "px-1";
+
+/** Matrix drag band fill (`#7BA3B5` primary). */
+const MATRIX_DRAG_HIGHLIGHT_OVER = "rgba(123, 163, 181, 0.28)";
+const MATRIX_DRAG_HIGHLIGHT_IDLE = "rgba(123, 163, 181, 0.18)";
 
 type MatrixTypeSlotDragData = {
   kind: "typeSlot";
@@ -476,22 +507,22 @@ function MatrixEmployeeHourDropZone({
   employeeId,
   hour,
   hasEmployeeShiftInHour,
-  matrixDragKind,
+  droppableDisabled,
   className,
   onEmptyClick,
 }: {
   employeeId: number;
   hour: string;
   hasEmployeeShiftInHour: boolean;
-  /** When dragging an assigned shift pill, allow drops on any hour cell (server validates). */
-  matrixDragKind: "typeSlot" | "empShift" | null;
+  /** `@dnd-kit` disabled when this cell must not accept the active drag. */
+  droppableDisabled: boolean;
   className?: string;
   onEmptyClick: (e: ReactMouseEvent<HTMLDivElement>) => void;
 }) {
   const { setNodeRef } = useDroppable({
     id: `emp-cell-${employeeId}-${hour}`,
     data: { employeeId, hour },
-    disabled: matrixDragKind === "empShift" ? false : hasEmployeeShiftInHour,
+    disabled: droppableDisabled,
   });
   return (
     <div
@@ -506,19 +537,32 @@ function MatrixEmployeeHourDropZone({
   );
 }
 
+type SyllabusPresetListPos = {
+  top: number;
+  left: number;
+  width: number;
+  maxHeight: number;
+};
+
 function SyllabusPresetCombo({
   presets,
   valueId,
   onPick,
   disabled,
+  scrollContainerRef,
 }: {
   presets: JsonObject[];
   valueId: number;
   onPick: (id: number) => void;
   disabled?: boolean;
+  /** When set (e.g. modal body with overflow), keep the portaled list aligned on scroll. */
+  scrollContainerRef?: RefObject<HTMLDivElement | null>;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
+  const [listPos, setListPos] = useState<SyllabusPresetListPos | null>(null);
+  const anchorRef = useRef<HTMLDivElement>(null);
+
   const selected = presets.find((p) => Number(p.id) === valueId);
   const label = selected ? String(selected.name ?? "") : "";
   const filtered = useMemo(() => {
@@ -527,8 +571,86 @@ function SyllabusPresetCombo({
     return presets.filter((p) => String(p.name ?? "").toLowerCase().includes(qq));
   }, [presets, q]);
 
+  const updateListPos = useCallback(() => {
+    const root = anchorRef.current;
+    if (!root) return;
+    const r = root.getBoundingClientRect();
+    const gap = 4;
+    const margin = 8;
+    const spaceBelow = window.innerHeight - r.bottom - gap - margin;
+    const maxHeight = Math.min(160, Math.max(80, spaceBelow));
+    setListPos({
+      top: r.bottom + gap,
+      left: r.left,
+      width: r.width,
+      maxHeight,
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open || disabled) {
+      setListPos(null);
+      return;
+    }
+    updateListPos();
+  }, [open, disabled, updateListPos, filtered.length]);
+
+  useEffect(() => {
+    if (!open || disabled) return;
+    updateListPos();
+    window.addEventListener("resize", updateListPos);
+    const scrollEl = scrollContainerRef?.current;
+    if (scrollEl) {
+      scrollEl.addEventListener("scroll", updateListPos, { passive: true });
+    }
+    return () => {
+      window.removeEventListener("resize", updateListPos);
+      if (scrollEl) {
+        scrollEl.removeEventListener("scroll", updateListPos);
+      }
+    };
+  }, [open, disabled, updateListPos, scrollContainerRef]);
+
+  const listEl =
+    open && !disabled && listPos ? (
+      <ul
+        className="fixed z-[200] overflow-auto rounded-card border border-line bg-surface py-1 text-start shadow-airy"
+        style={{
+          top: listPos.top,
+          left: listPos.left,
+          width: listPos.width,
+          maxHeight: listPos.maxHeight,
+        }}
+        role="listbox"
+      >
+        {filtered.map((p) => {
+          const pid = Number(p.id);
+          const roleHint = p.min_role_name != null ? String(p.min_role_name) : "";
+          return (
+            <li key={pid}>
+              <button
+                type="button"
+                className="w-full px-2 py-1.5 text-start text-sm hover:bg-background"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  onPick(pid);
+                  setOpen(false);
+                  setQ("");
+                }}
+              >
+                <span className="font-medium text-ink">{String(p.name ?? "")}</span>
+                {roleHint ? (
+                  <span className="block text-[10px] text-muted">{roleHint}</span>
+                ) : null}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    ) : null;
+
   return (
-    <div className="relative min-w-0">
+    <div ref={anchorRef} className="relative min-w-0">
       <input
         className="w-full min-w-0"
         disabled={disabled}
@@ -548,36 +670,7 @@ function SyllabusPresetCombo({
           setTimeout(() => setOpen(false), 150);
         }}
       />
-      {open && !disabled ? (
-        <ul
-          className="absolute z-50 mt-1 max-h-40 w-full overflow-auto rounded-card border border-line bg-surface py-1 text-start shadow-airy"
-          role="listbox"
-        >
-          {filtered.map((p) => {
-            const pid = Number(p.id);
-            const roleHint = p.min_role_name != null ? String(p.min_role_name) : "";
-            return (
-              <li key={pid}>
-                <button
-                  type="button"
-                  className="w-full px-2 py-1.5 text-start text-sm hover:bg-background"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    onPick(pid);
-                    setOpen(false);
-                    setQ("");
-                  }}
-                >
-                  <span className="font-medium text-ink">{String(p.name ?? "")}</span>
-                  {roleHint ? (
-                    <span className="block text-[10px] text-muted">{roleHint}</span>
-                  ) : null}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
+      {listEl ? createPortal(listEl, document.body) : null}
     </div>
   );
 }
@@ -590,6 +683,7 @@ function ShiftWindowDraftFormFields({
   shiftTypeTimeError,
   setShiftTypeTimeError,
   saveErrorMessage,
+  scrollContainerRef,
 }: {
   draft: JsonObject;
   setDraft: (next: JsonObject) => void;
@@ -598,6 +692,7 @@ function ShiftWindowDraftFormFields({
   shiftTypeTimeError: string | null;
   setShiftTypeTimeError: (v: string | null) => void;
   saveErrorMessage: string | null;
+  scrollContainerRef?: RefObject<HTMLDivElement | null>;
 }) {
   const segments = (draft.segments as WindowSegmentDraft[]) ?? [];
   const durs = useMemo(() => presetDurationById(presets), [presets]);
@@ -624,43 +719,41 @@ function ShiftWindowDraftFormFields({
           onChange={(e) => setDraft({ ...draft, name: e.target.value })}
         />
       </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="form-row">
-          <label className="text-sm font-semibold text-ink">התחלת חלון</label>
-          <input
-            type="time"
-            dir="ltr"
-            value={covStart}
-            onChange={(e) => {
-              setShiftTypeTimeError(null);
-              const v = e.target.value;
-              const nextSegs = segments.length
-                ? segments.map((s, i) =>
-                    i === 0
-                      ? { ...s, segment_start_time: formatTimeForInput(v) || v }
-                      : s,
-                  )
-                : [];
-              setDraft({
-                ...draft,
-                coverage_start_time: v,
-                segments: nextSegs,
-              });
-            }}
-          />
-        </div>
-        <div className="form-row">
-          <label className="text-sm font-semibold text-ink">סיום חלון</label>
-          <input
-            type="time"
-            dir="ltr"
-            value={covEnd}
-            onChange={(e) => {
-              setShiftTypeTimeError(null);
-              setDraft({ ...draft, coverage_end_time: e.target.value });
-            }}
-          />
-        </div>
+      <div className="form-row">
+        <label className="text-sm font-semibold text-ink">התחלת חלון</label>
+        <input
+          type="time"
+          dir="ltr"
+          value={covStart}
+          onChange={(e) => {
+            setShiftTypeTimeError(null);
+            const v = e.target.value;
+            const nextSegs = segments.length
+              ? segments.map((s, i) =>
+                  i === 0
+                    ? { ...s, segment_start_time: formatTimeForInput(v) || v }
+                    : s,
+                )
+              : [];
+            setDraft({
+              ...draft,
+              coverage_start_time: v,
+              segments: nextSegs,
+            });
+          }}
+        />
+      </div>
+      <div className="form-row">
+        <label className="text-sm font-semibold text-ink">סיום חלון</label>
+        <input
+          type="time"
+          dir="ltr"
+          value={covEnd}
+          onChange={(e) => {
+            setShiftTypeTimeError(null);
+            setDraft({ ...draft, coverage_end_time: e.target.value });
+          }}
+        />
       </div>
       <div className="form-row">
         <label className="text-sm font-semibold text-ink">הערות</label>
@@ -672,9 +765,9 @@ function ShiftWindowDraftFormFields({
 
       <div className="rounded-card border border-line bg-background/50 px-3 py-2">
         <div className="mb-2 text-sm font-semibold text-ink">סילבוסים בחלון</div>
-        <div className="grid grid-cols-[1fr_auto] gap-2 border-b border-line pb-2 text-xs font-bold uppercase tracking-wide text-muted">
-          <span>סילבוס</span>
-          <span dir="ltr" className="text-end">
+        <div className="grid grid-cols-[3fr_1fr] gap-2 border-b border-line pb-2 text-xs font-bold uppercase tracking-wide text-muted">
+          <span className="min-w-0">סילבוס</span>
+          <span dir="ltr" className="min-w-0 text-end">
             שעת התחלה
           </span>
         </div>
@@ -695,37 +788,35 @@ function ShiftWindowDraftFormFields({
             return (
               <div
                 key={`seg-${idx}-${seg.segment_start_time}`}
-                className="grid grid-cols-[1fr_auto] items-end gap-2"
+                className="grid grid-cols-[3fr_1fr] items-end gap-2"
               >
-                <SyllabusPresetCombo
-                  presets={presets}
-                  valueId={Number(seg.syllabus_preset_id)}
-                  onPick={(id) => {
-                    const next = segments.map((s, j) =>
-                      j === idx ? { ...s, syllabus_preset_id: id } : s,
-                    );
-                    setDraft({ ...draft, segments: next });
-                  }}
-                />
-                {idx === 0 ? (
-                  <input
-                    type="time"
-                    dir="ltr"
-                    className="max-w-[7rem]"
-                    readOnly
-                    disabled
-                    value={formatTimeForInput(covStart) || covStart}
+                <div className="min-w-0">
+                  <SyllabusPresetCombo
+                    presets={presets}
+                    valueId={Number(seg.syllabus_preset_id)}
+                    scrollContainerRef={scrollContainerRef}
+                    onPick={(id) => {
+                      const next = segments.map((s, j) =>
+                        j === idx ? { ...s, syllabus_preset_id: id } : s,
+                      );
+                      setDraft({ ...draft, segments: next });
+                    }}
                   />
-                ) : (
+                </div>
+                <div className="min-w-0">
                   <select
                     dir="ltr"
-                    className="max-w-[7rem] text-sm"
+                    className="w-full min-w-0 text-center text-sm"
+                    disabled={idx === 0}
                     value={(() => {
                       const cur =
-                        formatTimeForInput(seg.segment_start_time) || timeOpts[0] || "";
+                        idx === 0
+                          ? formatTimeForInput(covStart) || covStart
+                          : formatTimeForInput(seg.segment_start_time) || timeOpts[0] || "";
                       return timeOpts.includes(cur) ? cur : (timeOpts[0] ?? cur);
                     })()}
                     onChange={(e) => {
+                      if (idx === 0) return;
                       const next = segments.map((s, j) =>
                         j === idx ? { ...s, segment_start_time: e.target.value } : s,
                       );
@@ -738,7 +829,7 @@ function ShiftWindowDraftFormFields({
                       </option>
                     ))}
                   </select>
-                )}
+                </div>
               </div>
             );
           })}
@@ -869,7 +960,14 @@ export function ScheduleView() {
   const [matrixDragKind, setMatrixDragKind] = useState<
     "typeSlot" | "empShift" | null
   >(null);
+  const [matrixTypeSlotCoveredHours, setMatrixTypeSlotCoveredHours] = useState<
+    string[] | null
+  >(null);
+  const [matrixEmpDragShiftId, setMatrixEmpDragShiftId] = useState<number | null>(
+    null,
+  );
   const suppressCellClickUntil = useRef(0);
+  const shiftTypeModalBodyRef = useRef<HTMLDivElement>(null);
   const matrixScrollRef = useRef<HTMLDivElement>(null);
   /** Scrolls with table; band is `absolute` relative to this — not the overflow viewport. */
   const matrixTableWrapRef = useRef<HTMLDivElement>(null);
@@ -953,6 +1051,8 @@ export function ScheduleView() {
     setDragOverlayColor(null);
     setDragOverlaySize(null);
     setMatrixDragKind(null);
+    setMatrixTypeSlotCoveredHours(null);
+    setMatrixEmpDragShiftId(null);
   }, []);
 
   const sensors = useSensors(
@@ -1168,6 +1268,8 @@ export function ScheduleView() {
     if (!d) return;
     if (d.kind === "typeSlot") {
       setMatrixDragKind("typeSlot");
+      setMatrixTypeSlotCoveredHours(d.coveredHours);
+      setMatrixEmpDragShiftId(null);
       setActiveDragHighlightMs({
         startMs: d.highlightStartMs,
         endMs: d.highlightEndMs,
@@ -1178,6 +1280,8 @@ export function ScheduleView() {
     }
     if (d.kind === "empShift") {
       setMatrixDragKind("empShift");
+      setMatrixTypeSlotCoveredHours(null);
+      setMatrixEmpDragShiftId(d.shiftId);
       setActiveDragHighlightMs({
         startMs: d.highlightStartMs,
         endMs: d.highlightEndMs,
@@ -1209,6 +1313,18 @@ export function ScheduleView() {
 
       if (dragData.kind === "empShift") {
         if (o.employeeId === dragData.employeeId) return;
+        if (
+          employeeHasShiftIntersectingInterval(
+            dateStr,
+            dayShifts,
+            o.employeeId,
+            dragData.highlightStartMs,
+            dragData.highlightEndMs,
+            dragData.shiftId,
+          )
+        ) {
+          return;
+        }
         reassignMut.mutate({
           shift_id: dragData.shiftId,
           employee_id: o.employeeId,
@@ -1222,13 +1338,17 @@ export function ScheduleView() {
       const dropHour = o.hour;
       if (!dragData.coveredHours.includes(dropHour)) return;
 
-      const targetHasShiftInHour = dayShifts.some((s) => {
-        const se = s.employee_id;
-        if (se === null || se === undefined || se === "") return false;
-        if (Number(se) !== dropEmpId) return false;
-        return shiftCoversHour(String(s.start_time), String(s.end_time), dropHour);
-      });
-      if (targetHasShiftInHour) return;
+      if (
+        employeeHasShiftIntersectingInterval(
+          dateStr,
+          dayShifts,
+          dropEmpId,
+          dragData.highlightStartMs,
+          dragData.highlightEndMs,
+        )
+      ) {
+        return;
+      }
 
       createMut.mutate({
         shift_window_id: dragData.shiftWindowId,
@@ -1236,7 +1356,7 @@ export function ScheduleView() {
         syllabus_num: dragData.syllabusNum,
       });
     },
-    [clearMatrixDragOverlay, createMut, dayShifts, reassignMut],
+    [clearMatrixDragOverlay, createMut, dateStr, dayShifts, reassignMut],
   );
 
   return (
@@ -1340,13 +1460,39 @@ export function ScheduleView() {
                                     hour,
                                   ),
                                 );
+                                const hl = activeDragHighlightMs;
+                                let droppableDisabled: boolean;
+                                if (matrixDragKind === null || !hl) {
+                                  droppableDisabled = hasShift;
+                                } else if (matrixDragKind === "typeSlot") {
+                                  const ch = matrixTypeSlotCoveredHours ?? [];
+                                  droppableDisabled =
+                                    !ch.includes(hour) ||
+                                    employeeHasShiftIntersectingInterval(
+                                      dateStr,
+                                      dayShifts,
+                                      eid,
+                                      hl.startMs,
+                                      hl.endMs,
+                                    );
+                                } else {
+                                  droppableDisabled =
+                                    employeeHasShiftIntersectingInterval(
+                                      dateStr,
+                                      dayShifts,
+                                      eid,
+                                      hl.startMs,
+                                      hl.endMs,
+                                      matrixEmpDragShiftId ?? undefined,
+                                    );
+                                }
                                 return (
                                   <MatrixEmployeeHourDropZone
                                     key={`${eid}-dz-${hour}`}
                                     employeeId={eid}
                                     hour={hour}
                                     hasEmployeeShiftInHour={hasShift}
-                                    matrixDragKind={matrixDragKind}
+                                    droppableDisabled={droppableDisabled}
                                     className={`cursor-pointer ${hasShift ? "" : "bg-background/40"}`}
                                     onEmptyClick={(e) => {
                                       if (Date.now() < suppressCellClickUntil.current) {
@@ -1413,7 +1559,7 @@ export function ScheduleView() {
                                   return (
                                     <div
                                       key={`${eid}-pill-${shift.id}`}
-                                      className="pointer-events-auto absolute top-1/2 box-border -translate-y-1/2 px-0 py-0.5"
+                                      className="pointer-events-auto absolute top-1/2 box-border -translate-y-1/2 py-0.5"
                                       style={{
                                         // Physical `left` ignores direction; hour columns follow
                                         // inline-start in RTL, so use inset-inline-start to align pills.
@@ -1422,6 +1568,9 @@ export function ScheduleView() {
                                         zIndex: 10 + idx,
                                       }}
                                     >
+                                      <div
+                                        className={`box-border h-full min-h-0 w-full min-w-0 ${MATRIX_PILL_INSET_X}`}
+                                      >
                                       {(() => {
                                         const snRaw = shift.syllabus_num ?? shift.syllabusNum;
                                         const syllabusNum = Number(snRaw);
@@ -1460,6 +1609,7 @@ export function ScheduleView() {
                                           />
                                         );
                                       })()}
+                                      </div>
                                     </div>
                                   );
                                 })}
@@ -1511,8 +1661,8 @@ export function ScheduleView() {
                         <button
                           type="button"
                           className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-line bg-background text-muted opacity-0 transition-opacity hover:border-primary/40 hover:bg-background hover:text-primary focus-visible:opacity-100 group-hover:opacity-100"
-                          aria-label={`עריכת סוג משמרת ${typeName}`}
-                          title="עריכת סוג משמרת"
+                          aria-label={`עריכת חלון ${typeName}`}
+                          title="עריכת חלון"
                           onClick={(e) => {
                             e.stopPropagation();
                             openEditShiftTypeModal(ty);
@@ -1534,8 +1684,8 @@ export function ScheduleView() {
                       colSpan={hours.length}
                       className="min-h-[28px] border-s border-line bg-ink/[0.055] px-0 py-0.5 align-middle"
                     >
-                      {/* No horizontal padding: must match sum of hour column widths below (each has px-1).
-                          No flex gap: gaps break ms-proportional alignment with column grid. */}
+                      {/* No flex gap: gaps break ms-proportional alignment with column grid.
+                          Per-segment inner padding (MATRIX_PILL_INSET_X) insets pills only; flex ratios unchanged. */}
                       <div className="flex min-h-[28px] w-full items-center">
                         {leftPadMs > 0 ? (
                           <div
@@ -1605,7 +1755,7 @@ export function ScheduleView() {
                               title={title}
                             >
                               <div
-                                className="flex w-full min-w-0 justify-center"
+                                className={`flex w-full min-w-0 justify-center ${MATRIX_PILL_INSET_X}`}
                                 aria-label={title}
                               >
                                 {hasAssigned ? (
@@ -1638,7 +1788,9 @@ export function ScheduleView() {
                             title={`${typeName} — פער אחרי הסלוטים האחרונים`}
                             aria-hidden={true}
                           >
-                            <div className="schedule-striped-warn-pill block h-2.5 w-full max-w-full rounded-pill shadow-sm ring-1 ring-black/10" />
+                            <div className={`box-border w-full min-w-0 ${MATRIX_PILL_INSET_X}`}>
+                              <div className="schedule-striped-warn-pill block h-2.5 w-full max-w-full rounded-pill shadow-sm ring-1 ring-black/10" />
+                            </div>
                           </div>
                         ) : null}
                         {rightPadMs > 0 ? (
@@ -1683,16 +1835,22 @@ export function ScheduleView() {
                 }}
               >
                 <div
-                  className="absolute inset-y-0"
+                  className={`absolute inset-y-0 box-border ${MATRIX_PILL_INSET_X}`}
                   style={{
                     insetInlineStart: `${matrixUnifiedBand.startPct}%`,
                     width: `${matrixUnifiedBand.widthPct}%`,
-                    backgroundColor:
-                      matrixDragOverId != null
-                        ? "rgba(123, 163, 181, 0.28)"
-                        : "rgba(123, 163, 181, 0.18)",
                   }}
-                />
+                >
+                  <div
+                    className="h-full w-full rounded-none"
+                    style={{
+                      backgroundColor:
+                        matrixDragOverId != null
+                          ? MATRIX_DRAG_HIGHLIGHT_OVER
+                          : MATRIX_DRAG_HIGHLIGHT_IDLE,
+                    }}
+                  />
+                </div>
               </div>
             ) : null}
             </div>
@@ -1842,7 +2000,7 @@ export function ScheduleView() {
                   id="shift-type-modal-title"
                   className="min-w-0 font-heading text-lg font-bold text-ink"
                 >
-                  {Number(shiftTypeDraft.id) > 0 ? "עריכת סוג משמרת" : "סוג משמרת חדש"}
+                  {Number(shiftTypeDraft.id) > 0 ? "עריכת חלון" : "סוג משמרת חדש"}
                 </h3>
               </div>
               <button
@@ -1853,7 +2011,10 @@ export function ScheduleView() {
                 ✕
               </button>
             </div>
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
+            <div
+              ref={shiftTypeModalBodyRef}
+              className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4"
+            >
               <ShiftWindowDraftFormFields
                 draft={shiftTypeDraft}
                 setDraft={(next) => setShiftTypeDraft(next)}
@@ -1861,6 +2022,7 @@ export function ScheduleView() {
                 dateStr={dateStr}
                 shiftTypeTimeError={shiftTypeTimeError}
                 setShiftTypeTimeError={setShiftTypeTimeError}
+                scrollContainerRef={shiftTypeModalBodyRef}
                 saveErrorMessage={
                   createShiftWindowMut.isError
                     ? String(
