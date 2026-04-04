@@ -3,29 +3,30 @@
    RTL Design System
    ═══════════════════════════════════════════════ */
 
+/* Aligned with stitch/Brief.md (airy pastel desktop shell) */
 :root {
-  --bg: #0f172a;
-  --surface: #1e293b;
-  --surface2: #273348;
-  --border: #334155;
-  --text: #e2e8f0;
-  --text-muted: #94a3b8;
-  --primary: #3b82f6;
-  --primary-dark: #2563eb;
+  --bg: #fbfbf9;
+  --surface: #ffffff;
+  --surface2: #fbfbf9;
+  --border: #f0f2f4;
+  --text: #42494d;
+  --text-muted: #939b9f;
+  --primary: #7ba3b5;
+  --primary-dark: #5d8a9e;
   --danger: #ef4444;
   --success: #22c55e;
   --warning: #f59e0b;
   --green: #16a34a;
   --yellow: #ca8a04;
   --red: #dc2626;
-  --radius: 8px;
-  --shadow: 0 4px 16px rgba(0,0,0,0.4);
+  --radius: 16px;
+  --shadow: 0 10px 30px rgba(123, 163, 181, 0.08);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  font-family: 'Segoe UI', 'Arial', sans-serif;
+  font-family: "Nunito", "Segoe UI", system-ui, sans-serif;
   background: var(--bg);
   color: var(--text);
   direction: rtl;
@@ -59,7 +60,10 @@ body {
   transition: all 0.15s;
 }
 .nav-btn:hover { background: var(--surface2); color: var(--text); }
-.nav-btn.active { background: var(--primary); color: white; }
+.nav-btn.active {
+  background: var(--primary);
+  color: #fff;
+}
 
 /* ─── VIEWS ─── */
 .view { display: none; padding: 20px 24px; }
@@ -155,11 +159,16 @@ body {
   right: 0;
   z-index: 2;
 }
-#schedule-table tr:hover td { background: rgba(255,255,255,0.03); }
+#schedule-table tr:hover td {
+  background: rgba(66, 73, 77, 0.04);
+}
 .day-header-cell { text-align: center; }
 .day-name { font-weight: 700; font-size: 0.95rem; }
 .day-date { font-size: 0.75rem; color: var(--text-muted); }
-.today-col th, .today-col td { background: rgba(59,130,246,0.08) !important; }
+.today-col th,
+.today-col td {
+  background: rgba(123, 163, 181, 0.12) !important;
+}
 
 /* ─── SHIFT CELL ─── */
 .shift-cell {
@@ -195,7 +204,10 @@ body {
   border-radius: 4px;
   transition: all 0.15s;
 }
-.add-shift-cell:hover { color: var(--primary); background: rgba(59,130,246,0.1); }
+.add-shift-cell:hover {
+  color: var(--primary);
+  background: rgba(123, 163, 181, 0.15);
+}
 
 /* ─── WORKLOAD BAR ─── */
 .workload-bar {
@@ -243,7 +255,9 @@ body {
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
 }
-.data-table tr:hover td { background: rgba(255,255,255,0.03); }
+.data-table tr:hover td {
+  background: rgba(66, 73, 77, 0.04);
+}
 .badge {
   display: inline-block;
   padding: 2px 8px;
@@ -268,7 +282,8 @@ body {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.7);
+  background: rgba(66, 73, 77, 0.28);
+  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -277,7 +292,7 @@ body {
 .modal {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius);
   width: 440px;
   max-width: 95vw;
   max-height: 90vh;
@@ -322,23 +337,21 @@ body {
   color: var(--text-muted);
   text-align: right;
 }
+/* Layout only — field chrome comes from tailwind.css @layer base */
 .form-row input[type="text"],
 .form-row input[type="date"],
 .form-row input[type="time"],
 .form-row input[type="datetime-local"],
-.form-row select {
+.form-row input[type="number"],
+.form-row input[type="email"],
+.form-row input[type="search"],
+.form-row input[type="tel"],
+.form-row input[type="url"],
+.form-row input[type="password"],
+.form-row select,
+.form-row textarea {
   flex: 1;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  padding: 8px 10px;
-  font-size: 0.9rem;
-}
-.form-row input:focus,
-.form-row select:focus {
-  outline: none;
-  border-color: var(--primary);
+  min-width: 0;
 }
 .hint { font-size: 0.78rem; color: var(--text-muted); }
 

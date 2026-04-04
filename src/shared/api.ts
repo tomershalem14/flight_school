@@ -41,12 +41,26 @@ export async function deleteEmployee(emp_id: number): Promise<JsonObject> {
   return invoke("delete_employee", { empId: emp_id });
 }
 
-export async function getShiftTypes(): Promise<JsonObject[]> {
-  return invoke("get_shift_types");
+export async function getShiftTypes(date?: string): Promise<JsonObject[]> {
+  if (date === undefined) {
+    return invoke("get_shift_types", {});
+  }
+  return invoke("get_shift_types", { date });
 }
 
 export async function createShiftType(payload: JsonObject): Promise<JsonObject> {
   return invoke("create_shift_type", { payload });
+}
+
+export async function updateShiftType(
+  shift_type_id: number,
+  payload: JsonObject,
+): Promise<JsonObject> {
+  return invoke("update_shift_type", { shiftTypeId: shift_type_id, payload });
+}
+
+export async function deleteShiftType(shift_type_id: number): Promise<JsonObject> {
+  return invoke("delete_shift_type", { shiftTypeId: shift_type_id });
 }
 
 export async function getShifts(week_start: string): Promise<JsonObject[]> {

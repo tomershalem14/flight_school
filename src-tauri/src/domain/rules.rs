@@ -1,6 +1,6 @@
 //! Violation checks and weekly workload — behavior matches legacy Python implementation.
 
-use chrono::{Duration, NaiveDate};
+use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime};
 use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -39,16 +39,75 @@ fn parse_shift_date(s: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
 }
 
+pub fn parse_iso_datetime(s: &str) -> Option<NaiveDateTime> {
+    let t = s.trim();
+    NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M:%S").ok()
+        .or_else(|| NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M").ok())
+        .or_else(|| NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M:%S%.3f").ok())
+        .or_else(|| NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M:%S%.6f").ok())
+}
+
+fn parse_hms(t: &str) -> Option<NaiveTime> {
+    let t = t.trim();
+    NaiveTime::parse_from_str(t, "%H:%M:%S").ok()
+        .or_else(|| NaiveTime::parse_from_str(t, "%H:%M").ok())
+}
+
+/// Concrete shift interval on the timeline (handles end before start as next-day end).
+pub fn shift_span_on_calendar(
+    shift_date: &str,
+    start_time: &str,
+    end_time: &str,
+) -> Option<(NaiveDateTime, NaiveDateTime)> {
+    let d = NaiveDate::parse_from_str(shift_date, "%Y-%m-%d").ok()?;
+    let st = parse_hms(start_time)?;
+    let et = parse_hms(end_time)?;
+    let start_dt = d.and_time(st);
+    let end_date = if et <= st {
+        d + Duration::days(1)
+    } else {
+        d
+    };
+    let end_dt = end_date.and_time(et);
+    Some((start_dt, end_dt))
+}
+
+/// Shift must lie fully inside the shift type coverage window (inclusive bounds).
+pub fn ensure_shift_within_type_coverage(
+    coverage_start: &str,
+    coverage_end: &str,
+    shift_date: &str,
+    start_time: &str,
+    end_time: &str,
+) -> Result<(), String> {
+    let cs = parse_iso_datetime(coverage_start)
+        .ok_or_else(|| "חלון כיסוי סוג משמרת לא תקין".to_string())?;
+    let ce = parse_iso_datetime(coverage_end)
+        .ok_or_else(|| "חלון כיסוי סוג משמרת לא תקין".to_string())?;
+    if ce <= cs {
+        return Err("חלון כיסוי סוג משמרת ריק או הפוך".to_string());
+    }
+    let (ss, se) = shift_span_on_calendar(shift_date, start_time, end_time)
+        .ok_or_else(|| "תאריך או שעות משמרת לא תקינים".to_string())?;
+    if ss < cs || se > ce {
+        return Err("המשמרת מחוץ לחלון הכיסוי של סוג המשמרת".to_string());
+    }
+    Ok(())
+}
+
 /// Check rules for a single shift row (joined columns match Python query).
 pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Result<Vec<Violation>> {
     let mut violations = Vec::new();
 
     let shift = match conn.query_row(
         "SELECT s.id, s.shift_date, s.start_time, s.end_time, s.employee_id,
-                st.name as type_name, st.duration_minutes, st.prep_minutes,
+                st.name AS type_name,
+                st.coverage_start AS type_coverage_start,
+                st.coverage_end AS type_coverage_end,
+                st.duration_minutes, st.prep_minutes,
                 st.recovery_minutes, st.allow_fly, st.max_concurrent_management,
-                st.min_role_id, e.name as emp_name, e.role_id,
-                r.is_management, r.can_fly, r.name as role_name
+                st.min_role_id, e.name AS emp_name, e.role_id,
+                r.is_management, r.can_fly, r.name AS role_name
          FROM shifts s
          JOIN shift_types st ON s.shift_type_id = st.id
          LEFT JOIN employees e ON s.employee_id = e.id
@@ -61,6 +120,21 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
         Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(violations),
         Err(e) => return Err(e),
     };
+
+    if let Err(msg) = ensure_shift_within_type_coverage(
+        &shift.type_coverage_start,
+        &shift.type_coverage_end,
+        &shift.shift_date,
+        &shift.start_time,
+        &shift.end_time,
+    ) {
+        violations.push(Violation {
+            rule: "shift_type_coverage".into(),
+            severity: "error".into(),
+            message: msg,
+            shift_id: Some(shift_id),
+        });
+    }
 
     let Some(emp_id) = shift.employee_id else {
         return Ok(violations);
@@ -263,6 +337,8 @@ struct ShiftRow {
     end_time: String,
     employee_id: Option<i64>,
     type_name: String,
+    type_coverage_start: String,
+    type_coverage_end: String,
     prep_minutes: i32,
     recovery_minutes: i32,
     allow_fly: i32,
@@ -276,19 +352,21 @@ struct ShiftRow {
 impl ShiftRow {
     fn from_row(r: &Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
-            shift_date: r.get(1)?,
-            start_time: r.get(2)?,
-            end_time: r.get(3)?,
-            employee_id: r.get(4)?,
-            type_name: r.get(5)?,
-            prep_minutes: r.get(7)?,
-            recovery_minutes: r.get(8)?,
-            allow_fly: r.get(9)?,
-            min_role_id: r.get(11)?,
-            emp_name: r.get(12)?,
-            role_id: r.get(13)?,
-            is_management: r.get(14)?,
-            role_name: r.get(16)?,
+            shift_date: r.get("shift_date")?,
+            start_time: r.get("start_time")?,
+            end_time: r.get("end_time")?,
+            employee_id: r.get("employee_id")?,
+            type_name: r.get("type_name")?,
+            type_coverage_start: r.get("type_coverage_start")?,
+            type_coverage_end: r.get("type_coverage_end")?,
+            prep_minutes: r.get("prep_minutes")?,
+            recovery_minutes: r.get("recovery_minutes")?,
+            allow_fly: r.get("allow_fly")?,
+            min_role_id: r.get("min_role_id")?,
+            emp_name: r.get("emp_name")?,
+            role_id: r.get("role_id")?,
+            is_management: r.get("is_management")?,
+            role_name: r.get("role_name")?,
         })
     }
 }
@@ -376,5 +454,29 @@ mod tests {
     fn time_to_minutes_parses() {
         assert_eq!(time_to_minutes("08:30"), 8 * 60 + 30);
         assert_eq!(time_to_minutes("00:00"), 0);
+    }
+
+    #[test]
+    fn coverage_accepts_shift_inside_window() {
+        assert!(ensure_shift_within_type_coverage(
+            "2025-06-01T08:00:00",
+            "2025-06-01T18:00:00",
+            "2025-06-01",
+            "09:00",
+            "10:00",
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn coverage_rejects_shift_outside_window() {
+        assert!(ensure_shift_within_type_coverage(
+            "2025-06-01T08:00:00",
+            "2025-06-01T12:00:00",
+            "2025-06-01",
+            "11:00",
+            "13:00",
+        )
+        .is_err());
     }
 }

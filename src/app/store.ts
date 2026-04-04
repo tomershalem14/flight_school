@@ -1,17 +1,16 @@
 import { create } from "zustand";
 import { getMonday, formatYmd } from "../shared/dates";
 
-export type AppView =
-  | "flightboard"
-  | "schedule"
-  | "employees"
-  | "reports"
-  | "settings";
+export type AppView = "manning" | "employees" | "reports" | "settings";
+
+export type ManningMode = "matrix" | "board";
 
 interface AppState {
   activeView: AppView;
   setActiveView: (v: AppView) => void;
-  /** Calendar day for matrix (any date in the week — we derive week from Monday). */
+  manningMode: ManningMode;
+  setManningMode: (m: ManningMode) => void;
+  /** Calendar day for manning views (week derived from Monday). */
   currentDay: Date;
   setCurrentDay: (d: Date) => void;
   reportWeekStart: Date;
@@ -19,8 +18,10 @@ interface AppState {
 }
 
 export const useAppStore = create<AppState>((set) => ({
-  activeView: "schedule",
+  activeView: "manning",
   setActiveView: (activeView) => set({ activeView }),
+  manningMode: "matrix",
+  setManningMode: (manningMode) => set({ manningMode }),
   currentDay: new Date(),
   setCurrentDay: (currentDay) => set({ currentDay }),
   reportWeekStart: getMonday(new Date()),

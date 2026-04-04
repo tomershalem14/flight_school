@@ -12,6 +12,7 @@ dist
 src-tauri/target
 dist-ssr
 *.local
+stitch
 
 # Editor directories and files
 .vscode/*

@@ -1,5 +1,5 @@
 use crate::db::AppState;
-use crate::domain::rules::check_shift_violations;
+use crate::domain::rules::{check_shift_violations, ensure_shift_within_type_coverage};
 use crate::error::AppError;
 use crate::json_util::sqlite_row_to_object;
 use chrono::NaiveDate;
@@ -15,7 +15,6 @@ pub struct ShiftCreate {
     pub start_time: String,
     pub end_time: String,
     pub employee_id: Option<i64>,
-    pub notes: Option<String>,
 }
 
 /// Partial update. `employee_id`: omitted = no change, number = set, JSON `null` = clear assignment.
@@ -24,7 +23,6 @@ pub struct ShiftUpdate {
     pub employee_id: Option<Value>,
     pub start_time: Option<String>,
     pub end_time: Option<String>,
-    pub notes: Option<String>,
 }
 
 #[tauri::command]
@@ -55,6 +53,22 @@ pub fn get_shifts(state: State<'_, AppState>, week_start: String) -> Result<Vec<
         .map_err(|e| e.to_string())
 }
 
+fn validate_shift_against_type(
+    conn: &rusqlite::Connection,
+    shift_type_id: i64,
+    shift_date: &str,
+    start_time: &str,
+    end_time: &str,
+) -> Result<(), AppError> {
+    let (cs, ce): (String, String) = conn.query_row(
+        "SELECT coverage_start, coverage_end FROM shift_types WHERE id = ?",
+        [shift_type_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    ensure_shift_within_type_coverage(&cs, &ce, shift_date, start_time, end_time)
+        .map_err(AppError::msg)
+}
+
 pub(crate) fn parse_week_end(week_start: &str) -> Result<String, AppError> {
     let dt = NaiveDate::parse_from_str(week_start, "%Y-%m-%d")
         .map_err(|_| AppError::msg("פורמט תאריך שגוי - השתמש ב-YYYY-MM-DD"))?;
@@ -67,17 +81,22 @@ pub(crate) fn parse_week_end(week_start: &str) -> Result<String, AppError> {
 pub fn create_shift(state: State<'_, AppState>, payload: ShiftCreate) -> Result<Value, String> {
     state
         .with_db(|conn| {
+            validate_shift_against_type(
+                conn,
+                payload.shift_type_id,
+                &payload.shift_date,
+                &payload.start_time,
+                &payload.end_time,
+            )?;
             conn.execute(
-                "INSERT INTO shifts (shift_date, shift_type_id, start_time, end_time,
-                                     employee_id, manually_set, notes)
-                 VALUES (?,?,?,?,?,1,?)",
+                "INSERT INTO shifts (shift_date, shift_type_id, start_time, end_time, employee_id)
+                 VALUES (?,?,?,?,?)",
                 params![
                     payload.shift_date,
                     payload.shift_type_id,
                     payload.start_time,
                     payload.end_time,
                     payload.employee_id,
-                    payload.notes,
                 ],
             )?;
             let new_id = conn.last_insert_rowid();
@@ -100,17 +119,26 @@ pub fn update_shift(
 ) -> Result<Value, String> {
     state
         .with_db(|conn| {
-            let existing_emp: Option<i64> = match conn.query_row(
-                "SELECT employee_id FROM shifts WHERE id = ?",
-                [shift_id],
-                |r| r.get(0),
-            ) {
-                Ok(v) => v,
-                Err(rusqlite::Error::QueryReturnedNoRows) => {
-                    return Err(AppError::msg("משמרת לא נמצאה"));
-                }
-                Err(e) => return Err(AppError::from(e)),
-            };
+            let (stid, sd, mut st, mut et, existing_emp): (i64, String, String, String, Option<i64>) =
+                match conn.query_row(
+                    "SELECT shift_type_id, shift_date, start_time, end_time, employee_id FROM shifts WHERE id = ?",
+                    [shift_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                ) {
+                    Ok(v) => v,
+                    Err(rusqlite::Error::QueryReturnedNoRows) => {
+                        return Err(AppError::msg("משמרת לא נמצאה"));
+                    }
+                    Err(e) => return Err(AppError::from(e)),
+                };
+
+            if let Some(ref s) = payload.start_time {
+                st.clone_from(s);
+            }
+            if let Some(ref e) = payload.end_time {
+                et.clone_from(e);
+            }
+            validate_shift_against_type(conn, stid, &sd, &st, &et)?;
 
             let mut emp_after = existing_emp;
 
@@ -118,7 +146,7 @@ pub fn update_shift(
                 match ev {
                     Value::Null => {
                         conn.execute(
-                            "UPDATE shifts SET employee_id = NULL, manually_set = 1 WHERE id = ?",
+                            "UPDATE shifts SET employee_id = NULL WHERE id = ?",
                             [shift_id],
                         )?;
                         emp_after = None;
@@ -126,7 +154,7 @@ pub fn update_shift(
                     Value::Number(n) => {
                         let eid = n.as_i64().ok_or_else(|| AppError::msg("employee_id לא תקין"))?;
                         conn.execute(
-                            "UPDATE shifts SET employee_id = ?, manually_set = 1 WHERE id = ?",
+                            "UPDATE shifts SET employee_id = ? WHERE id = ?",
                             params![eid, shift_id],
                         )?;
                         emp_after = Some(eid);
@@ -135,22 +163,16 @@ pub fn update_shift(
                 }
             }
 
-            if let Some(ref st) = payload.start_time {
+            if let Some(ref s) = payload.start_time {
                 conn.execute(
-                    "UPDATE shifts SET start_time = ?, manually_set = 1 WHERE id = ?",
-                    params![st, shift_id],
+                    "UPDATE shifts SET start_time = ? WHERE id = ?",
+                    params![s, shift_id],
                 )?;
             }
-            if let Some(ref et) = payload.end_time {
+            if let Some(ref e) = payload.end_time {
                 conn.execute(
-                    "UPDATE shifts SET end_time = ?, manually_set = 1 WHERE id = ?",
-                    params![et, shift_id],
-                )?;
-            }
-            if let Some(ref n) = payload.notes {
-                conn.execute(
-                    "UPDATE shifts SET notes = ?, manually_set = 1 WHERE id = ?",
-                    params![n, shift_id],
+                    "UPDATE shifts SET end_time = ? WHERE id = ?",
+                    params![e, shift_id],
                 )?;
             }
 

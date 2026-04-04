@@ -85,9 +85,13 @@ pub fn seed_if_empty(conn: &Connection) -> AppResult<()> {
     let mut st = conn.prepare(
         "INSERT INTO shift_types
         (name, duration_minutes, prep_minutes, recovery_minutes, color,
-         min_role_id, allow_fly, max_concurrent_management, notes)
-        VALUES (?,?,?,?,?,?,?,?,?)",
+         min_role_id, allow_fly, max_concurrent_management, notes,
+         coverage_start, coverage_end)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)",
     )?;
+
+    let cov_start = "2000-01-01T06:00:00";
+    let cov_end = "2099-12-31T21:00:00";
 
     for (
         name,
@@ -110,7 +114,9 @@ pub fn seed_if_empty(conn: &Connection) -> AppResult<()> {
             min_role,
             allow_fly,
             max_mgmt,
-            notes
+            notes,
+            cov_start,
+            cov_end
         ])
         .map_err(|e| AppError::msg(format!("seed shift_types: {e}")))?;
     }

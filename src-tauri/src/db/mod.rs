@@ -48,5 +48,28 @@ fn apply_schema(conn: &Connection) -> AppResult<()> {
         "INSERT OR IGNORE INTO schema_migrations (version) VALUES (1)",
         [],
     )?;
+
+    let v2: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 2",
+        [],
+        |r| r.get(0),
+    )?;
+    if v2 == 0 {
+        const M2: &str = include_str!("../../migrations/002_shift_type_coverage.sql");
+        conn.execute_batch(M2)?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (2)", [])?;
+    }
+
+    let v3: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 3",
+        [],
+        |r| r.get(0),
+    )?;
+    if v3 == 0 {
+        const M3: &str = include_str!("../../migrations/003_shifts_drop_meta.sql");
+        conn.execute_batch(M3)?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (3)", [])?;
+    }
+
     Ok(())
 }

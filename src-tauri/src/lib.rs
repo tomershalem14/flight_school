@@ -36,6 +36,8 @@ pub fn run() {
             commands::employees::delete_employee,
             commands::shift_types::get_shift_types,
             commands::shift_types::create_shift_type,
+            commands::shift_types::update_shift_type,
+            commands::shift_types::delete_shift_type,
             commands::shifts::get_shifts,
             commands::shifts::create_shift,
             commands::shifts::update_shift,

@@ -39,7 +39,7 @@ pub fn get_employee_history(
     state
         .with_db(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT s.id, s.shift_date, s.start_time, s.end_time, s.notes,
+                "SELECT s.id, s.shift_date, s.start_time, s.end_time,
                         st.name as type_name, st.color as type_color
                  FROM shifts s
                  JOIN shift_types st ON s.shift_type_id = st.id

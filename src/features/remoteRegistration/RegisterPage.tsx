@@ -2,6 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import * as api from "../../shared/api";
+import { formatTimeForInput } from "../../shared/timeFormat";
 
 export function RegisterPage() {
   const [params] = useSearchParams();
@@ -60,11 +61,23 @@ export function RegisterPage() {
       </p>
       <div className="form-row">
         <label>שעת התחלה</label>
-        <input type="time" value={start} onChange={(e) => setStart(e.target.value)} />
+        <input
+          type="time"
+          dir="ltr"
+          className="min-w-0 flex-1"
+          value={formatTimeForInput(start)}
+          onChange={(e) => setStart(e.target.value)}
+        />
       </div>
       <div className="form-row">
         <label>שעת סיום</label>
-        <input type="time" value={end} onChange={(e) => setEnd(e.target.value)} />
+        <input
+          type="time"
+          dir="ltr"
+          className="min-w-0 flex-1"
+          value={formatTimeForInput(end)}
+          onChange={(e) => setEnd(e.target.value)}
+        />
       </div>
       <button
         type="button"

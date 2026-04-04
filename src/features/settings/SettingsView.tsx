@@ -36,59 +36,61 @@ export function SettingsView() {
   });
 
   return (
-    <div className="view-panel">
-      <h2>הגדרות — דרגים</h2>
-      <button
-        type="button"
-        className="btn-primary"
-        style={{ marginBottom: 16 }}
-        onClick={() =>
-          setDraft({
-            name: "",
-            can_fly: true,
-            is_management: false,
-            color: "#3B82F6",
-          })
-        }
-      >
-        + דרג
-      </button>
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>שם</th>
-            <th>טיסה</th>
-            <th>ניהול</th>
-            <th>צבע</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {roles.map((r) => (
-            <tr key={String(r.id)}>
-              <td>{String(r.name)}</td>
-              <td>{Number(r.can_fly) ? "כן" : "לא"}</td>
-              <td>{Number(r.is_management) ? "כן" : "לא"}</td>
-              <td>
-                <span
-                  style={{
-                    display: "inline-block",
-                    width: 24,
-                    height: 24,
-                    borderRadius: 4,
-                    background: String(r.color),
-                  }}
-                />
-              </td>
-              <td>
-                <button type="button" className="btn-secondary" onClick={() => setDraft({ ...r })}>
-                  ערוך
-                </button>
-              </td>
+    <div className="view-panel space-y-10">
+      <section>
+        <h2 className="font-heading text-xl font-bold text-ink">הגדרות — דרגים</h2>
+        <button
+          type="button"
+          className="btn-primary"
+          style={{ marginBottom: 16, marginTop: 12 }}
+          onClick={() =>
+            setDraft({
+              name: "",
+              can_fly: true,
+              is_management: false,
+              color: "#3B82F6",
+            })
+          }
+        >
+          + דרג
+        </button>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>שם</th>
+              <th>טיסה</th>
+              <th>ניהול</th>
+              <th>צבע</th>
+              <th />
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {roles.map((r) => (
+              <tr key={String(r.id)}>
+                <td>{String(r.name)}</td>
+                <td>{Number(r.can_fly) ? "כן" : "לא"}</td>
+                <td>{Number(r.is_management) ? "כן" : "לא"}</td>
+                <td>
+                  <span
+                    style={{
+                      display: "inline-block",
+                      width: 24,
+                      height: 24,
+                      borderRadius: 4,
+                      background: String(r.color),
+                    }}
+                  />
+                </td>
+                <td>
+                  <button type="button" className="btn-secondary" onClick={() => setDraft({ ...r })}>
+                    ערוך
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
 
       {draft && (
         <div className="modal-overlay">
