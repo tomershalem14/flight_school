@@ -3,8 +3,6 @@ import {
   DragOverlay,
   PointerSensor,
   pointerWithin,
-  useDraggable,
-  useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -19,893 +17,69 @@ import {
   useMemo,
   useRef,
   useState,
-  type MouseEvent as ReactMouseEvent,
-  type RefObject,
 } from "react";
-import { createPortal } from "react-dom";
 import { useAppStore, weekStartString } from "../../app/store";
+import type { JsonObject } from "../../shared/api";
 import * as api from "../../shared/api";
-import { addDays, formatYmd } from "../../shared/dates";
+import { formatYmd } from "../../shared/dates";
 import {
+  clipIntervalToFrame,
   coverageOf,
-  dayBounds,
+  effectiveMatrixFrame,
   hourLabelsTouchingRange,
   intersectCoverageOnDay,
   matrixFrameBoundsMs,
   matrixPrepAwareHourSlotsForDay,
   presetDurationById,
   shiftCoversHour,
+  shiftWallIntervalMs,
   syllabusNumForHourInWindow,
   timeToMin,
   typesCoveringHourSlot,
-  validSegmentStartTimes,
+  wallIntervalsOverlap,
   windowDayTimeline,
 } from "../../shared/manningHours";
-import { DEFAULT_SHIFT_TYPE_PASTEL_HEX } from "../../shared/pastelPalette";
-import { PastelSwatchGridDropdown } from "../../shared/PastelSwatchGridDropdown";
 import { shiftTypePillColors } from "../../shared/shiftTypeColors";
+import { hourSlotEndHm } from "../../shared/timeFormat";
 import {
-  coverageIsoToHm,
-  formatTimeForInput,
-  hourSlotEndHm,
-} from "../../shared/timeFormat";
-import type { JsonObject } from "../../shared/api";
-
-function normalizeShiftRow(s: JsonObject): JsonObject {
-  return {
-    ...s,
-    shift_date: s.shift_date ?? s.shiftDate,
-    employee_id: "employee_id" in s ? s.employee_id : s.employeeId,
-    start_time: s.start_time ?? s.startTime,
-    end_time: s.end_time ?? s.endTime,
-    type_name: s.type_name ?? s.typeName,
-    type_color: s.type_color ?? s.typeColor,
-    shift_window_id: s.shift_window_id ?? s.shiftWindowId,
-    syllabus_preset_id: s.syllabus_preset_id ?? s.syllabusPresetId,
-    up_to_date: s.up_to_date ?? s.upToDate,
-    syllabus_num: s.syllabus_num ?? s.syllabusNum,
-  };
-}
-
-function shiftIsUpToDate(s: JsonObject): boolean {
-  const v = s.up_to_date ?? s.upToDate;
-  if (v === false || v === 0 || v === "0") return false;
-  return true;
-}
-
-function typeId(ty: JsonObject): number {
-  return Number(ty.id);
-}
-
-/** Wall-clock interval for a shift on `dateStr` (handles end before start as next day). */
-function shiftWallIntervalMs(
-  dateStr: string,
-  startHm: string,
-  endHm: string,
-): { startMs: number; endMs: number } {
-  const d0 = dayBounds(dateStr).start.getTime();
-  const sm = timeToMin(startHm);
-  const em = timeToMin(endHm);
-  const startMs = d0 + sm * 60_000;
-  let endMs = d0 + em * 60_000;
-  if (em <= sm) {
-    endMs += 24 * 3600_000;
-  }
-  return { startMs, endMs };
-}
-
-/** Half-open wall intervals [a0,a1) and [b0,b1) overlap with positive duration. */
-function wallIntervalsOverlap(a0: number, a1: number, b0: number, b1: number): boolean {
-  return a1 > a0 && b1 > b0 && Math.max(a0, b0) < Math.min(a1, b1);
-}
-
-/** True if `employeeId` has an assigned shift whose wall interval overlaps `[intervalStartMs, intervalEndMs)`. */
-function employeeHasShiftIntersectingInterval(
-  dateStr: string,
-  dayShifts: JsonObject[],
-  employeeId: number,
-  intervalStartMs: number,
-  intervalEndMs: number,
-  excludeShiftId?: number,
-  opts?: { ignoreStaleShifts?: boolean },
-): boolean {
-  for (const s of dayShifts) {
-    if (excludeShiftId != null && Number(s.id) === excludeShiftId) continue;
-    if (opts?.ignoreStaleShifts && !shiftIsUpToDate(s)) continue;
-    const se = s.employee_id;
-    if (se === null || se === undefined || se === "") continue;
-    if (Number(se) !== employeeId) continue;
-    const iv = shiftWallIntervalMs(dateStr, String(s.start_time), String(s.end_time));
-    if (wallIntervalsOverlap(iv.startMs, iv.endMs, intervalStartMs, intervalEndMs)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function clipIntervalToFrame(
-  startMs: number,
-  endMs: number,
-  frameStart: number,
-  frameEnd: number,
-): [number, number] | null {
-  const s = Math.max(startMs, frameStart);
-  const e = Math.min(endMs, frameEnd);
-  if (e <= s) return null;
-  return [s, e];
-}
-
-function effectiveMatrixFrame(
-  dateStr: string,
-  hours: string[],
-  frame: { frameStartMs: number; frameEndMs: number } | null,
-): { frameStartMs: number; frameEndMs: number } | null {
-  if (frame) return frame;
-  if (hours.length === 0) return null;
-  const d0 = dayBounds(dateStr).start.getTime();
-  const sm = timeToMin(hours[0]!);
-  const em = timeToMin(hours[hours.length - 1]!) + 60;
-  return { frameStartMs: d0 + sm * 60_000, frameEndMs: d0 + em * 60_000 };
-}
-
-/** When `isEnd`, 00:00 means midnight at the start of the next calendar day. */
-function coverageIsoFromDayAndHm(
-  dateStr: string,
-  hm: string,
-  isEnd = false,
-): string {
-  const t = String(hm).trim();
-  const m = /^(\d{1,2}):(\d{2})$/.exec(t);
-  if (m) {
-    const h = parseInt(m[1], 10);
-    const min = parseInt(m[2], 10);
-    const hh = m[1].padStart(2, "0");
-    const mm = m[2].padStart(2, "0");
-    let dayStr = dateStr;
-    if (isEnd && h === 0 && min === 0) {
-      const ymdParts = dateStr.split("-").map(Number);
-      const base = new Date(ymdParts[0], ymdParts[1] - 1, ymdParts[2]);
-      dayStr = formatYmd(addDays(base, 1));
-    }
-    return `${dayStr}T${hh}:${mm}:00`;
-  }
-  return `${dateStr}T${t}`;
-}
-
-type WindowSegmentDraft = {
-  syllabus_preset_id: number;
-  segment_start_time: string;
-};
-
-function buildShiftWindowPayload(d: JsonObject, dateStr: string): JsonObject {
-  const startHm = String(d.coverage_start_time ?? "06:00");
-  const endHm = String(d.coverage_end_time ?? "21:00");
-  const segments = (d.segments as WindowSegmentDraft[]) ?? [];
-  return {
-    name: String(d.name ?? "").trim(),
-    color: String(d.color ?? DEFAULT_SHIFT_TYPE_PASTEL_HEX),
-    notes: d.notes ? String(d.notes).trim() || null : null,
-    coverage_start: coverageIsoFromDayAndHm(dateStr, startHm),
-    coverage_end: coverageIsoFromDayAndHm(dateStr, endHm, true),
-    segments: segments.map((s) => ({
-      syllabus_preset_id: Number(s.syllabus_preset_id),
-      segment_start_time: formatTimeForInput(String(s.segment_start_time)) || startHm,
-    })),
-  };
-}
-
-function defaultSyllabusPresetId(presets: JsonObject[]): number {
-  const locked = presets.find((p) => Number(p.system_locked ?? p.systemLocked) === 1);
-  if (locked) return Number(locked.id);
-  const first = presets[0];
-  return first ? Number(first.id) : 1;
-}
-
-function coverageEndIsNextDayMidnight(endHm: string): boolean {
-  return (formatTimeForInput(endHm) || "") === "00:00";
-}
-
-type TypePickerState = {
-  top: number;
-  left: number;
-  employeeId: number;
-  employeeName: string;
-  hour: string;
-  start: string;
-  end: string;
-};
-
-const PANEL_W = 280;
-
-const LONG_PRESS_MS = 600;
-const LONG_PRESS_MOVE_PX = 8;
-
-/** Horizontal inset inside matrix pills; keep on inner wrapper so % / flex positioning stays exact. */
-const MATRIX_PILL_INSET_X = "px-1";
-
-/** Matrix drag band fill (`#7BA3B5` primary). */
-const MATRIX_DRAG_HIGHLIGHT_OVER = "rgba(123, 163, 181, 0.28)";
-const MATRIX_DRAG_HIGHLIGHT_IDLE = "rgba(123, 163, 181, 0.18)";
-
-type MatrixTypeSlotDragData = {
-  kind: "typeSlot";
-  shiftWindowId: number;
-  syllabusNum: number;
-  coveredHours: string[];
-  displayHour: string;
-  color: string;
-  /** Clipped wall interval for column highlights (matches pill span, not full hours). */
-  highlightStartMs: number;
-  highlightEndMs: number;
-};
-
-type MatrixEmployeeShiftDragData = {
-  kind: "empShift";
-  shiftId: number;
-  shiftWindowId: number;
-  syllabusNum: number;
-  employeeId: number;
-  color: string;
-  /** Clipped wall interval for the unified hour-strip band (same as pill span). */
-  highlightStartMs: number;
-  highlightEndMs: number;
-};
-
-type ActiveDragHighlightMs = { startMs: number; endMs: number };
-
-function matrixDragBandPercents(
-  range: ActiveDragHighlightMs,
-  frame: { frameStartMs: number; frameEndMs: number },
-): { startPct: number; widthPct: number } | null {
-  const clipped = clipIntervalToFrame(
-    range.startMs,
-    range.endMs,
-    frame.frameStartMs,
-    frame.frameEndMs,
-  );
-  if (!clipped) return null;
-  const [s, e] = clipped;
-  const rangeMs = frame.frameEndMs - frame.frameStartMs;
-  if (rangeMs <= 0) return null;
-  return {
-    startPct: ((s - frame.frameStartMs) / rangeMs) * 100,
-    widthPct: ((e - s) / rangeMs) * 100,
-  };
-}
-
-function matrixPillDragSize(event: DragStartEvent): { width: number; height: number } | null {
-  const initial = event.active.rect.current?.initial;
-  if (initial && initial.width > 0 && initial.height > 0) {
-    return { width: initial.width, height: initial.height };
-  }
-  const target = event.activatorEvent.target;
-  if (target instanceof Element) {
-    const pill = target.closest("[data-matrix-pill]");
-    if (pill instanceof HTMLElement) {
-      const r = pill.getBoundingClientRect();
-      if (r.width > 0 && r.height > 0) return { width: r.width, height: r.height };
-    }
-  }
-  return null;
-}
-
-/** Compact rect for console diagnostics (dnd-kit / getBoundingClientRect shapes). */
-function summarizeMatrixDndRectForLog(
-  r: { top: number; left: number; width: number; height: number } | null | undefined,
-) {
-  if (r == null) return null;
-  return {
-    top: Math.round(r.top),
-    left: Math.round(r.left),
-    w: Math.round(r.width),
-    h: Math.round(r.height),
-  };
-}
-
-function MatrixEmployeeShiftPill({
-  typeColor,
-  title,
-  upToDate,
-  onLongPressDelete,
-}: {
-  typeColor: string;
-  title: string;
-  upToDate: boolean;
-  onLongPressDelete: () => void;
-}) {
-  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const startPos = useRef<{ x: number; y: number } | null>(null);
-
-  const clearLongPress = useCallback(() => {
-    if (longPressTimer.current != null) {
-      clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
-    startPos.current = null;
-  }, []);
-
-  useEffect(() => () => clearLongPress(), [clearLongPress]);
-
-  const moveThresholdSq = LONG_PRESS_MOVE_PX * LONG_PRESS_MOVE_PX;
-
-  return (
-    <span
-      data-matrix-pill
-      className={`block h-2.5 w-full max-w-full touch-none rounded-pill shadow-sm ring-1 ring-black/10 ${
-        upToDate ? "" : "schedule-striped-warn-pill cursor-default"
-      }`}
-      style={upToDate ? { backgroundColor: typeColor } : undefined}
-      title={title}
-      aria-label={title}
-      onPointerDown={(e) => {
-        startPos.current = { x: e.clientX, y: e.clientY };
-        longPressTimer.current = window.setTimeout(() => {
-          longPressTimer.current = null;
-          startPos.current = null;
-          onLongPressDelete();
-        }, LONG_PRESS_MS);
-      }}
-      onPointerMove={(e) => {
-        const s = startPos.current;
-        if (s) {
-          const dx = e.clientX - s.x;
-          const dy = e.clientY - s.y;
-          if (dx * dx + dy * dy > moveThresholdSq) clearLongPress();
-        }
-      }}
-      onPointerUp={() => {
-        clearLongPress();
-      }}
-      onPointerCancel={() => {
-        clearLongPress();
-      }}
-    />
-  );
-}
-
-function MatrixDraggableEmployeeShiftPill({
-  shiftId,
-  shiftWindowId,
-  syllabusNum,
-  employeeId,
-  typeColor,
-  title,
-  upToDate,
-  highlightStartMs,
-  highlightEndMs,
-  onLongPressDelete,
-}: {
-  shiftId: number;
-  shiftWindowId: number;
-  syllabusNum: number;
-  employeeId: number;
-  typeColor: string;
-  title: string;
-  upToDate: boolean;
-  highlightStartMs: number;
-  highlightEndMs: number;
-  onLongPressDelete: () => void;
-}) {
-  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const startPos = useRef<{ x: number; y: number } | null>(null);
-  const isDraggingRef = useRef(false);
-
-  const clearLongPress = useCallback(() => {
-    if (longPressTimer.current != null) {
-      clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
-    startPos.current = null;
-  }, []);
-
-  useEffect(() => () => clearLongPress(), [clearLongPress]);
-
-  const moveThresholdSq = LONG_PRESS_MOVE_PX * LONG_PRESS_MOVE_PX;
-
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: `emp-shift-${shiftId}`,
-    data: {
-      kind: "empShift" as const,
-      shiftId,
-      shiftWindowId,
-      syllabusNum,
-      employeeId,
-      color: typeColor,
-      highlightStartMs,
-      highlightEndMs,
-    },
-  });
-
-  useEffect(() => {
-    isDraggingRef.current = isDragging;
-    if (isDragging) clearLongPress();
-  }, [isDragging, clearLongPress]);
-
-  return (
-    <span
-      ref={setNodeRef}
-      data-matrix-pill
-      className={`block h-2.5 w-full max-w-full touch-none rounded-pill shadow-sm ring-1 ring-black/10 ${
-        upToDate
-          ? "cursor-grab active:cursor-grabbing"
-          : "cursor-grab active:cursor-grabbing schedule-striped-warn-pill"
-      }`}
-      style={{
-        ...(upToDate ? { backgroundColor: typeColor } : {}),
-        opacity: isDragging ? 0.4 : 1,
-      }}
-      title={title}
-      aria-label={title}
-      {...attributes}
-      {...(listeners ?? {})}
-      onPointerDown={(e) => {
-        listeners?.onPointerDown?.(e);
-        startPos.current = { x: e.clientX, y: e.clientY };
-        longPressTimer.current = window.setTimeout(() => {
-          longPressTimer.current = null;
-          startPos.current = null;
-          if (isDraggingRef.current) return;
-          onLongPressDelete();
-        }, LONG_PRESS_MS);
-      }}
-      onPointerMove={(e) => {
-        listeners?.onPointerMove?.(e);
-        const s = startPos.current;
-        if (s) {
-          const dx = e.clientX - s.x;
-          const dy = e.clientY - s.y;
-          if (dx * dx + dy * dy > moveThresholdSq) clearLongPress();
-        }
-      }}
-      onPointerUp={(e) => {
-        listeners?.onPointerUp?.(e);
-        clearLongPress();
-      }}
-      onPointerCancel={(e) => {
-        listeners?.onPointerCancel?.(e);
-        clearLongPress();
-      }}
-    />
-  );
-}
-
-function MatrixDraggableTypeSlotPill({
-  shiftWindowId,
-  syllabusNum,
-  coveredHours,
-  displayHour,
-  fill,
-  title,
-  highlightStartMs,
-  highlightEndMs,
-}: {
-  shiftWindowId: number;
-  syllabusNum: number;
-  coveredHours: string[];
-  displayHour: string;
-  fill: string;
-  title: string;
-  highlightStartMs: number;
-  highlightEndMs: number;
-}) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: `type-slot-${shiftWindowId}-${syllabusNum}`,
-    data: {
-      kind: "typeSlot" as const,
-      shiftWindowId,
-      syllabusNum,
-      coveredHours,
-      displayHour,
-      color: fill,
-      highlightStartMs,
-      highlightEndMs,
-    },
-  });
-  return (
-    <span
-      ref={setNodeRef}
-      data-matrix-pill
-      className="block h-2.5 w-full max-w-full cursor-grab touch-none rounded-pill shadow-sm ring-1 ring-black/10 active:cursor-grabbing"
-      style={{
-        backgroundColor: fill,
-        opacity: isDragging ? 0.4 : 1,
-      }}
-      title={title}
-      aria-label={title}
-      {...listeners}
-      {...attributes}
-    />
-  );
-}
-
-/** Hour column drop target inside the employee matrix row (div, not td). */
-function MatrixEmployeeHourDropZone({
-  employeeId,
-  hour,
-  hasEmployeeShiftInHour,
-  droppableDisabled,
-  className,
-  onEmptyClick,
-}: {
-  employeeId: number;
-  hour: string;
-  hasEmployeeShiftInHour: boolean;
-  /** `@dnd-kit` disabled when this cell must not accept the active drag. */
-  droppableDisabled: boolean;
-  className?: string;
-  onEmptyClick: (e: ReactMouseEvent<HTMLDivElement>) => void;
-}) {
-  const { setNodeRef } = useDroppable({
-    id: `emp-cell-${employeeId}-${hour}`,
-    data: { employeeId, hour },
-    disabled: droppableDisabled,
-  });
-  return (
-    <div
-      ref={setNodeRef}
-      role="presentation"
-      className={`min-h-[28px] min-w-0 flex-1 border-s border-line ${className ?? ""}`}
-      onClick={(e) => {
-        if (hasEmployeeShiftInHour) return;
-        onEmptyClick(e);
-      }}
-    />
-  );
-}
-
-type SyllabusPresetListPos = {
-  top: number;
-  left: number;
-  width: number;
-  maxHeight: number;
-};
-
-function SyllabusPresetCombo({
-  presets,
-  valueId,
-  onPick,
-  disabled,
-  scrollContainerRef,
-}: {
-  presets: JsonObject[];
-  valueId: number;
-  onPick: (id: number) => void;
-  disabled?: boolean;
-  /** When set (e.g. modal body with overflow), keep the portaled list aligned on scroll. */
-  scrollContainerRef?: RefObject<HTMLDivElement | null>;
-}) {
-  const [open, setOpen] = useState(false);
-  const [q, setQ] = useState("");
-  const [listPos, setListPos] = useState<SyllabusPresetListPos | null>(null);
-  const anchorRef = useRef<HTMLDivElement>(null);
-
-  const selected = presets.find((p) => Number(p.id) === valueId);
-  const label = selected ? String(selected.name ?? "") : "";
-  const filtered = useMemo(() => {
-    const qq = q.trim().toLowerCase();
-    if (!qq) return presets;
-    return presets.filter((p) => String(p.name ?? "").toLowerCase().includes(qq));
-  }, [presets, q]);
-
-  const updateListPos = useCallback(() => {
-    const root = anchorRef.current;
-    if (!root) return;
-    const r = root.getBoundingClientRect();
-    const gap = 4;
-    const margin = 8;
-    const spaceBelow = window.innerHeight - r.bottom - gap - margin;
-    const maxHeight = Math.min(160, Math.max(80, spaceBelow));
-    setListPos({
-      top: r.bottom + gap,
-      left: r.left,
-      width: r.width,
-      maxHeight,
-    });
-  }, []);
-
-  useLayoutEffect(() => {
-    if (!open || disabled) {
-      setListPos(null);
-      return;
-    }
-    updateListPos();
-  }, [open, disabled, updateListPos, filtered.length]);
-
-  useEffect(() => {
-    if (!open || disabled) return;
-    updateListPos();
-    window.addEventListener("resize", updateListPos);
-    const scrollEl = scrollContainerRef?.current;
-    if (scrollEl) {
-      scrollEl.addEventListener("scroll", updateListPos, { passive: true });
-    }
-    return () => {
-      window.removeEventListener("resize", updateListPos);
-      if (scrollEl) {
-        scrollEl.removeEventListener("scroll", updateListPos);
-      }
-    };
-  }, [open, disabled, updateListPos, scrollContainerRef]);
-
-  const listEl =
-    open && !disabled && listPos ? (
-      <ul
-        className="fixed z-[200] overflow-auto rounded-card border border-line bg-surface py-1 text-start shadow-airy"
-        style={{
-          top: listPos.top,
-          left: listPos.left,
-          width: listPos.width,
-          maxHeight: listPos.maxHeight,
-        }}
-        role="listbox"
-      >
-        {filtered.map((p) => {
-          const pid = Number(p.id);
-          const roleHint = p.min_role_name != null ? String(p.min_role_name) : "";
-          return (
-            <li key={pid}>
-              <button
-                type="button"
-                className="w-full px-2 py-1.5 text-start text-sm hover:bg-background"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  onPick(pid);
-                  setOpen(false);
-                  setQ("");
-                }}
-              >
-                <span className="font-medium text-ink">{String(p.name ?? "")}</span>
-                {roleHint ? (
-                  <span className="block text-[10px] text-muted">{roleHint}</span>
-                ) : null}
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-    ) : null;
-
-  return (
-    <div ref={anchorRef} className="relative min-w-0">
-      <input
-        className="w-full min-w-0"
-        disabled={disabled}
-        value={open ? q : label}
-        placeholder="בחר סילבוס…"
-        onFocus={() => {
-          setOpen(true);
-          // Clear query so the list shows every preset; seeding `q` with the label
-          // would filter to names containing that substring (often only the default).
-          setQ("");
-        }}
-        onChange={(e) => {
-          setQ(e.target.value);
-          setOpen(true);
-        }}
-        onBlur={() => {
-          setTimeout(() => setOpen(false), 150);
-        }}
-      />
-      {listEl ? createPortal(listEl, document.body) : null}
-    </div>
-  );
-}
-
-function ShiftWindowDraftFormFields({
-  draft,
-  setDraft,
-  presets,
-  dateStr,
-  shiftTypeTimeError,
-  setShiftTypeTimeError,
-  saveErrorMessage,
-  scrollContainerRef,
-}: {
-  draft: JsonObject;
-  setDraft: (next: JsonObject) => void;
-  presets: JsonObject[];
-  dateStr: string;
-  shiftTypeTimeError: string | null;
-  setShiftTypeTimeError: (v: string | null) => void;
-  saveErrorMessage: string | null;
-  scrollContainerRef?: RefObject<HTMLDivElement | null>;
-}) {
-  const segments = (draft.segments as WindowSegmentDraft[]) ?? [];
-  const durs = useMemo(() => presetDurationById(presets), [presets]);
-  const covStart = formatTimeForInput(String(draft.coverage_start_time ?? "06:00")) || "06:00";
-  const covEnd = formatTimeForInput(String(draft.coverage_end_time ?? "21:00")) || "21:00";
-  const endNext = coverageEndIsNextDayMidnight(covEnd);
-
-  return (
-    <>
-      {saveErrorMessage && (
-        <p className="rounded-card border border-peach-3/50 bg-peach-1/40 px-3 py-2 text-sm text-ink">
-          {saveErrorMessage}
-        </p>
-      )}
-      {shiftTypeTimeError && (
-        <p className="rounded-card border border-peach-3/50 bg-peach-1/40 px-3 py-2 text-sm text-ink">
-          {shiftTypeTimeError}
-        </p>
-      )}
-      <div className="form-row">
-        <label className="text-sm font-semibold text-ink">שם תצוגה</label>
-        <input
-          value={String(draft.name ?? "")}
-          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-        />
-      </div>
-      <div className="form-row">
-        <label className="text-sm font-semibold text-ink">התחלת חלון</label>
-        <input
-          type="time"
-          dir="ltr"
-          value={covStart}
-          onChange={(e) => {
-            setShiftTypeTimeError(null);
-            const v = e.target.value;
-            const nextSegs = segments.length
-              ? segments.map((s, i) =>
-                  i === 0
-                    ? { ...s, segment_start_time: formatTimeForInput(v) || v }
-                    : s,
-                )
-              : [];
-            setDraft({
-              ...draft,
-              coverage_start_time: v,
-              segments: nextSegs,
-            });
-          }}
-        />
-      </div>
-      <div className="form-row">
-        <label className="text-sm font-semibold text-ink">סיום חלון</label>
-        <input
-          type="time"
-          dir="ltr"
-          value={covEnd}
-          onChange={(e) => {
-            setShiftTypeTimeError(null);
-            setDraft({ ...draft, coverage_end_time: e.target.value });
-          }}
-        />
-      </div>
-      <div className="form-row">
-        <label className="text-sm font-semibold text-ink">הערות</label>
-        <input
-          value={String(draft.notes ?? "")}
-          onChange={(e) => setDraft({ ...draft, notes: e.target.value })}
-        />
-      </div>
-
-      <div className="rounded-card border border-line bg-background/50 px-3 py-2">
-        <div className="mb-2 text-sm font-semibold text-ink">סילבוסים בחלון</div>
-        <div className="grid grid-cols-[3fr_1fr] gap-2 border-b border-line pb-2 text-xs font-bold uppercase tracking-wide text-muted">
-          <span className="min-w-0">סילבוס</span>
-          <span dir="ltr" className="min-w-0 text-end">
-            שעת התחלה
-          </span>
-        </div>
-        <div className="mt-2 space-y-2">
-          {segments.map((seg, idx) => {
-            const timeOpts =
-              idx === 0
-                ? [formatTimeForInput(covStart) || covStart]
-                : validSegmentStartTimes(
-                    dateStr,
-                    covStart,
-                    covEnd,
-                    endNext,
-                    segments.slice(0, idx),
-                    idx,
-                    durs,
-                  );
-            return (
-              <div
-                key={`seg-${idx}-${seg.segment_start_time}`}
-                className="grid grid-cols-[3fr_1fr] items-end gap-2"
-              >
-                <div className="min-w-0">
-                  <SyllabusPresetCombo
-                    presets={presets}
-                    valueId={Number(seg.syllabus_preset_id)}
-                    scrollContainerRef={scrollContainerRef}
-                    onPick={(id) => {
-                      const next = segments.map((s, j) =>
-                        j === idx ? { ...s, syllabus_preset_id: id } : s,
-                      );
-                      setDraft({ ...draft, segments: next });
-                    }}
-                  />
-                </div>
-                <div className="min-w-0">
-                  <select
-                    dir="ltr"
-                    className="w-full min-w-0 text-center text-sm"
-                    disabled={idx === 0}
-                    value={(() => {
-                      const cur =
-                        idx === 0
-                          ? formatTimeForInput(covStart) || covStart
-                          : formatTimeForInput(seg.segment_start_time) || timeOpts[0] || "";
-                      return timeOpts.includes(cur) ? cur : (timeOpts[0] ?? cur);
-                    })()}
-                    onChange={(e) => {
-                      if (idx === 0) return;
-                      const next = segments.map((s, j) =>
-                        j === idx ? { ...s, segment_start_time: e.target.value } : s,
-                      );
-                      setDraft({ ...draft, segments: next });
-                    }}
-                  >
-                    {timeOpts.map((t) => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        <div className="mt-3 flex flex-wrap gap-2">
-          <button
-            type="button"
-            className="rounded-pill border border-line bg-background px-3 py-1.5 text-sm font-semibold text-ink hover:border-primary/40"
-            onClick={() => {
-              if (segments.length === 0) return;
-              const last = segments[segments.length - 1];
-              const opts = validSegmentStartTimes(
-                dateStr,
-                covStart,
-                covEnd,
-                endNext,
-                segments,
-                segments.length,
-                durs,
-              );
-              const nextTime = opts[0];
-              if (!nextTime) {
-                window.alert("אין זמן התחלה חוקי נוסף לפני סיום החלון.");
-                return;
-              }
-              setDraft({
-                ...draft,
-                segments: [
-                  ...segments,
-                  {
-                    syllabus_preset_id: last.syllabus_preset_id,
-                    segment_start_time: nextTime,
-                  },
-                ],
-              });
-            }}
-          >
-            + הוסף סילבוס
-          </button>
-          {segments.length > 1 ? (
-            <button
-              type="button"
-              className="rounded-pill border border-line px-3 py-1.5 text-sm text-muted hover:bg-peach-1/30"
-              onClick={() =>
-                setDraft({
-                  ...draft,
-                  segments: segments.slice(0, -1),
-                })
-              }
-            >
-              הסר שורה אחרונה
-            </button>
-          ) : null}
-        </div>
-      </div>
-    </>
-  );
-}
+  MATRIX_DRAG_HIGHLIGHT_IDLE,
+  MATRIX_DRAG_HIGHLIGHT_OVER,
+  MATRIX_PILL_INSET_X,
+  PANEL_W,
+} from "./helpers/scheduleConstants";
+import { matrixPillDragSize } from "./helpers/matrixPillDragSize";
+import {
+  employeeHasShiftIntersectingInterval,
+  matrixDragBandPercents,
+} from "./helpers/scheduleMatrixGeometry";
+import { resolveMatrixDragEnd } from "./helpers/resolveMatrixDragEnd";
+import {
+  newShiftTypeDraft,
+  normalizeShiftRow,
+  shiftIsUpToDate,
+  shiftTypeDraftFromWindow,
+  typeId,
+} from "./helpers/scheduleShiftModel";
+import type {
+  ActiveDragHighlightMs,
+  MatrixEmployeeShiftDragData,
+  MatrixTypeSlotDragData,
+  TypePickerState,
+} from "./helpers/scheduleTypes";
+import {
+  EmployeeMatrixShiftPillChooser,
+  MatrixDraggableTypeSlotPill,
+  MatrixEmployeeHourDropZone,
+} from "./components/MatrixScheduleParts";
+import { RemoteRegInline } from "./components/RemoteRegInline";
+import {
+  DeleteShiftTypeConfirmDialog,
+  ShiftTypeEditorModal,
+} from "./components/ShiftTypeModals";
+import { TypePickerPanel } from "./components/TypePickerPanel";
 
 export function ScheduleView() {
+  // --- Server state (React Query) ---
   const currentDay = useAppStore((s) => s.currentDay);
   const qc = useQueryClient();
   const dateStr = formatYmd(currentDay);
@@ -942,6 +116,11 @@ export function ScheduleView() {
     () => effectiveMatrixFrame(dateStr, hours, matrixFrame),
     [dateStr, hours, matrixFrame],
   );
+  const matrixRangeMs = useMemo(() => {
+    const f = scheduleMatrixFrame;
+    if (!f || f.frameEndMs <= f.frameStartMs) return 0;
+    return f.frameEndMs - f.frameStartMs;
+  }, [scheduleMatrixFrame]);
 
   const { data: shiftsRaw = [] } = useQuery({
     queryKey: ["shifts", weekStr],
@@ -957,6 +136,7 @@ export function ScheduleView() {
     [shifts, dateStr],
   );
 
+  // --- Local UI state ---
   const [typePicker, setTypePicker] = useState<TypePickerState | null>(null);
   const [deleteTypeConfirm, setDeleteTypeConfirm] = useState<{
     id: number;
@@ -967,6 +147,8 @@ export function ScheduleView() {
   const [shiftTypeTimeError, setShiftTypeTimeError] = useState<string | null>(null);
   const [activeDragHighlightMs, setActiveDragHighlightMs] =
     useState<ActiveDragHighlightMs | null>(null);
+
+  // --- Refs ---
   /** Last `onDragOver` droppable id (for drag-end diagnostics). Highlight uses imperative DOM updates to avoid full-matrix re-renders. */
   const matrixDragOverIdRef = useRef<string | null>(null);
   const matrixDragHighlightFillRef = useRef<HTMLDivElement | null>(null);
@@ -1000,6 +182,7 @@ export function ScheduleView() {
     widthPct: number;
   } | null>(null);
 
+  // --- Matrix drag: derived overlap sets ---
   /** Shift–interval overlap does not depend on which hour column is hovered; cache per employee for the active drag. */
   const matrixTypeSlotOverlapEmps = useMemo(() => {
     if (matrixDragKind !== "typeSlot" || !activeDragHighlightMs) return null;
@@ -1050,6 +233,7 @@ export function ScheduleView() {
     matrixEmpDragShiftId,
   ]);
 
+  // --- Matrix drag: unified highlight band layout ---
   const updateMatrixUnifiedBand = useCallback(() => {
     const wrap = matrixTableWrapRef.current;
     const th = matrixHourStripThRef.current;
@@ -1122,6 +306,7 @@ export function ScheduleView() {
       id != null ? MATRIX_DRAG_HIGHLIGHT_OVER : MATRIX_DRAG_HIGHLIGHT_IDLE;
   }, [matrixUnifiedBand, activeDragHighlightMs]);
 
+  // --- DnD sensors & matrix drag cleanup ---
   const clearMatrixDragOverlay = useCallback(() => {
     setActiveDragHighlightMs(null);
     setMatrixUnifiedBand(null);
@@ -1139,6 +324,7 @@ export function ScheduleView() {
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
   );
 
+  // --- Type picker (empty cell) ---
   /** Types that cover this hour and have no assigned shift of that type covering this hour on this day. */
   const typesAvailableForPicker = useMemo(() => {
     if (!typePicker) return [];
@@ -1159,6 +345,7 @@ export function ScheduleView() {
     });
   }, [typePicker, types, dateStr, dayShifts, durationByPreset]);
 
+  // --- Mutations ---
   const reassignMut = useMutation({
     mutationFn: (args: { shift_id: number; employee_id: number }) =>
       api.reassignShiftEmployee({
@@ -1171,7 +358,6 @@ export function ScheduleView() {
     },
     onError: (err) => {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn("[matrix DnD] reassign rejected by server:", msg, err);
       window.alert(msg);
     },
   });
@@ -1193,12 +379,8 @@ export function ScheduleView() {
       qc.invalidateQueries({ queryKey: ["violations"] });
       setTypePicker(null);
     },
-    onError: (err, variables) => {
+    onError: (err) => {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn("[matrix DnD] createShift rejected by server:", msg, {
-        variables,
-        err,
-      });
       window.alert(msg);
     },
   });
@@ -1252,42 +434,20 @@ export function ScheduleView() {
     },
   });
 
+  // --- Shift type modal open helpers ---
   function openEditShiftTypeModal(ty: JsonObject) {
     createShiftWindowMut.reset();
     updateShiftWindowMut.reset();
     setShiftTypeTimeError(null);
     setSwatchMenuOpen(false);
-    const covStart = String(ty.coverage_start ?? "");
-    const covEnd = String(ty.coverage_end ?? "");
-    const covStartHm = covStart
-      ? formatTimeForInput(coverageIsoToHm(covStart))
-      : "06:00";
-    const covEndHm = covEnd ? formatTimeForInput(coverageIsoToHm(covEnd)) : "21:00";
-    const rawSegs = ty.segments as WindowSegmentDraft[] | undefined;
-    const defPid = defaultSyllabusPresetId(presets);
-    const segments: WindowSegmentDraft[] =
-      rawSegs && rawSegs.length > 0
-        ? rawSegs.map((s) => ({
-            syllabus_preset_id: Number(s.syllabus_preset_id),
-            segment_start_time:
-              formatTimeForInput(String(s.segment_start_time)) || covStartHm || "06:00",
-          }))
-        : [{ syllabus_preset_id: defPid, segment_start_time: covStartHm || "06:00" }];
-    setShiftTypeDraft({
-      id: typeId(ty),
-      name: String(ty.name ?? ""),
-      coverage_start_time: covStartHm || "06:00",
-      coverage_end_time: covEndHm || "21:00",
-      color: String(ty.color ?? DEFAULT_SHIFT_TYPE_PASTEL_HEX),
-      notes: ty.notes != null ? String(ty.notes) : "",
-      segments,
-    });
+    setShiftTypeDraft(shiftTypeDraftFromWindow(ty, presets));
   }
 
   useEffect(() => {
     if (!shiftTypeDraft) setSwatchMenuOpen(false);
   }, [shiftTypeDraft]);
 
+  // --- Global escape: close modals / picker (swatch submenu first) ---
   useEffect(() => {
     if (!typePicker && !deleteTypeConfirm && !shiftTypeDraft) return;
     const onKey = (e: KeyboardEvent) => {
@@ -1309,16 +469,7 @@ export function ScheduleView() {
     updateShiftWindowMut.reset();
     setShiftTypeTimeError(null);
     setSwatchMenuOpen(false);
-    const covStart = "06:00";
-    const pid = defaultSyllabusPresetId(presets);
-    setShiftTypeDraft({
-      name: "",
-      coverage_start_time: covStart,
-      coverage_end_time: "21:00",
-      color: DEFAULT_SHIFT_TYPE_PASTEL_HEX,
-      notes: "",
-      segments: [{ syllabus_preset_id: pid, segment_start_time: covStart }],
-    });
+    setShiftTypeDraft(newShiftTypeDraft(presets));
   }
 
   function openTypePicker(
@@ -1347,6 +498,7 @@ export function ScheduleView() {
     });
   }
 
+  // --- Matrix DnD handlers ---
   const handleMatrixDragStart = useCallback((event: DragStartEvent) => {
     const d = event.active.data.current as
       | MatrixTypeSlotDragData
@@ -1384,159 +536,34 @@ export function ScheduleView() {
 
   const handleMatrixDragEnd = useCallback(
     (event: DragEndEvent) => {
-      const { active, over, collisions, delta, activatorEvent } = event;
-      const lastOverFromDragOver = matrixDragOverIdRef.current;
-      const dragData = active.data.current as
-        | MatrixTypeSlotDragData
-        | MatrixEmployeeShiftDragData
-        | undefined;
-
-      const logDropDenied = (reason: string, detail?: Record<string, unknown>) => {
-        console.warn("[matrix DnD] drop denied:", reason, detail ?? "");
-      };
-
+      const { active, over } = event;
       clearMatrixDragOverlay();
       suppressCellClickUntil.current = Date.now() + 400;
 
-      if (!dragData) {
-        logDropDenied("active item has no matrix drag payload", {
-          overId: over ? String(over.id) : null,
-        });
-        return;
-      }
-
-      if (!over) {
-        const ae = activatorEvent;
-        const pointer =
-          ae && "clientX" in ae && typeof (ae as MouseEvent).clientX === "number"
-            ? {
-                clientX: Math.round((ae as MouseEvent).clientX),
-                clientY: Math.round((ae as MouseEvent).clientY),
-              }
-            : null;
-        const baseDetail = {
-          kind: dragData.kind,
-          collisionCount: collisions?.length ?? 0,
-          lastOverFromDragOver,
-        };
-        logDropDenied(
-          "not over any droppable (cancelled or invalid target)",
-          import.meta.env.DEV
-            ? {
-                ...baseDetail,
-                collisionIds: collisions?.map((c) => String(c.id)) ?? null,
-                delta,
-                activeId: String(active.id),
-                activeRectInitial: summarizeMatrixDndRectForLog(
-                  active.rect.current?.initial ?? null,
-                ),
-                activeRectTranslated: summarizeMatrixDndRectForLog(
-                  active.rect.current?.translated ?? null,
-                ),
-                activatorType: ae?.type ?? null,
-                activatorPointer: pointer,
-              }
-            : baseDetail,
-        );
-        return;
-      }
-
-      const o = over.data.current as { employeeId?: number; hour?: string } | undefined;
-      if (!o || o.employeeId === undefined || o.hour === undefined) {
-        logDropDenied("droppable has no employeeId/hour in data", {
-          overId: String(over.id),
-          overData: over.data.current,
-        });
-        return;
-      }
-
-      if (dragData.kind === "empShift") {
-        if (o.employeeId === dragData.employeeId) {
-          logDropDenied("empShift: dropped on same employee row", {
-            employeeId: o.employeeId,
-          });
-          return;
-        }
-        if (
-          employeeHasShiftIntersectingInterval(
-            dateStr,
-            dayShifts,
-            o.employeeId,
-            dragData.highlightStartMs,
-            dragData.highlightEndMs,
-            dragData.shiftId,
-          )
-        ) {
-          logDropDenied(
-            "empShift: target employee already has a shift overlapping the dragged interval",
-            {
-              targetEmployeeId: o.employeeId,
-              highlightStartMs: dragData.highlightStartMs,
-              highlightEndMs: dragData.highlightEndMs,
-              excludedShiftId: dragData.shiftId,
-            },
-          );
-          return;
-        }
+      const resolution = resolveMatrixDragEnd({
+        active,
+        over,
+        dateStr,
+        dayShifts,
+      });
+      if (resolution.kind === "noop") return;
+      if (resolution.kind === "reassign") {
         reassignMut.mutate({
-          shift_id: dragData.shiftId,
-          employee_id: o.employeeId,
+          shift_id: resolution.shift_id,
+          employee_id: resolution.employee_id,
         });
         return;
       }
-
-      if (dragData.kind !== "typeSlot") {
-        logDropDenied("unknown drag kind (expected typeSlot after empShift branch)", {
-          kind: (dragData as { kind?: string }).kind,
-        });
-        return;
-      }
-
-      const dropEmpId = o.employeeId;
-      const dropHour = o.hour;
-      if (!dragData.coveredHours.includes(dropHour)) {
-        logDropDenied("typeSlot: drop cell hour is not in the slot’s covered hours", {
-          dropHour,
-          coveredHours: dragData.coveredHours,
-          shiftWindowId: dragData.shiftWindowId,
-          syllabusNum: dragData.syllabusNum,
-        });
-        return;
-      }
-
-      if (
-        employeeHasShiftIntersectingInterval(
-          dateStr,
-          dayShifts,
-          dropEmpId,
-          dragData.highlightStartMs,
-          dragData.highlightEndMs,
-          undefined,
-          { ignoreStaleShifts: true },
-        )
-      ) {
-        logDropDenied(
-          "typeSlot: employee already has an up-to-date shift overlapping this interval",
-          {
-            employeeId: dropEmpId,
-            highlightStartMs: dragData.highlightStartMs,
-            highlightEndMs: dragData.highlightEndMs,
-            shiftWindowId: dragData.shiftWindowId,
-            syllabusNum: dragData.syllabusNum,
-          },
-        );
-        return;
-      }
-
       createMut.mutate({
-        shift_window_id: dragData.shiftWindowId,
-        employee_id: dropEmpId,
-        syllabus_num: dragData.syllabusNum,
+        shift_window_id: resolution.shift_window_id,
+        employee_id: resolution.employee_id,
+        syllabus_num: resolution.syllabus_num,
       });
     },
     [clearMatrixDragOverlay, createMut, dateStr, dayShifts, reassignMut],
   );
 
+  // --- Render ---
   return (
     <div className="mx-auto flex max-w-[1600px] flex-col gap-4">
       {hours.length === 0 ? (
@@ -1627,174 +654,140 @@ export function ScheduleView() {
                         {name}
                       </span>
                     </td>
-                    {(() => {
-                      const empFrame = effectiveMatrixFrame(dateStr, hours, matrixFrame);
-                      const rangeMs =
-                        empFrame && empFrame.frameEndMs > empFrame.frameStartMs
-                          ? empFrame.frameEndMs - empFrame.frameStartMs
-                          : 0;
-                      return (
-                        <td
-                          colSpan={hours.length}
-                          className="relative border-s border-line px-0 py-0.5 align-middle"
-                        >
-                          <div className="relative min-h-[28px] w-full">
-                            <div className="absolute inset-0 z-0 flex">
-                              {hours.map((hour) => {
-                                const hasShift = rowShifts.some((s) =>
-                                  shiftCoversHour(
-                                    String(s.start_time),
-                                    String(s.end_time),
+                    <td
+                      colSpan={hours.length}
+                      className="relative border-s border-line px-0 py-0.5 align-middle"
+                    >
+                      <div className="relative min-h-[28px] w-full">
+                        <div className="absolute inset-0 z-0 flex">
+                          {hours.map((hour) => {
+                            const hasShift = rowShifts.some((s) =>
+                              shiftCoversHour(
+                                String(s.start_time),
+                                String(s.end_time),
+                                hour,
+                              ),
+                            );
+                            const hl = activeDragHighlightMs;
+                            let droppableDisabled: boolean;
+                            if (matrixDragKind === null || !hl) {
+                              droppableDisabled = hasShift;
+                            } else if (matrixDragKind === "typeSlot") {
+                              const ch = matrixTypeSlotCoveredHours ?? [];
+                              droppableDisabled =
+                                !ch.includes(hour) ||
+                                (matrixTypeSlotOverlapEmps?.has(eid) ?? false);
+                            } else {
+                              droppableDisabled =
+                                matrixEmpShiftOverlapEmps?.has(eid) ?? false;
+                            }
+                            return (
+                              <MatrixEmployeeHourDropZone
+                                key={`${eid}-dz-${hour}`}
+                                employeeId={eid}
+                                hour={hour}
+                                hasEmployeeShiftInHour={hasShift}
+                                droppableDisabled={droppableDisabled}
+                                className={`cursor-pointer ${hasShift ? "" : "bg-background/40"}`}
+                                onEmptyClick={(e) => {
+                                  if (Date.now() < suppressCellClickUntil.current) {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    return;
+                                  }
+                                  openTypePicker(
+                                    e.currentTarget.getBoundingClientRect(),
+                                    eid,
+                                    name,
                                     hour,
-                                  ),
+                                  );
+                                }}
+                              />
+                            );
+                          })}
+                        </div>
+                        {scheduleMatrixFrame && matrixRangeMs > 0 ? (
+                          <div className="pointer-events-none relative z-[2] min-h-[28px] w-full">
+                            {[...rowShifts]
+                              .sort(
+                                (a, b) =>
+                                  timeToMin(String(a.start_time)) -
+                                    timeToMin(String(b.start_time)) ||
+                                  Number(a.id) - Number(b.id),
+                              )
+                              .map((shift, idx) => {
+                                const iv = shiftWallIntervalMs(
+                                  dateStr,
+                                  String(shift.start_time),
+                                  String(shift.end_time),
                                 );
-                                const hl = activeDragHighlightMs;
-                                let droppableDisabled: boolean;
-                                if (matrixDragKind === null || !hl) {
-                                  droppableDisabled = hasShift;
-                                } else if (matrixDragKind === "typeSlot") {
-                                  const ch = matrixTypeSlotCoveredHours ?? [];
-                                  droppableDisabled =
-                                    !ch.includes(hour) ||
-                                    (matrixTypeSlotOverlapEmps?.has(eid) ?? false);
-                                } else {
-                                  droppableDisabled =
-                                    matrixEmpShiftOverlapEmps?.has(eid) ?? false;
-                                }
+                                const clipped = clipIntervalToFrame(
+                                  iv.startMs,
+                                  iv.endMs,
+                                  scheduleMatrixFrame.frameStartMs,
+                                  scheduleMatrixFrame.frameEndMs,
+                                );
+                                if (!clipped) return null;
+                                const [s, e] = clipped;
+                                const leftPct =
+                                  ((s - scheduleMatrixFrame.frameStartMs) / matrixRangeMs) * 100;
+                                const widthPct = ((e - s) / matrixRangeMs) * 100;
+                                // Match window row / flight board: color comes from shift_windows (API type_color), not syllabus preset (#6366F1 default).
+                                const typeColor = String(
+                                  shift.type_color ?? shift.typeColor ?? "#7BA3B5",
+                                );
+                                const overlap = rowShifts.filter((o) => {
+                                  if (Number(o.id) === Number(shift.id)) return false;
+                                  const oiv = shiftWallIntervalMs(
+                                    dateStr,
+                                    String(o.start_time),
+                                    String(o.end_time),
+                                  );
+                                  return (
+                                    Math.max(iv.startMs, oiv.startMs) <
+                                    Math.min(iv.endMs, oiv.endMs)
+                                  );
+                                });
+                                const extra = overlap.length;
+                                const pillTitle =
+                                  String(shift.type_name ?? "") +
+                                  (extra > 0 ? ` (+${extra} משמרות נוספות באותה תא)` : "");
                                 return (
-                                  <MatrixEmployeeHourDropZone
-                                    key={`${eid}-dz-${hour}`}
-                                    employeeId={eid}
-                                    hour={hour}
-                                    hasEmployeeShiftInHour={hasShift}
-                                    droppableDisabled={droppableDisabled}
-                                    className={`cursor-pointer ${hasShift ? "" : "bg-background/40"}`}
-                                    onEmptyClick={(e) => {
-                                      if (Date.now() < suppressCellClickUntil.current) {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        return;
-                                      }
-                                      openTypePicker(
-                                        e.currentTarget.getBoundingClientRect(),
-                                        eid,
-                                        name,
-                                        hour,
-                                      );
+                                  <div
+                                    key={`${eid}-pill-${shift.id}`}
+                                    className="pointer-events-auto absolute top-1/2 box-border -translate-y-1/2 py-0.5"
+                                    style={{
+                                      // Physical `left` ignores direction; hour columns follow
+                                      // inline-start in RTL, so use inset-inline-start to align pills.
+                                      insetInlineStart: `${leftPct}%`,
+                                      width: `${widthPct}%`,
+                                      zIndex: 10 + idx,
                                     }}
-                                  />
+                                  >
+                                    <div
+                                      className={`box-border h-full min-h-0 w-full min-w-0 ${MATRIX_PILL_INSET_X}`}
+                                    >
+                                      <EmployeeMatrixShiftPillChooser
+                                        shift={shift}
+                                        employeeId={eid}
+                                        clippedStartMs={s}
+                                        clippedEndMs={e}
+                                        typeColor={typeColor}
+                                        pillTitle={pillTitle}
+                                        onLongPressDelete={() => {
+                                          suppressCellClickUntil.current =
+                                            Date.now() + 400;
+                                          deleteMut.mutate(Number(shift.id));
+                                        }}
+                                      />
+                                    </div>
+                                  </div>
                                 );
                               })}
-                            </div>
-                            {empFrame && rangeMs > 0 ? (
-                              <div className="pointer-events-none relative z-[2] min-h-[28px] w-full">
-                                {[...rowShifts]
-                                  .sort(
-                                    (a, b) =>
-                                      timeToMin(String(a.start_time)) -
-                                        timeToMin(String(b.start_time)) ||
-                                      Number(a.id) - Number(b.id),
-                                  )
-                                  .map((shift, idx) => {
-                                  const iv = shiftWallIntervalMs(
-                                    dateStr,
-                                    String(shift.start_time),
-                                    String(shift.end_time),
-                                  );
-                                  const clipped = clipIntervalToFrame(
-                                    iv.startMs,
-                                    iv.endMs,
-                                    empFrame.frameStartMs,
-                                    empFrame.frameEndMs,
-                                  );
-                                  if (!clipped) return null;
-                                  const [s, e] = clipped;
-                                  const leftPct = ((s - empFrame.frameStartMs) / rangeMs) * 100;
-                                  const widthPct = ((e - s) / rangeMs) * 100;
-                                  // Match window row / flight board: color comes from shift_windows (API type_color), not syllabus preset (#6366F1 default).
-                                  const typeColor = String(
-                                    shift.type_color ?? shift.typeColor ?? "#7BA3B5",
-                                  );
-                                  const overlap = rowShifts.filter((o) => {
-                                    if (Number(o.id) === Number(shift.id)) return false;
-                                    const oiv = shiftWallIntervalMs(
-                                      dateStr,
-                                      String(o.start_time),
-                                      String(o.end_time),
-                                    );
-                                    return (
-                                      Math.max(iv.startMs, oiv.startMs) <
-                                      Math.min(iv.endMs, oiv.endMs)
-                                    );
-                                  });
-                                  const extra = overlap.length;
-                                  const pillTitle =
-                                    String(shift.type_name ?? "") +
-                                    (extra > 0 ? ` (+${extra} משמרות נוספות באותה תא)` : "");
-                                  return (
-                                    <div
-                                      key={`${eid}-pill-${shift.id}`}
-                                      className="pointer-events-auto absolute top-1/2 box-border -translate-y-1/2 py-0.5"
-                                      style={{
-                                        // Physical `left` ignores direction; hour columns follow
-                                        // inline-start in RTL, so use inset-inline-start to align pills.
-                                        insetInlineStart: `${leftPct}%`,
-                                        width: `${widthPct}%`,
-                                        zIndex: 10 + idx,
-                                      }}
-                                    >
-                                      <div
-                                        className={`box-border h-full min-h-0 w-full min-w-0 ${MATRIX_PILL_INSET_X}`}
-                                      >
-                                      {(() => {
-                                        const snRaw = shift.syllabus_num ?? shift.syllabusNum;
-                                        const syllabusNum = Number(snRaw);
-                                        const canDragEmp =
-                                          Number.isFinite(syllabusNum) &&
-                                          !Number.isNaN(syllabusNum);
-                                        const upToDate = shiftIsUpToDate(shift);
-                                        const wid = Number(
-                                          shift.shift_window_id ?? shift.shiftWindowId,
-                                        );
-                                        const onDel = () => {
-                                          suppressCellClickUntil.current = Date.now() + 400;
-                                          deleteMut.mutate(Number(shift.id));
-                                        };
-                                        if (canDragEmp && upToDate) {
-                                          return (
-                                            <MatrixDraggableEmployeeShiftPill
-                                              shiftId={Number(shift.id)}
-                                              shiftWindowId={wid}
-                                              syllabusNum={syllabusNum}
-                                              employeeId={eid}
-                                              typeColor={typeColor}
-                                              title={pillTitle}
-                                              upToDate={upToDate}
-                                              highlightStartMs={s}
-                                              highlightEndMs={e}
-                                              onLongPressDelete={onDel}
-                                            />
-                                          );
-                                        }
-                                        return (
-                                          <MatrixEmployeeShiftPill
-                                            typeColor={typeColor}
-                                            title={pillTitle}
-                                            upToDate={upToDate}
-                                            onLongPressDelete={onDel}
-                                          />
-                                        );
-                                      })()}
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            ) : null}
                           </div>
-                        </td>
-                      );
-                    })()}
+                        ) : null}
+                      </div>
+                    </td>
                   </tr>
                 );
               })}
@@ -1808,7 +801,6 @@ export function ScheduleView() {
                   durationByPreset,
                   base,
                 );
-                const rowFrame = effectiveMatrixFrame(dateStr, hours, matrixFrame);
                 const cov = coverageOf(ty);
                 const dayInter = intersectCoverageOnDay(dateStr, cov.start, cov.end);
                 const leftPadMs =
@@ -1914,12 +906,13 @@ export function ScheduleView() {
                               : " — זמין לאיוש");
                           const flexGrow = Math.max(1, seg.endMs - seg.startMs);
                           const hl =
-                            rowFrame && rowFrame.frameEndMs > rowFrame.frameStartMs
+                            scheduleMatrixFrame &&
+                            scheduleMatrixFrame.frameEndMs > scheduleMatrixFrame.frameStartMs
                               ? clipIntervalToFrame(
                                   seg.startMs,
                                   seg.endMs,
-                                  rowFrame.frameStartMs,
-                                  rowFrame.frameEndMs,
+                                  scheduleMatrixFrame.frameStartMs,
+                                  scheduleMatrixFrame.frameEndMs,
                                 )
                               : null;
                           const highlightStartMs = hl ? hl[0] : seg.startMs;
@@ -2077,317 +1070,55 @@ export function ScheduleView() {
         </DndContext>
       )}
 
-      {typePicker && (
-        <>
-          <button
-            type="button"
-            className="fixed inset-0 z-40 cursor-default bg-transparent"
-            aria-label="סגור"
-            onClick={() => setTypePicker(null)}
-          />
-          <div
-            className="fixed z-50 max-h-[min(320px,70vh)] w-[280px] overflow-y-auto rounded-card border border-line bg-surface p-3 shadow-airy"
-            style={{ top: typePicker.top, left: typePicker.left }}
-            role="menu"
-          >
-            <div className="mb-2 border-b border-line pb-2 text-sm font-semibold text-ink">
-              {typePicker.employeeName}
-              <div className="text-xs font-normal text-muted">
-                {typePicker.start} – {typePicker.end}
-              </div>
-            </div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-muted">
-              סוג משמרת
-            </div>
-            <ul className="mt-1 space-y-1">
-              {typesAvailableForPicker.map((t) => {
-                const tid = typeId(t);
-                const col = String(t.color ?? "#7BA3B5");
-                return (
-                  <li key={tid}>
-                    <button
-                      type="button"
-                      disabled={createMut.isPending}
-                      className="flex w-full items-center gap-2 rounded-pill px-2 py-2 text-start text-sm hover:bg-background disabled:cursor-not-allowed disabled:opacity-45"
-                      onClick={() => {
-                        const sn = syllabusNumForHourInWindow(
-                          dateStr,
-                          t,
-                          typePicker.hour,
-                          durationByPreset,
-                        );
-                        if (sn == null) return;
-                        createMut.mutate({
-                          shift_window_id: tid,
-                          employee_id: typePicker.employeeId,
-                          syllabus_num: sn,
-                        });
-                      }}
-                    >
-                      <span
-                        className="size-3 shrink-0 rounded-pill"
-                        style={{ backgroundColor: col }}
-                      />
-                      <span className="font-medium text-ink">{String(t.name)}</span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-            {types.length === 0 && (
-              <p className="text-sm text-muted">אין סוגי משמרת ליום זה.</p>
-            )}
-            {types.length > 0 && typesAvailableForPicker.length === 0 && (
-              <p className="text-sm text-muted">
-                הכל מאויש
-              </p>
-            )}
-          </div>
-        </>
-      )}
+      {typePicker ? (
+        <TypePickerPanel
+          picker={typePicker}
+          onClose={() => setTypePicker(null)}
+          typesAvailableForPicker={typesAvailableForPicker}
+          totalTypesCount={types.length}
+          createIsPending={createMut.isPending}
+          onPickShiftType={(t) => {
+            const sn = syllabusNumForHourInWindow(
+              dateStr,
+              t,
+              typePicker.hour,
+              durationByPreset,
+            );
+            if (sn == null) return;
+            createMut.mutate({
+              shift_window_id: typeId(t),
+              employee_id: typePicker.employeeId,
+              syllabus_num: sn,
+            });
+          }}
+        />
+      ) : null}
 
       <RemoteRegInline weekStr={weekStr} />
 
-      {shiftTypeDraft && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/25 p-4 backdrop-blur-[2px]"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="shift-type-modal-title"
-          onClick={() => setShiftTypeDraft(null)}
-        >
-          <div
-            className="flex max-h-[min(90vh,640px)] w-full max-w-lg flex-col rounded-card border border-line bg-surface shadow-airy"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line px-4 py-3">
-              <div className="flex min-w-0 flex-1 items-center gap-2">
-                <PastelSwatchGridDropdown
-                  value={String(shiftTypeDraft.color ?? DEFAULT_SHIFT_TYPE_PASTEL_HEX)}
-                  onChange={(hex) => setShiftTypeDraft({ ...shiftTypeDraft, color: hex })}
-                  open={swatchMenuOpen}
-                  onOpenChange={setSwatchMenuOpen}
-                  trigger="dot"
-                />
-                <h3
-                  id="shift-type-modal-title"
-                  className="min-w-0 font-heading text-lg font-bold text-ink"
-                >
-                  {Number(shiftTypeDraft.id) > 0 ? "עריכת חלון" : "סוג משמרת חדש"}
-                </h3>
-              </div>
-              <button
-                type="button"
-                className="shrink-0 rounded-pill px-2 text-muted hover:bg-background hover:text-ink"
-                onClick={() => setShiftTypeDraft(null)}
-              >
-                ✕
-              </button>
-            </div>
-            <div
-              ref={shiftTypeModalBodyRef}
-              className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4"
-            >
-              <ShiftWindowDraftFormFields
-                draft={shiftTypeDraft}
-                setDraft={(next) => setShiftTypeDraft(next)}
-                presets={presets}
-                dateStr={dateStr}
-                shiftTypeTimeError={shiftTypeTimeError}
-                setShiftTypeTimeError={setShiftTypeTimeError}
-                scrollContainerRef={shiftTypeModalBodyRef}
-                saveErrorMessage={
-                  createShiftWindowMut.isError
-                    ? String(
-                        (createShiftWindowMut.error as Error)?.message ??
-                          createShiftWindowMut.error,
-                      )
-                    : updateShiftWindowMut.isError
-                      ? String(
-                          (updateShiftWindowMut.error as Error)?.message ??
-                            updateShiftWindowMut.error,
-                        )
-                      : null
-                }
-              />
-            </div>
-            <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-line px-4 py-3">
-              <button
-                type="button"
-                className="rounded-pill border border-line px-4 py-2 text-sm font-semibold text-ink hover:bg-background"
-                onClick={() => setShiftTypeDraft(null)}
-              >
-                ביטול
-              </button>
-              {Number(shiftTypeDraft.id) > 0 ? (
-                <button
-                  type="button"
-                  className="rounded-pill border border-peach-3/60 bg-peach-1/50 px-4 py-2 text-sm font-semibold text-ink hover:bg-peach-1/70"
-                  onClick={() => {
-                    const id = Number(shiftTypeDraft.id);
-                    const name = String(shiftTypeDraft.name ?? "");
-                    setShiftTypeDraft(null);
-                    setDeleteTypeConfirm({ id, name });
-                  }}
-                >
-                  מחק
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="rounded-pill bg-primary px-4 py-2 text-sm font-heading font-bold text-white shadow-sm hover:opacity-90 disabled:opacity-50"
-                disabled={
-                  createShiftWindowMut.isPending ||
-                  updateShiftWindowMut.isPending ||
-                  !String(shiftTypeDraft.name ?? "").trim()
-                }
-                onClick={() => {
-                  const d = shiftTypeDraft;
-                  const startHm = String(d.coverage_start_time ?? "06:00");
-                  const endHm = String(d.coverage_end_time ?? "21:00");
-                  const covStart = coverageIsoFromDayAndHm(dateStr, startHm);
-                  const covEnd = coverageIsoFromDayAndHm(dateStr, endHm, true);
-                  if (new Date(covEnd).getTime() <= new Date(covStart).getTime()) {
-                    setShiftTypeTimeError(
-                      "שעת הסיום חייבת להיות אחרי שעת ההתחלה (00:00 = חצות ביום המחרת)",
-                    );
-                    return;
-                  }
-                  setShiftTypeTimeError(null);
-                  const payload = buildShiftWindowPayload(d, dateStr);
-                  const editId = Number(d.id);
-                  if (editId > 0) {
-                    updateShiftWindowMut.mutate({ id: editId, payload });
-                  } else {
-                    createShiftWindowMut.mutate(payload);
-                  }
-                }}
-              >
-                שמור
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {deleteTypeConfirm && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/25 p-4 backdrop-blur-[2px]"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="delete-shift-type-title"
-          onClick={() => setDeleteTypeConfirm(null)}
-        >
-          <div
-            className="w-full max-w-md rounded-card border border-line bg-surface p-0 shadow-airy"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="border-b border-line px-4 py-3">
-              <h3 id="delete-shift-type-title" className="font-heading text-lg font-bold text-ink">
-                למחוק סוג משמרת?
-              </h3>
-            </div>
-            <div className="space-y-2 px-4 py-4 text-sm text-ink">
-              <p>
-                האם למחוק את <span className="font-semibold">{deleteTypeConfirm.name}</span>?
-              </p>
-              <p className="text-muted">
-                פעולה זו תמחק גם את כל המשמרות המשויכות לסוג זה (בכל התאריכים). לא ניתן לבטל.
-              </p>
-            </div>
-            <div className="flex flex-wrap justify-end gap-2 border-t border-line px-4 py-3">
-              <button
-                type="button"
-                className="rounded-pill border border-line px-4 py-2 text-sm font-semibold text-ink hover:bg-background"
-                onClick={() => setDeleteTypeConfirm(null)}
-              >
-                ביטול
-              </button>
-              <button
-                type="button"
-                className="rounded-pill bg-peach-3 px-4 py-2 text-sm font-bold text-white hover:opacity-90 disabled:opacity-50"
-                disabled={deleteShiftWindowMut.isPending}
-                onClick={() => deleteShiftWindowMut.mutate(deleteTypeConfirm.id)}
-              >
-                מחק
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function RemoteRegInline({ weekStr }: { weekStr: string }) {
-  const [url, setUrl] = useState("");
-  const qc = useQueryClient();
-  const { data: cfg } = useQuery({
-    queryKey: ["sheet_config"],
-    queryFn: api.getSheetConfig,
-  });
-  const regs = useQuery({
-    queryKey: ["remote_regs", weekStr],
-    queryFn: () => api.getRemoteRegistrations(weekStr),
-  });
-
-  useEffect(() => {
-    if (cfg?.sheet_url) setUrl(cfg.sheet_url);
-  }, [cfg?.sheet_url]);
-
-  return (
-    <div className="rounded-card border border-line bg-surface p-4 shadow-airy">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="font-heading font-bold text-ink">רישום מרחוק</span>
-        <button
-          type="button"
-          className="rounded-pill border border-line px-3 py-1 text-sm hover:bg-background"
-          onClick={() => regs.refetch()}
-        >
-          רענן
-        </button>
-      </div>
-      <div className="mb-2 flex flex-wrap gap-2">
-        <input
-          dir="ltr"
-          className="min-w-[200px] flex-1 text-sm"
-          placeholder="Google Sheet URL"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
+      {shiftTypeDraft ? (
+        <ShiftTypeEditorModal
+          shiftTypeDraft={shiftTypeDraft}
+          setShiftTypeDraft={setShiftTypeDraft}
+          presets={presets}
+          dateStr={dateStr}
+          shiftTypeModalBodyRef={shiftTypeModalBodyRef}
+          swatchMenuOpen={swatchMenuOpen}
+          setSwatchMenuOpen={setSwatchMenuOpen}
+          shiftTypeTimeError={shiftTypeTimeError}
+          setShiftTypeTimeError={setShiftTypeTimeError}
+          createShiftWindowMut={createShiftWindowMut}
+          updateShiftWindowMut={updateShiftWindowMut}
+          onClose={() => setShiftTypeDraft(null)}
+          onRequestDelete={(id, name) => setDeleteTypeConfirm({ id, name })}
         />
-        <button
-          type="button"
-          className="rounded-pill border border-line px-3 py-2 text-sm"
-          onClick={async () => {
-            await api.saveSheetConfig(url);
-            qc.invalidateQueries({ queryKey: ["sheet_config"] });
-          }}
-        >
-          שמור
-        </button>
-        <button
-          type="button"
-          className="rounded-pill border border-line px-3 py-2 text-sm"
-          onClick={async () => {
-            await api.sheetPoll();
-            regs.refetch();
-          }}
-        >
-          משוך
-        </button>
-      </div>
-      <div className="max-h-40 space-y-1 overflow-y-auto text-sm">
-        {(regs.data ?? []).map((r) => (
-          <div
-            key={String(r.id)}
-            className="flex flex-wrap gap-2 rounded-pill bg-background px-3 py-1 text-ink"
-          >
-            <span>{String(r.employee_name)}</span>
-            <span className="text-muted">{String(r.shift_date)}</span>
-            <span className="text-muted">{String(r.status)}</span>
-          </div>
-        ))}
-      </div>
+      ) : null}
+
+      <DeleteShiftTypeConfirmDialog
+        confirm={deleteTypeConfirm}
+        onClose={() => setDeleteTypeConfirm(null)}
+        deleteShiftWindowMut={deleteShiftWindowMut}
+      />
     </div>
   );
 }

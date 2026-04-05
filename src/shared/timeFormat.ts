@@ -1,3 +1,5 @@
+import { addDays, formatYmd } from "./dates";
+
 /**
  * End of a 1-hour slot that starts at `hour` (`HH:00`).
  * The 23:00 slot ends at midnight next calendar day (`00:00`), not `24:00` (not parseable server-side).
@@ -28,4 +30,28 @@ export function coverageIsoToHm(iso: string): string {
   const m = /^(\d{1,2}):(\d{2})(?::\d{2})?/.exec(rest);
   if (!m) return "00:00";
   return formatTimeForInput(`${m[1]}:${m[2]}`) || "00:00";
+}
+
+/** When `isEnd`, 00:00 means midnight at the start of the next calendar day. */
+export function coverageIsoFromDayAndHm(
+  dateStr: string,
+  hm: string,
+  isEnd = false,
+): string {
+  const t = String(hm).trim();
+  const m = /^(\d{1,2}):(\d{2})$/.exec(t);
+  if (m) {
+    const h = parseInt(m[1], 10);
+    const min = parseInt(m[2], 10);
+    const hh = m[1].padStart(2, "0");
+    const mm = m[2].padStart(2, "0");
+    let dayStr = dateStr;
+    if (isEnd && h === 0 && min === 0) {
+      const ymdParts = dateStr.split("-").map(Number);
+      const base = new Date(ymdParts[0], ymdParts[1] - 1, ymdParts[2]);
+      dayStr = formatYmd(addDays(base, 1));
+    }
+    return `${dayStr}T${hh}:${mm}:00`;
+  }
+  return `${dateStr}T${t}`;
 }

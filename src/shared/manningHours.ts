@@ -43,6 +43,58 @@ export function dayBounds(dateStr: string): { start: Date; endExcl: Date } {
   return { start, endExcl };
 }
 
+/** Wall-clock interval for a shift on `dateStr` (handles end before start as next day). */
+export function shiftWallIntervalMs(
+  dateStr: string,
+  startHm: string,
+  endHm: string,
+): { startMs: number; endMs: number } {
+  const d0 = dayBounds(dateStr).start.getTime();
+  const sm = timeToMin(startHm);
+  const em = timeToMin(endHm);
+  const startMs = d0 + sm * 60_000;
+  let endMs = d0 + em * 60_000;
+  if (em <= sm) {
+    endMs += 24 * 3600_000;
+  }
+  return { startMs, endMs };
+}
+
+/** Half-open wall intervals [a0,a1) and [b0,b1) overlap with positive duration. */
+export function wallIntervalsOverlap(
+  a0: number,
+  a1: number,
+  b0: number,
+  b1: number,
+): boolean {
+  return a1 > a0 && b1 > b0 && Math.max(a0, b0) < Math.min(a1, b1);
+}
+
+export function clipIntervalToFrame(
+  startMs: number,
+  endMs: number,
+  frameStart: number,
+  frameEnd: number,
+): [number, number] | null {
+  const s = Math.max(startMs, frameStart);
+  const e = Math.min(endMs, frameEnd);
+  if (e <= s) return null;
+  return [s, e];
+}
+
+export function effectiveMatrixFrame(
+  dateStr: string,
+  hours: string[],
+  frame: { frameStartMs: number; frameEndMs: number } | null,
+): { frameStartMs: number; frameEndMs: number } | null {
+  if (frame) return frame;
+  if (hours.length === 0) return null;
+  const d0 = dayBounds(dateStr).start.getTime();
+  const sm = timeToMin(hours[0]!);
+  const em = timeToMin(hours[hours.length - 1]!) + 60;
+  return { frameStartMs: d0 + sm * 60_000, frameEndMs: d0 + em * 60_000 };
+}
+
 /** Intersection of coverage window with calendar day [00:00, next 00:00). */
 export function intersectCoverageOnDay(
   dateStr: string,
