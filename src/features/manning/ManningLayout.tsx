@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAppStore, weekStartString } from "../../app/store";
 import * as api from "../../shared/api";
-import { DAYS_HE, addDays, formatYmd } from "../../shared/dates";
+import { DAYS_HE, addDays, formatDdMmYy, formatYmd } from "../../shared/dates";
 import type { JsonObject } from "../../shared/api";
 
 export function ManningLayout({ children }: { children: ReactNode }) {
@@ -34,7 +34,8 @@ export function ManningLayout({ children }: { children: ReactNode }) {
     },
   });
 
-  const dayLabel = `${DAYS_HE[currentDay.getDay()]} ${dateStr}`;
+  const dayNameHe = DAYS_HE[currentDay.getDay()];
+  const dateDdMmYy = formatDdMmYy(currentDay);
   const isViewingToday = dateStr === formatYmd(new Date());
 
   return (
@@ -42,21 +43,30 @@ export function ManningLayout({ children }: { children: ReactNode }) {
       <header className="sticky top-0 z-30 border-b border-line bg-surface/95 px-4 py-3 shadow-airy backdrop-blur-sm">
         <div className="flex min-h-11 flex-wrap items-center gap-3">
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              className="rounded-pill border border-line bg-background px-3 py-1.5 text-sm text-ink hover:bg-peach-1"
-              onClick={() => setCurrentDay(addDays(currentDay, -1))}
-            >
-              ◀ יום קודם
-            </button>
-            <span className="font-heading text-base font-bold text-ink">{dayLabel}</span>
-            <button
-              type="button"
-              className="rounded-pill border border-line bg-background px-3 py-1.5 text-sm text-ink hover:bg-peach-1"
-              onClick={() => setCurrentDay(addDays(currentDay, 1))}
-            >
-              יום הבא ▶
-            </button>
+            <span className="inline-block w-[9rem] shrink-0 text-center font-heading text-base font-bold text-ink">
+              {dayNameHe},{" "}
+              <span className="tabular-nums" dir="ltr">
+                {dateDdMmYy}
+              </span>
+            </span>
+            <span className="inline-flex flex-row items-center gap-2" dir="ltr">
+              <button
+                type="button"
+                className="inline-flex size-9 shrink-0 items-center justify-center rounded-full border border-line bg-background text-sm leading-none text-ink hover:bg-peach-1"
+                aria-label="יום הבא"
+                onClick={() => setCurrentDay(addDays(currentDay, 1))}
+              >
+                ◀
+              </button>
+              <button
+                type="button"
+                className="inline-flex size-9 shrink-0 items-center justify-center rounded-full border border-line bg-background text-sm leading-none text-ink hover:bg-peach-1"
+                aria-label="יום קודם"
+                onClick={() => setCurrentDay(addDays(currentDay, -1))}
+              >
+                ▶
+              </button>
+            </span>
             <button
               type="button"
               className={

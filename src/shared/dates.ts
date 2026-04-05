@@ -22,6 +22,14 @@ export function formatYmd(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+/** Display-only: `dd/mm/yy` (local calendar date). */
+export function formatDdMmYy(d: Date): string {
+  const day = String(d.getDate()).padStart(2, "0");
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const yy = String(d.getFullYear() % 100).padStart(2, "0");
+  return `${day}/${m}/${yy}`;
+}
+
 export const DAYS_HE = [
   "ראשון",
   "שני",
