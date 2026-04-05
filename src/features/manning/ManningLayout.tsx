@@ -108,7 +108,7 @@ export function ManningLayout({ children }: { children: ReactNode }) {
 
           <button
             type="button"
-            className="rounded-pill border border-mint-2 bg-mint-1 px-3 py-1.5 text-sm font-heading font-semibold text-ink hover:bg-mint-2"
+            className="rounded-pill border border-mint-4 bg-mint-3 px-3 py-1.5 text-sm font-heading font-semibold text-ink shadow-sm hover:border-mint-5 hover:bg-mint-4"
             onClick={() => waMut.mutate()}
           >
             שלח בוואטסאפ

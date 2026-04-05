@@ -309,6 +309,9 @@ export function ManagementView() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["syllabus_presets"] });
       qc.invalidateQueries({ queryKey: ["shift_windows"] });
+      // Duration change (and delete) mark shifts `up_to_date = 0` on the server; refetch so schedule/board show stale immediately.
+      qc.invalidateQueries({ queryKey: ["shifts"] });
+      qc.invalidateQueries({ queryKey: ["violations"] });
       setPresetDraft(null);
     },
   });
@@ -318,6 +321,8 @@ export function ManagementView() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["syllabus_presets"] });
       qc.invalidateQueries({ queryKey: ["shift_windows"] });
+      qc.invalidateQueries({ queryKey: ["shifts"] });
+      qc.invalidateQueries({ queryKey: ["violations"] });
     },
   });
 
@@ -412,7 +417,7 @@ export function ManagementView() {
                 className="rounded-pill bg-primary px-3 py-1.5 text-sm font-heading font-bold text-white shadow-sm hover:opacity-90"
                 onClick={openNewEmployee}
               >
-                + הוסף מפעיל
+                + מפעיל
               </button>
             ) : tab === "roles" ? (
               <button
@@ -446,7 +451,7 @@ export function ManagementView() {
                   })
                 }
               >
-                + הוסף סילבוס
+                + סילבוס
               </button>
             )}
         </div>

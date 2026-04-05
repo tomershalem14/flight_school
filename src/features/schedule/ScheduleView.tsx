@@ -2,6 +2,7 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
+  pointerWithin,
   useDraggable,
   useDroppable,
   useSensor,
@@ -106,9 +107,11 @@ function employeeHasShiftIntersectingInterval(
   intervalStartMs: number,
   intervalEndMs: number,
   excludeShiftId?: number,
+  opts?: { ignoreStaleShifts?: boolean },
 ): boolean {
   for (const s of dayShifts) {
     if (excludeShiftId != null && Number(s.id) === excludeShiftId) continue;
+    if (opts?.ignoreStaleShifts && !shiftIsUpToDate(s)) continue;
     const se = s.employee_id;
     if (se === null || se === undefined || se === "") continue;
     if (Number(se) !== employeeId) continue;
@@ -284,6 +287,19 @@ function matrixPillDragSize(event: DragStartEvent): { width: number; height: num
     }
   }
   return null;
+}
+
+/** Compact rect for console diagnostics (dnd-kit / getBoundingClientRect shapes). */
+function summarizeMatrixDndRectForLog(
+  r: { top: number; left: number; width: number; height: number } | null | undefined,
+) {
+  if (r == null) return null;
+  return {
+    top: Math.round(r.top),
+    left: Math.round(r.left),
+    w: Math.round(r.width),
+    h: Math.round(r.height),
+  };
 }
 
 function MatrixEmployeeShiftPill({
@@ -951,7 +967,9 @@ export function ScheduleView() {
   const [shiftTypeTimeError, setShiftTypeTimeError] = useState<string | null>(null);
   const [activeDragHighlightMs, setActiveDragHighlightMs] =
     useState<ActiveDragHighlightMs | null>(null);
-  const [matrixDragOverId, setMatrixDragOverId] = useState<string | null>(null);
+  /** Last `onDragOver` droppable id (for drag-end diagnostics). Highlight uses imperative DOM updates to avoid full-matrix re-renders. */
+  const matrixDragOverIdRef = useRef<string | null>(null);
+  const matrixDragHighlightFillRef = useRef<HTMLDivElement | null>(null);
   const [dragOverlayColor, setDragOverlayColor] = useState<string | null>(null);
   const [dragOverlaySize, setDragOverlaySize] = useState<{
     width: number;
@@ -981,6 +999,56 @@ export function ScheduleView() {
     startPct: number;
     widthPct: number;
   } | null>(null);
+
+  /** Shift–interval overlap does not depend on which hour column is hovered; cache per employee for the active drag. */
+  const matrixTypeSlotOverlapEmps = useMemo(() => {
+    if (matrixDragKind !== "typeSlot" || !activeDragHighlightMs) return null;
+    const out = new Set<number>();
+    for (const emp of employees) {
+      const eid = Number(emp.id);
+      if (
+        employeeHasShiftIntersectingInterval(
+          dateStr,
+          dayShifts,
+          eid,
+          activeDragHighlightMs.startMs,
+          activeDragHighlightMs.endMs,
+          undefined,
+          { ignoreStaleShifts: true },
+        )
+      )
+        out.add(eid);
+    }
+    return out;
+  }, [matrixDragKind, activeDragHighlightMs, dateStr, dayShifts, employees]);
+
+  const matrixEmpShiftOverlapEmps = useMemo(() => {
+    if (matrixDragKind !== "empShift" || !activeDragHighlightMs) return null;
+    const ex = matrixEmpDragShiftId ?? undefined;
+    const out = new Set<number>();
+    for (const emp of employees) {
+      const eid = Number(emp.id);
+      if (
+        employeeHasShiftIntersectingInterval(
+          dateStr,
+          dayShifts,
+          eid,
+          activeDragHighlightMs.startMs,
+          activeDragHighlightMs.endMs,
+          ex,
+        )
+      )
+        out.add(eid);
+    }
+    return out;
+  }, [
+    matrixDragKind,
+    activeDragHighlightMs,
+    dateStr,
+    dayShifts,
+    employees,
+    matrixEmpDragShiftId,
+  ]);
 
   const updateMatrixUnifiedBand = useCallback(() => {
     const wrap = matrixTableWrapRef.current;
@@ -1044,10 +1112,22 @@ export function ScheduleView() {
     };
   }, [activeDragHighlightMs, updateMatrixUnifiedBand]);
 
+  /** `onDragOver` can run before the highlight layer mounts; sync fill once layout exists. */
+  useLayoutEffect(() => {
+    if (!matrixUnifiedBand || !activeDragHighlightMs) return;
+    const fill = matrixDragHighlightFillRef.current;
+    const id = matrixDragOverIdRef.current;
+    if (!fill) return;
+    fill.style.backgroundColor =
+      id != null ? MATRIX_DRAG_HIGHLIGHT_OVER : MATRIX_DRAG_HIGHLIGHT_IDLE;
+  }, [matrixUnifiedBand, activeDragHighlightMs]);
+
   const clearMatrixDragOverlay = useCallback(() => {
     setActiveDragHighlightMs(null);
     setMatrixUnifiedBand(null);
-    setMatrixDragOverId(null);
+    matrixDragOverIdRef.current = null;
+    const fill = matrixDragHighlightFillRef.current;
+    if (fill) fill.style.backgroundColor = MATRIX_DRAG_HIGHLIGHT_IDLE;
     setDragOverlayColor(null);
     setDragOverlaySize(null);
     setMatrixDragKind(null);
@@ -1090,7 +1170,9 @@ export function ScheduleView() {
       qc.invalidateQueries({ queryKey: ["violations"] });
     },
     onError: (err) => {
-      window.alert(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[matrix DnD] reassign rejected by server:", msg, err);
+      window.alert(msg);
     },
   });
 
@@ -1111,8 +1193,13 @@ export function ScheduleView() {
       qc.invalidateQueries({ queryKey: ["violations"] });
       setTypePicker(null);
     },
-    onError: (err) => {
-      window.alert(err instanceof Error ? err.message : String(err));
+    onError: (err, variables) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[matrix DnD] createShift rejected by server:", msg, {
+        variables,
+        err,
+      });
+      window.alert(msg);
     },
   });
 
@@ -1297,22 +1384,79 @@ export function ScheduleView() {
 
   const handleMatrixDragEnd = useCallback(
     (event: DragEndEvent) => {
-      const { active, over } = event;
+      const { active, over, collisions, delta, activatorEvent } = event;
+      const lastOverFromDragOver = matrixDragOverIdRef.current;
       const dragData = active.data.current as
         | MatrixTypeSlotDragData
         | MatrixEmployeeShiftDragData
         | undefined;
 
+      const logDropDenied = (reason: string, detail?: Record<string, unknown>) => {
+        console.warn("[matrix DnD] drop denied:", reason, detail ?? "");
+      };
+
       clearMatrixDragOverlay();
       suppressCellClickUntil.current = Date.now() + 400;
 
-      if (!over || !dragData) return;
+      if (!dragData) {
+        logDropDenied("active item has no matrix drag payload", {
+          overId: over ? String(over.id) : null,
+        });
+        return;
+      }
+
+      if (!over) {
+        const ae = activatorEvent;
+        const pointer =
+          ae && "clientX" in ae && typeof (ae as MouseEvent).clientX === "number"
+            ? {
+                clientX: Math.round((ae as MouseEvent).clientX),
+                clientY: Math.round((ae as MouseEvent).clientY),
+              }
+            : null;
+        const baseDetail = {
+          kind: dragData.kind,
+          collisionCount: collisions?.length ?? 0,
+          lastOverFromDragOver,
+        };
+        logDropDenied(
+          "not over any droppable (cancelled or invalid target)",
+          import.meta.env.DEV
+            ? {
+                ...baseDetail,
+                collisionIds: collisions?.map((c) => String(c.id)) ?? null,
+                delta,
+                activeId: String(active.id),
+                activeRectInitial: summarizeMatrixDndRectForLog(
+                  active.rect.current?.initial ?? null,
+                ),
+                activeRectTranslated: summarizeMatrixDndRectForLog(
+                  active.rect.current?.translated ?? null,
+                ),
+                activatorType: ae?.type ?? null,
+                activatorPointer: pointer,
+              }
+            : baseDetail,
+        );
+        return;
+      }
 
       const o = over.data.current as { employeeId?: number; hour?: string } | undefined;
-      if (!o || o.employeeId === undefined || o.hour === undefined) return;
+      if (!o || o.employeeId === undefined || o.hour === undefined) {
+        logDropDenied("droppable has no employeeId/hour in data", {
+          overId: String(over.id),
+          overData: over.data.current,
+        });
+        return;
+      }
 
       if (dragData.kind === "empShift") {
-        if (o.employeeId === dragData.employeeId) return;
+        if (o.employeeId === dragData.employeeId) {
+          logDropDenied("empShift: dropped on same employee row", {
+            employeeId: o.employeeId,
+          });
+          return;
+        }
         if (
           employeeHasShiftIntersectingInterval(
             dateStr,
@@ -1323,6 +1467,15 @@ export function ScheduleView() {
             dragData.shiftId,
           )
         ) {
+          logDropDenied(
+            "empShift: target employee already has a shift overlapping the dragged interval",
+            {
+              targetEmployeeId: o.employeeId,
+              highlightStartMs: dragData.highlightStartMs,
+              highlightEndMs: dragData.highlightEndMs,
+              excludedShiftId: dragData.shiftId,
+            },
+          );
           return;
         }
         reassignMut.mutate({
@@ -1332,11 +1485,24 @@ export function ScheduleView() {
         return;
       }
 
-      if (dragData.kind !== "typeSlot") return;
+      if (dragData.kind !== "typeSlot") {
+        logDropDenied("unknown drag kind (expected typeSlot after empShift branch)", {
+          kind: (dragData as { kind?: string }).kind,
+        });
+        return;
+      }
 
       const dropEmpId = o.employeeId;
       const dropHour = o.hour;
-      if (!dragData.coveredHours.includes(dropHour)) return;
+      if (!dragData.coveredHours.includes(dropHour)) {
+        logDropDenied("typeSlot: drop cell hour is not in the slot’s covered hours", {
+          dropHour,
+          coveredHours: dragData.coveredHours,
+          shiftWindowId: dragData.shiftWindowId,
+          syllabusNum: dragData.syllabusNum,
+        });
+        return;
+      }
 
       if (
         employeeHasShiftIntersectingInterval(
@@ -1345,8 +1511,20 @@ export function ScheduleView() {
           dropEmpId,
           dragData.highlightStartMs,
           dragData.highlightEndMs,
+          undefined,
+          { ignoreStaleShifts: true },
         )
       ) {
+        logDropDenied(
+          "typeSlot: employee already has an up-to-date shift overlapping this interval",
+          {
+            employeeId: dropEmpId,
+            highlightStartMs: dragData.highlightStartMs,
+            highlightEndMs: dragData.highlightEndMs,
+            shiftWindowId: dragData.shiftWindowId,
+            syllabusNum: dragData.syllabusNum,
+          },
+        );
         return;
       }
 
@@ -1372,12 +1550,22 @@ export function ScheduleView() {
       ) : (
         <DndContext
           sensors={sensors}
+          collisionDetection={pointerWithin}
           onDragStart={(e: DragStartEvent) => {
-            setMatrixDragOverId(null);
+            matrixDragOverIdRef.current = null;
+            const fill = matrixDragHighlightFillRef.current;
+            if (fill) fill.style.backgroundColor = MATRIX_DRAG_HIGHLIGHT_IDLE;
             handleMatrixDragStart(e);
           }}
           onDragOver={(e: DragOverEvent) => {
-            setMatrixDragOverId(e.over?.id != null ? String(e.over.id) : null);
+            const id = e.over?.id != null ? String(e.over.id) : null;
+            if (matrixDragOverIdRef.current === id) return;
+            matrixDragOverIdRef.current = id;
+            const fill = matrixDragHighlightFillRef.current;
+            if (fill) {
+              fill.style.backgroundColor =
+                id != null ? MATRIX_DRAG_HIGHLIGHT_OVER : MATRIX_DRAG_HIGHLIGHT_IDLE;
+            }
           }}
           onDragEnd={handleMatrixDragEnd}
           onDragCancel={handleMatrixDragCancel}
@@ -1468,23 +1656,10 @@ export function ScheduleView() {
                                   const ch = matrixTypeSlotCoveredHours ?? [];
                                   droppableDisabled =
                                     !ch.includes(hour) ||
-                                    employeeHasShiftIntersectingInterval(
-                                      dateStr,
-                                      dayShifts,
-                                      eid,
-                                      hl.startMs,
-                                      hl.endMs,
-                                    );
+                                    (matrixTypeSlotOverlapEmps?.has(eid) ?? false);
                                 } else {
                                   droppableDisabled =
-                                    employeeHasShiftIntersectingInterval(
-                                      dateStr,
-                                      dayShifts,
-                                      eid,
-                                      hl.startMs,
-                                      hl.endMs,
-                                      matrixEmpDragShiftId ?? undefined,
-                                    );
+                                    matrixEmpShiftOverlapEmps?.has(eid) ?? false;
                                 }
                                 return (
                                   <MatrixEmployeeHourDropZone
@@ -1577,6 +1752,7 @@ export function ScheduleView() {
                                         const canDragEmp =
                                           Number.isFinite(syllabusNum) &&
                                           !Number.isNaN(syllabusNum);
+                                        const upToDate = shiftIsUpToDate(shift);
                                         const wid = Number(
                                           shift.shift_window_id ?? shift.shiftWindowId,
                                         );
@@ -1584,7 +1760,7 @@ export function ScheduleView() {
                                           suppressCellClickUntil.current = Date.now() + 400;
                                           deleteMut.mutate(Number(shift.id));
                                         };
-                                        if (canDragEmp) {
+                                        if (canDragEmp && upToDate) {
                                           return (
                                             <MatrixDraggableEmployeeShiftPill
                                               shiftId={Number(shift.id)}
@@ -1593,7 +1769,7 @@ export function ScheduleView() {
                                               employeeId={eid}
                                               typeColor={typeColor}
                                               title={pillTitle}
-                                              upToDate={shiftIsUpToDate(shift)}
+                                              upToDate={upToDate}
                                               highlightStartMs={s}
                                               highlightEndMs={e}
                                               onLongPressDelete={onDel}
@@ -1604,7 +1780,7 @@ export function ScheduleView() {
                                           <MatrixEmployeeShiftPill
                                             typeColor={typeColor}
                                             title={pillTitle}
-                                            upToDate={shiftIsUpToDate(shift)}
+                                            upToDate={upToDate}
                                             onLongPressDelete={onDel}
                                           />
                                         );
@@ -1700,6 +1876,7 @@ export function ScheduleView() {
                             coveredHours[0] ??
                             `${String(new Date(seg.startMs).getHours()).padStart(2, "0")}:00`;
                           const assigned = dayShifts.filter((s) => {
+                            if (!shiftIsUpToDate(s)) return false;
                             const sid = Number(s.shift_window_id ?? s.shiftWindowId);
                             if (sid !== tid) return false;
                             const eid = s.employee_id;
@@ -1842,13 +2019,9 @@ export function ScheduleView() {
                   }}
                 >
                   <div
+                    ref={matrixDragHighlightFillRef}
                     className="h-full w-full rounded-none"
-                    style={{
-                      backgroundColor:
-                        matrixDragOverId != null
-                          ? MATRIX_DRAG_HIGHLIGHT_OVER
-                          : MATRIX_DRAG_HIGHLIGHT_IDLE,
-                    }}
+                    style={{ backgroundColor: MATRIX_DRAG_HIGHLIGHT_IDLE }}
                   />
                 </div>
               </div>
