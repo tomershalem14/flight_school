@@ -137,7 +137,7 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
         }
     }
 
-    // Rule 3: prep/recovery overlap (uses denormalized prep_start / rest_end on each shift)
+    // Rule 3: prep/rest overlap (uses denormalized prep_start / rest_end on each shift)
     let mut stmt = conn.prepare(
         "SELECT s.id, s.prep_start, s.rest_end, w.name
          FROM shifts s
@@ -160,7 +160,7 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
         let other_we = time_to_minutes(&ore);
         if window_start < other_we && window_end > other_ws {
             violations.push(Violation {
-                rule: "prep_recovery_overlap".into(),
+                rule: "prep_rest_overlap".into(),
                 severity: "error".into(),
                 message: format!(
                     "'{en}' - חפיפה בין זמן תדריך/תחקיר של '{tn}' ל'{oname}'"

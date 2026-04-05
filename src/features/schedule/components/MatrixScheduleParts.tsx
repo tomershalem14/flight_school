@@ -238,6 +238,10 @@ export function EmployeeMatrixShiftPillChooser({
   const upToDate = shiftIsUpToDate(shift);
   const wid = Number(shift.shift_window_id ?? shift.shiftWindowId);
 
+  const prepStart = String(shift.prep_start ?? shift.prepStart ?? "—");
+  const restEnd = String(shift.rest_end ?? shift.restEnd ?? "—");
+  const titleWithPrepRest = `${pillTitle}\nprep_start: ${prepStart} · rest_end: ${restEnd}`;
+
   if (canDragEmp && upToDate) {
     return (
       <MatrixDraggableEmployeeShiftPill
@@ -246,7 +250,7 @@ export function EmployeeMatrixShiftPillChooser({
         syllabusNum={syllabusNum}
         employeeId={employeeId}
         typeColor={typeColor}
-        title={pillTitle}
+        title={titleWithPrepRest}
         upToDate={upToDate}
         highlightStartMs={clippedStartMs}
         highlightEndMs={clippedEndMs}
@@ -257,7 +261,7 @@ export function EmployeeMatrixShiftPillChooser({
   return (
     <MatrixEmployeeShiftPill
       typeColor={typeColor}
-      title={pillTitle}
+      title={titleWithPrepRest}
       upToDate={upToDate}
       onLongPressDelete={onLongPressDelete}
     />

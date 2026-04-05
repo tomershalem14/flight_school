@@ -297,10 +297,10 @@ export function ManagementView() {
         min_role_id,
         duration_minutes: Number(presetDraft.duration_minutes ?? 60),
         prep_minutes: Number(presetDraft.prep_minutes ?? 0),
-        recovery_minutes: Number(presetDraft.recovery_minutes ?? 0),
+        rest_minutes: Number(presetDraft.rest_minutes ?? 0),
         max_in_row: maxInRow,
         joint_prep: Boolean(presetDraft.joint_prep),
-        joint_recovery: Boolean(presetDraft.joint_recovery),
+        joint_rest: Boolean(presetDraft.joint_rest),
         notes: String(presetDraft.notes ?? "").trim() || null,
       };
       if (id > 0) return api.updateSyllabusPreset(id, body);
@@ -443,10 +443,10 @@ export function ManagementView() {
                     min_role_id: "",
                     duration_minutes: 60,
                     prep_minutes: 30,
-                    recovery_minutes: 45,
+                    rest_minutes: 45,
                     max_in_row: 2,
                     joint_prep: true,
-                    joint_recovery: false,
+                    joint_rest: false,
                     notes: "",
                   })
                 }
@@ -755,7 +755,7 @@ export function ManagementView() {
                             {syllabusMinutesLabel(Number(p.prep_minutes ?? 0))}
                           </td>
                           <td className="min-w-0 px-2 py-3 tabular-nums text-ink">
-                            {syllabusMinutesLabel(Number(p.recovery_minutes ?? 0))}
+                            {syllabusMinutesLabel(Number(p.rest_minutes ?? 0))}
                           </td>
                           <td className="min-w-0 px-2 py-3 tabular-nums text-ink">
                             {Math.max(1, Number(p.max_in_row ?? 1))}
@@ -764,7 +764,7 @@ export function ManagementView() {
                             {Number(p.joint_prep ?? 0) !== 0 ? "כן" : "לא"}
                           </td>
                           <td className="min-w-0 px-2 py-3 text-ink">
-                            {Number(p.joint_recovery ?? 0) !== 0 ? "כן" : "לא"}
+                            {Number(p.joint_rest ?? 0) !== 0 ? "כן" : "לא"}
                           </td>
                           <td className="px-1 py-3">
                             {locked ? (
@@ -1244,35 +1244,35 @@ export function ManagementView() {
               <div className="form-row mb-0">
                 <label
                   className="text-sm font-semibold text-ink"
-                  htmlFor="preset-modal-recovery-mins"
+                  htmlFor="preset-modal-rest-mins"
                 >
                   תחקיר (דק׳)
                 </label>
                 <div className="flex w-full max-w-none overflow-hidden rounded-pill border border-line bg-surface shadow-sm">
                   <div className="relative min-w-0 flex-1">
                     <input
-                      id="preset-modal-recovery-mins"
+                      id="preset-modal-rest-mins"
                       type="number"
                       min={0}
-                      value={String(presetDraft.recovery_minutes ?? 0)}
+                      value={String(presetDraft.rest_minutes ?? 0)}
                       onChange={(e) =>
                         setPresetDraft({
                           ...presetDraft,
-                          recovery_minutes: Number(e.target.value),
+                          rest_minutes: Number(e.target.value),
                         })
                       }
                     />
                   </div>
                   <label
-                    htmlFor="preset-modal-joint-recovery"
+                    htmlFor="preset-modal-joint-rest"
                     className="flex shrink-0 cursor-pointer items-center gap-2 border-s border-line px-3 py-2.5 text-sm text-ink"
                   >
                     <input
-                      id="preset-modal-joint-recovery"
+                      id="preset-modal-joint-rest"
                       type="checkbox"
-                      checked={Boolean(presetDraft.joint_recovery)}
+                      checked={Boolean(presetDraft.joint_rest)}
                       onChange={(e) =>
-                        setPresetDraft({ ...presetDraft, joint_recovery: e.target.checked })
+                        setPresetDraft({ ...presetDraft, joint_rest: e.target.checked })
                       }
                       className="size-4 shrink-0 rounded border-line text-primary focus:ring-2 focus:ring-primary/30"
                       aria-label="תחקיר משותף"

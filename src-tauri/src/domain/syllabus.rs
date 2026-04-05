@@ -85,10 +85,55 @@ pub fn load_preset_timings(
     preset_id: i64,
 ) -> rusqlite::Result<(i32, i32)> {
     conn.query_row(
-        "SELECT prep_minutes, recovery_minutes FROM syllabus_presets WHERE id = ?",
+        "SELECT prep_minutes, rest_minutes FROM syllabus_presets WHERE id = ?",
         [preset_id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )
+}
+
+/// Prep and rest minutes plus joint flags for chained prep_start / rest_end.
+#[derive(Clone, Copy, Debug)]
+pub struct PresetPrepRestMeta {
+    pub prep_minutes: i32,
+    pub rest_minutes: i32,
+    pub joint_prep: bool,
+    pub joint_rest: bool,
+}
+
+pub fn load_preset_prep_rest_meta(
+    conn: &Connection,
+    preset_id: i64,
+) -> rusqlite::Result<PresetPrepRestMeta> {
+    conn.query_row(
+        "SELECT prep_minutes, rest_minutes, joint_prep, joint_rest FROM syllabus_presets WHERE id = ?",
+        [preset_id],
+        |r| {
+            let jp: i32 = r.get(2)?;
+            let jrest: i32 = r.get(3)?;
+            Ok(PresetPrepRestMeta {
+                prep_minutes: r.get(0)?,
+                rest_minutes: r.get(1)?,
+                joint_prep: jp != 0,
+                joint_rest: jrest != 0,
+            })
+        },
+    )
+}
+
+pub fn load_presets_prep_rest_meta(
+    conn: &Connection,
+    ids: &[i64],
+) -> rusqlite::Result<HashMap<i64, PresetPrepRestMeta>> {
+    let mut out = HashMap::new();
+    for &id in ids {
+        if out.contains_key(&id) {
+            continue;
+        }
+        if let Ok(m) = load_preset_prep_rest_meta(conn, id) {
+            out.insert(id, m);
+        }
+    }
+    Ok(out)
 }
 
 /// Anchor datetime on `shift_date` using the time-of-day from `coverage_start_iso`.
@@ -157,12 +202,12 @@ pub fn compute_prep_start_rest_end(
     start_time: &str,
     end_time: &str,
     prep_minutes: i32,
-    recovery_minutes: i32,
+    rest_minutes: i32,
 ) -> (String, String) {
     let sm = time_to_minutes(start_time);
     let em = time_to_minutes(end_time);
     let prep_start = minutes_to_hhmm(sm - prep_minutes);
-    let rest_end = minutes_to_hhmm(em + recovery_minutes);
+    let rest_end = minutes_to_hhmm(em + rest_minutes);
     (prep_start, rest_end)
 }
 
@@ -231,8 +276,8 @@ pub fn shift_row_from_syllabus_num(
     syllabus_num: i64,
 ) -> Result<(String, String, i64, String, String), String> {
     let (st, et, pid) = shift_bounds_from_syllabus_num(conn, shift_window_id, shift_date, syllabus_num)?;
-    let (prep_m, rec_m) = load_preset_timings(conn, pid).map_err(|e| e.to_string())?;
-    let (ps, re) = compute_prep_start_rest_end(&st, &et, prep_m, rec_m);
+    let (prep_m, rest_m) = load_preset_timings(conn, pid).map_err(|e| e.to_string())?;
+    let (ps, re) = compute_prep_start_rest_end(&st, &et, prep_m, rest_m);
     Ok((st, et, pid, ps, re))
 }
 
@@ -270,8 +315,8 @@ pub fn resolve_shift_syllabus_and_boundaries(
         def_id
     };
 
-    let (prep_m, rec_m) = load_preset_timings(conn, preset_id).map_err(|e| e.to_string())?;
-    let (prep_start, rest_end) = compute_prep_start_rest_end(start_time, end_time, prep_m, rec_m);
+    let (prep_m, rest_m) = load_preset_timings(conn, preset_id).map_err(|e| e.to_string())?;
+    let (prep_start, rest_end) = compute_prep_start_rest_end(start_time, end_time, prep_m, rest_m);
     Ok((preset_id, prep_start, rest_end))
 }
 

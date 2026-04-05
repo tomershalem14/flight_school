@@ -183,6 +183,16 @@ fn apply_schema(conn: &mut Connection) -> AppResult<()> {
         conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (13)", [])?;
     }
 
+    let v14: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 14",
+        [],
+        |r| r.get(0),
+    )?;
+    if v14 == 0 {
+        migrate_syllabus_presets_rest_columns_v14(conn)?;
+        conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (14)", [])?;
+    }
+
     Ok(())
 }
 
@@ -520,10 +530,10 @@ fn migrate_shift_windows_syllabus_v8(conn: &mut Connection) -> AppResult<()> {
             min_role_id INTEGER,
             duration_minutes INTEGER NOT NULL,
             prep_minutes INTEGER NOT NULL DEFAULT 0,
-            recovery_minutes INTEGER NOT NULL DEFAULT 0,
+            rest_minutes INTEGER NOT NULL DEFAULT 0,
             max_in_row INTEGER NOT NULL DEFAULT 1 CHECK (max_in_row >= 1),
             joint_prep INTEGER NOT NULL DEFAULT 0,
-            joint_recovery INTEGER NOT NULL DEFAULT 0,
+            joint_rest INTEGER NOT NULL DEFAULT 0,
             notes TEXT,
             system_locked INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (min_role_id) REFERENCES roles(id)
@@ -532,7 +542,7 @@ fn migrate_shift_windows_syllabus_v8(conn: &mut Connection) -> AppResult<()> {
     )?;
 
     tx.execute(
-        "INSERT INTO syllabus_presets (name, min_role_id, duration_minutes, prep_minutes, recovery_minutes, max_in_row, joint_prep, joint_recovery, system_locked)
+        "INSERT INTO syllabus_presets (name, min_role_id, duration_minutes, prep_minutes, rest_minutes, max_in_row, joint_prep, joint_rest, system_locked)
          VALUES ('ברירת מחדל', NULL, 60, 0, 0, 1, 0, 0, 1)",
         [],
     )?;
@@ -701,6 +711,38 @@ fn employees_column_names(conn: &Connection) -> AppResult<Vec<String>> {
         out.push(r?);
     }
     Ok(out)
+}
+
+fn syllabus_presets_column_names(conn: &Connection) -> AppResult<Vec<String>> {
+    let mut stmt = conn.prepare("PRAGMA table_info(syllabus_presets)")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Rename `recovery_minutes` → `rest_minutes`, `joint_recovery` → `joint_rest`.
+fn migrate_syllabus_presets_rest_columns_v14(conn: &Connection) -> AppResult<()> {
+    if !table_exists(conn, "syllabus_presets")? {
+        return Ok(());
+    }
+    let mut cols = syllabus_presets_column_names(conn)?;
+    if cols.iter().any(|c| c == "recovery_minutes") && !cols.iter().any(|c| c == "rest_minutes") {
+        conn.execute(
+            "ALTER TABLE syllabus_presets RENAME COLUMN recovery_minutes TO rest_minutes",
+            [],
+        )?;
+        cols = syllabus_presets_column_names(conn)?;
+    }
+    if cols.iter().any(|c| c == "joint_recovery") && !cols.iter().any(|c| c == "joint_rest") {
+        conn.execute(
+            "ALTER TABLE syllabus_presets RENAME COLUMN joint_recovery TO joint_rest",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 /// Add `affiliation_leader`; fresh `001_initial` already includes it.

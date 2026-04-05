@@ -188,18 +188,18 @@ export type MatrixStartPresetMeta = {
   maxInRow: number;
   jointPrep: boolean;
   prepMinutes: number;
-  /** When true, {@link matrixEndRestMinutesSum} charges `recoveryMinutes` only once per preset id in the ending bunch. */
-  jointRecovery: boolean;
-  recoveryMinutes: number;
+  /** When true, {@link matrixEndRestMinutesSum} charges `restMinutes` only once per preset id in the ending bunch. */
+  jointRest: boolean;
+  restMinutes: number;
 };
 
 function readMatrixStartPresetMeta(p: JsonObject): MatrixStartPresetMeta {
   const maxInRow = Math.max(1, Number(p.max_in_row ?? p.maxInRow ?? 1));
   const jointPrep = Number(p.joint_prep ?? p.jointPrep ?? 0) !== 0;
   const prepMinutes = Math.max(0, Number(p.prep_minutes ?? p.prepMinutes ?? 0));
-  const jointRecovery = Number(p.joint_recovery ?? p.jointRecovery ?? 0) !== 0;
-  const recoveryMinutes = Math.max(0, Number(p.recovery_minutes ?? p.recoveryMinutes ?? 0));
-  return { maxInRow, jointPrep, prepMinutes, jointRecovery, recoveryMinutes };
+  const jointRest = Number(p.joint_rest ?? p.jointRest ?? 0) !== 0;
+  const restMinutes = Math.max(0, Number(p.rest_minutes ?? p.restMinutes ?? 0));
+  return { maxInRow, jointPrep, prepMinutes, jointRest, restMinutes };
 }
 
 /**
@@ -220,8 +220,8 @@ function defaultMetaForMissingPreset(): MatrixStartPresetMeta {
     maxInRow: 1,
     jointPrep: false,
     prepMinutes: 0,
-    jointRecovery: false,
-    recoveryMinutes: 0,
+    jointRest: false,
+    restMinutes: 0,
   };
 }
 
@@ -300,24 +300,24 @@ export function matrixEndingBunchPresetIds(
 }
 
 /**
- * Sum recovery (“rest”) minutes for slots in the ending bunch: each non–joint_recovery slot adds its recovery;
- * for joint_recovery, add recovery only for the first occurrence of that preset id in the bunch.
+ * Sum rest minutes for slots in the ending bunch: each non–joint_rest slot adds its rest;
+ * for joint_rest, add rest only for the first occurrence of that preset id in the bunch.
  */
 export function matrixEndRestMinutesSum(
   endingBunchPresetIds: number[],
   presetMeta: Map<number, MatrixStartPresetMeta>,
 ): number {
   let sum = 0;
-  const jointRecoveryCharged = new Set<number>();
+  const jointRestCharged = new Set<number>();
   for (const pid of endingBunchPresetIds) {
     const meta = presetMeta.get(pid) ?? defaultMetaForMissingPreset();
-    if (meta.jointRecovery) {
-      if (!jointRecoveryCharged.has(pid)) {
-        sum += meta.recoveryMinutes;
-        jointRecoveryCharged.add(pid);
+    if (meta.jointRest) {
+      if (!jointRestCharged.has(pid)) {
+        sum += meta.restMinutes;
+        jointRestCharged.add(pid);
       }
     } else {
-      sum += meta.recoveryMinutes;
+      sum += meta.restMinutes;
     }
   }
   return sum;
@@ -435,7 +435,7 @@ function ceilMsToHourFromDayStart(absoluteMs: number, dayStartMs: number): numbe
  * Matrix time range for the schedule: [frameStartMs, frameEndMs).
  * Start: earliest across windows of `(coverage start on day) − prepLead`, floored to a full hour,
  * then clamped to **not before** 00:00 of `dateStr`.
- * End: for each window, `(coverage end on day) + restTail` where `restTail` is the sum of recovery minutes
+ * End: for each window, `(coverage end on day) + restTail` where `restTail` is the sum of rest minutes
  * for the ending bunch (see {@link matrixEndingBunchPresetIds} / {@link matrixEndRestMinutesSum});
  * then the **latest** such instant across windows, **ceiled** to the next hour (22:15 → 23:00),
  * then clamped to **at most** 00:00 the following day (exclusive cap).

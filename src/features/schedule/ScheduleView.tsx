@@ -1021,40 +1021,6 @@ export function ScheduleView() {
             ) : null}
             </div>
         </div>
-        <div
-          className="w-full rounded-card border border-dashed border-line bg-background/90 p-3 text-xs text-ink"
-          dir="ltr"
-        >
-          <div className="mb-2 font-mono font-semibold text-muted">
-            Debug — all shifts for {dateStr} ({dayShifts.length})
-          </div>
-          {dayShifts.length === 0 ? (
-            <p className="font-mono text-muted">(none)</p>
-          ) : (
-            <ul className="max-h-48 space-y-1 overflow-y-auto font-mono">
-              {[...dayShifts]
-                .sort(
-                  (a, b) =>
-                    String(a.start_time).localeCompare(String(b.start_time)) ||
-                    Number(a.id) - Number(b.id),
-                )
-                .map((s) => {
-                  const name =
-                    String(s.emp_name ?? s.empName ?? "")
-                      .trim() || "—";
-                  return (
-                    <li key={Number(s.id)}>
-                      <span className="text-ink">{name}</span>
-                      <span className="text-muted">
-                        {" "}
-                        {String(s.start_time)} → {String(s.end_time)}
-                      </span>
-                    </li>
-                  );
-                })}
-            </ul>
-          )}
-        </div>
         <DragOverlay dropAnimation={null}>
           {dragOverlayColor ? (
             <span

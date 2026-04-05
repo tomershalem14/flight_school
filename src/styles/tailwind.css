@@ -82,11 +82,11 @@
 
   /* Syllabus preset modal: תדריך / תחקיר minutes + משותף pill row (same pattern as #emp-modal-affiliation) */
   #preset-modal-prep-mins,
-  #preset-modal-recovery-mins {
+  #preset-modal-rest-mins {
     @apply min-h-0 w-full appearance-none rounded-l-none rounded-r-pill border-0 bg-transparent py-2.5 ps-4 pe-3 text-sm tabular-nums text-ink shadow-none;
   }
   #preset-modal-prep-mins:focus-visible,
-  #preset-modal-recovery-mins:focus-visible {
+  #preset-modal-rest-mins:focus-visible {
     @apply border-transparent outline-none ring-2 ring-inset ring-primary/20;
   }
 

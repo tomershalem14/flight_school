@@ -1,10 +1,11 @@
 use crate::db::AppState;
 use crate::domain::rules::check_shift_violations;
+use crate::domain::shift_prep_rest_chain::recalc_chained_prep_rest_for_employee_day;
 use crate::domain::syllabus::shift_row_from_syllabus_num;
 use crate::error::AppError;
 use crate::json_util::sqlite_row_to_object;
 use chrono::NaiveDate;
-use rusqlite::params;
+use rusqlite::{params, Error as SqliteError};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::State;
@@ -30,7 +31,7 @@ pub fn get_shifts(state: State<'_, AppState>, week_start: String) -> Result<Vec<
         .with_db(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT s.*, w.name as type_name, w.color as type_color,
-                        sp.duration_minutes, sp.prep_minutes, sp.recovery_minutes,
+                        sp.duration_minutes, sp.prep_minutes, sp.rest_minutes,
                         e.name as emp_name, r.name as role_name, r.color as role_color
                  FROM shifts s
                  JOIN shift_windows w ON s.shift_window_id = w.id
@@ -104,6 +105,10 @@ pub fn create_shift(state: State<'_, AppState>, payload: ShiftCreate) -> Result<
                 ],
             )?;
             let new_id = conn.last_insert_rowid();
+            if let Some(eid) = payload.employee_id {
+                recalc_chained_prep_rest_for_employee_day(conn, eid, &payload.shift_date)
+                    .map_err(AppError::msg)?;
+            }
             let mut violations = Vec::new();
             if payload.employee_id.is_some() {
                 for v in check_shift_violations(conn, new_id).map_err(AppError::from)? {
@@ -186,6 +191,10 @@ pub fn reassign_shift_employee(
             let new_id = tx.last_insert_rowid();
             tx.commit().map_err(AppError::from)?;
 
+            recalc_chained_prep_rest_for_employee_day(conn, old, &shift_date).map_err(AppError::msg)?;
+            recalc_chained_prep_rest_for_employee_day(conn, payload.employee_id, &shift_date)
+                .map_err(AppError::msg)?;
+
             let mut violations = Vec::new();
             for v in check_shift_violations(conn, new_id).map_err(AppError::from)? {
                 violations.push(v.to_json());
@@ -199,7 +208,24 @@ pub fn reassign_shift_employee(
 pub fn delete_shift(state: State<'_, AppState>, shift_id: i64) -> Result<Value, String> {
     state
         .with_db(|conn| {
-            conn.execute("DELETE FROM shifts WHERE id = ?", [shift_id])?;
+            let to_recalc: Option<(String, i64)> = match conn.query_row(
+                "SELECT shift_date, employee_id FROM shifts WHERE id = ?",
+                [shift_id],
+                |r| {
+                    let d: String = r.get(0)?;
+                    let e: Option<i64> = r.get(1)?;
+                    Ok((d, e))
+                },
+            ) {
+                Ok((d, Some(eid))) => Some((d, eid)),
+                Ok((_, None)) | Err(SqliteError::QueryReturnedNoRows) => None,
+                Err(e) => return Err(AppError::from(e)),
+            };
+            conn.execute("DELETE FROM shifts WHERE id = ?", [shift_id])
+                .map_err(AppError::from)?;
+            if let Some((date, eid)) = to_recalc {
+                recalc_chained_prep_rest_for_employee_day(conn, eid, &date).map_err(AppError::msg)?;
+            }
             Ok(json!({"ok": true}))
         })
         .map_err(|e| e.to_string())

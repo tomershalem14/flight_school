@@ -13,13 +13,13 @@ pub struct SyllabusPresetCreate {
     pub min_role_id: Option<i64>,
     pub duration_minutes: i64,
     pub prep_minutes: i64,
-    pub recovery_minutes: i64,
+    pub rest_minutes: i64,
     #[serde(default = "default_max_in_row")]
     pub max_in_row: i64,
     #[serde(default)]
     pub joint_prep: bool,
     #[serde(default)]
-    pub joint_recovery: bool,
+    pub joint_rest: bool,
     pub notes: Option<String>,
 }
 
@@ -29,10 +29,10 @@ pub struct SyllabusPresetUpdate {
     pub min_role_id: Option<Value>,
     pub duration_minutes: Option<i64>,
     pub prep_minutes: Option<i64>,
-    pub recovery_minutes: Option<i64>,
+    pub rest_minutes: Option<i64>,
     pub max_in_row: Option<i64>,
     pub joint_prep: Option<bool>,
-    pub joint_recovery: Option<bool>,
+    pub joint_rest: Option<bool>,
     pub notes: Option<String>,
 }
 
@@ -114,18 +114,18 @@ pub fn create_syllabus_preset(
             }
             conn.execute(
                 "INSERT INTO syllabus_presets
-                 (name, min_role_id, duration_minutes, prep_minutes, recovery_minutes,
-                  max_in_row, joint_prep, joint_recovery, notes, system_locked)
+                 (name, min_role_id, duration_minutes, prep_minutes, rest_minutes,
+                  max_in_row, joint_prep, joint_rest, notes, system_locked)
                  VALUES (?,?,?,?,?,?,?,?,?,0)",
                 params![
                     name,
                     payload.min_role_id,
                     payload.duration_minutes,
                     payload.prep_minutes,
-                    payload.recovery_minutes,
+                    payload.rest_minutes,
                     payload.max_in_row,
                     payload.joint_prep as i32,
-                    payload.joint_recovery as i32,
+                    payload.joint_rest as i32,
                     payload.notes,
                 ],
             )
@@ -212,9 +212,9 @@ pub fn update_syllabus_preset(
                     params![p, preset_id],
                 )?;
             }
-            if let Some(r) = payload.recovery_minutes {
+            if let Some(r) = payload.rest_minutes {
                 tx.execute(
-                    "UPDATE syllabus_presets SET recovery_minutes = ?1 WHERE id = ?2",
+                    "UPDATE syllabus_presets SET rest_minutes = ?1 WHERE id = ?2",
                     params![r, preset_id],
                 )?;
             }
@@ -230,9 +230,9 @@ pub fn update_syllabus_preset(
                     params![j as i32, preset_id],
                 )?;
             }
-            if let Some(j) = payload.joint_recovery {
+            if let Some(j) = payload.joint_rest {
                 tx.execute(
-                    "UPDATE syllabus_presets SET joint_recovery = ?1 WHERE id = ?2",
+                    "UPDATE syllabus_presets SET joint_rest = ?1 WHERE id = ?2",
                     params![j as i32, preset_id],
                 )?;
             }
