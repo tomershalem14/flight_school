@@ -54,7 +54,8 @@ pub(crate) fn parse_hms(t: &str) -> Option<NaiveTime> {
 }
 
 /// Concrete shift interval on the timeline (handles end before start as next-day end).
-pub fn shift_span_on_calendar(
+#[cfg(test)]
+fn shift_span_on_calendar(
     shift_date: &str,
     start_time: &str,
     end_time: &str,

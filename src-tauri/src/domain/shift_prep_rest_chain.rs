@@ -1,7 +1,7 @@
 //! Chained `prep_start` / `rest_end` for one employee on one calendar day.
 
 use crate::domain::rules::time_to_minutes;
-use crate::domain::syllabus::{minutes_to_hhmm, PresetPrepRestMeta};
+use crate::domain::syllabus::{compute_prep_end_rest_start, minutes_to_hhmm, PresetPrepRestMeta};
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
 
@@ -218,9 +218,13 @@ pub fn recalc_chained_prep_rest_for_employee_day(
     let computed = compute_chained_prep_rest(&rows, &meta)?;
 
     for (row, (ps, re)) in rows.iter().zip(computed.iter()) {
+        let m = *meta
+            .get(&row.syllabus_preset_id)
+            .expect("validated above");
+        let (pe, rs) = compute_prep_end_rest_start(ps, re, m.prep_minutes, m.rest_minutes);
         conn.execute(
-            "UPDATE shifts SET prep_start = ?1, rest_end = ?2 WHERE id = ?3",
-            params![ps, re, row.id],
+            "UPDATE shifts SET prep_start = ?1, rest_end = ?2, prep_end = ?3, rest_start = ?4 WHERE id = ?5",
+            params![ps, re, pe, rs, row.id],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -230,6 +234,7 @@ pub fn recalc_chained_prep_rest_for_employee_day(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::syllabus::compute_prep_end_rest_start;
 
     fn meta(p: i32, r: i32, jp: bool, joint_rest: bool) -> PresetPrepRestMeta {
         PresetPrepRestMeta {
@@ -259,6 +264,9 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0, "08:30");
         assert_eq!(out[0].1, "10:15");
+        let (pe, rs) = compute_prep_end_rest_start(&out[0].0, &out[0].1, 30, 15);
+        assert_eq!(pe, "09:00");
+        assert_eq!(rs, "10:00");
     }
 
     #[test]

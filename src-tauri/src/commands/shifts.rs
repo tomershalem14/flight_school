@@ -81,7 +81,7 @@ fn ensure_employee_exists(conn: &rusqlite::Connection, employee_id: Option<i64>)
 pub fn create_shift(state: State<'_, AppState>, payload: ShiftCreate) -> Result<Value, String> {
     state
         .with_db(|conn| {
-            let (st, et, pid, ps, re) = shift_row_from_syllabus_num(
+            let (st, et, pid, ps, re, pe, rs) = shift_row_from_syllabus_num(
                 conn,
                 payload.shift_window_id,
                 &payload.shift_date,
@@ -90,8 +90,8 @@ pub fn create_shift(state: State<'_, AppState>, payload: ShiftCreate) -> Result<
             .map_err(AppError::msg)?;
             ensure_employee_exists(conn, payload.employee_id).map_err(AppError::msg)?;
             conn.execute(
-                "INSERT INTO shifts (shift_date, shift_window_id, start_time, end_time, syllabus_preset_id, prep_start, rest_end, employee_id, up_to_date, syllabus_num)
-                 VALUES (?,?,?,?,?,?,?,?,1,?)",
+                "INSERT INTO shifts (shift_date, shift_window_id, start_time, end_time, syllabus_preset_id, prep_start, rest_end, prep_end, rest_start, employee_id, up_to_date, syllabus_num)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,1,?)",
                 params![
                     payload.shift_date,
                     payload.shift_window_id,
@@ -100,6 +100,8 @@ pub fn create_shift(state: State<'_, AppState>, payload: ShiftCreate) -> Result<
                     pid,
                     ps,
                     re,
+                    pe,
+                    rs,
                     payload.employee_id,
                     payload.syllabus_num,
                 ],
@@ -168,14 +170,14 @@ pub fn reassign_shift_employee(
                 ));
             }
 
-            let (st, et, pid, ps, re) = shift_row_from_syllabus_num(conn, wid, &shift_date, sn)
+            let (st, et, pid, ps, re, pe, rs) = shift_row_from_syllabus_num(conn, wid, &shift_date, sn)
                 .map_err(AppError::msg)?;
 
             let tx = conn.transaction().map_err(AppError::from)?;
             tx.execute("DELETE FROM shifts WHERE id = ?", [payload.shift_id])?;
             tx.execute(
-                "INSERT INTO shifts (shift_date, shift_window_id, start_time, end_time, syllabus_preset_id, prep_start, rest_end, employee_id, up_to_date, syllabus_num)
-                 VALUES (?,?,?,?,?,?,?,?,1,?)",
+                "INSERT INTO shifts (shift_date, shift_window_id, start_time, end_time, syllabus_preset_id, prep_start, rest_end, prep_end, rest_start, employee_id, up_to_date, syllabus_num)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,1,?)",
                 params![
                     shift_date,
                     wid,
@@ -184,6 +186,8 @@ pub fn reassign_shift_employee(
                     pid,
                     ps,
                     re,
+                    pe,
+                    rs,
                     payload.employee_id,
                     sn,
                 ],

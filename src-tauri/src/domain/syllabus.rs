@@ -211,6 +211,18 @@ pub fn compute_prep_start_rest_end(
     (prep_start, rest_end)
 }
 
+/// Boundaries of prep/rest windows given denormalized `prep_start` / `rest_end` on the shift row.
+pub fn compute_prep_end_rest_start(
+    prep_start: &str,
+    rest_end: &str,
+    prep_minutes: i32,
+    rest_minutes: i32,
+) -> (String, String) {
+    let prep_end = minutes_to_hhmm(time_to_minutes(prep_start) + prep_minutes);
+    let rest_start = minutes_to_hhmm(time_to_minutes(rest_end) - rest_minutes);
+    (prep_end, rest_start)
+}
+
 /// Slot `syllabus_num` (0-based) → wall-clock start/end on `shift_date` and preset id.
 pub fn shift_bounds_from_syllabus_num(
     conn: &Connection,
@@ -274,11 +286,12 @@ pub fn shift_row_from_syllabus_num(
     shift_window_id: i64,
     shift_date: &str,
     syllabus_num: i64,
-) -> Result<(String, String, i64, String, String), String> {
+) -> Result<(String, String, i64, String, String, String, String), String> {
     let (st, et, pid) = shift_bounds_from_syllabus_num(conn, shift_window_id, shift_date, syllabus_num)?;
     let (prep_m, rest_m) = load_preset_timings(conn, pid).map_err(|e| e.to_string())?;
     let (ps, re) = compute_prep_start_rest_end(&st, &et, prep_m, rest_m);
-    Ok((st, et, pid, ps, re))
+    let (pe, rs) = compute_prep_end_rest_start(&ps, &re, prep_m, rest_m);
+    Ok((st, et, pid, ps, re, pe, rs))
 }
 
 /// Resolve syllabus + boundaries for a shift row.
@@ -526,6 +539,16 @@ mod tests {
     fn floor_slots() {
         assert_eq!(floor_slot_count(900, 60), 15);
         assert_eq!(floor_slot_count(30, 60), 0);
+    }
+
+    #[test]
+    fn prep_end_rest_start_round_trip_with_compute_prep_start_rest_end() {
+        let (ps, re) = compute_prep_start_rest_end("09:00", "10:00", 30, 15);
+        assert_eq!(ps, "08:30");
+        assert_eq!(re, "10:15");
+        let (pe, rs) = compute_prep_end_rest_start(&ps, &re, 30, 15);
+        assert_eq!(pe, "09:00");
+        assert_eq!(rs, "10:00");
     }
 
     #[test]

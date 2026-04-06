@@ -193,6 +193,16 @@ fn apply_schema(conn: &mut Connection) -> AppResult<()> {
         conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (14)", [])?;
     }
 
+    let v15: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 15",
+        [],
+        |r| r.get(0),
+    )?;
+    if v15 == 0 {
+        migrate_shifts_prep_end_rest_start_v15(conn)?;
+        conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (15)", [])?;
+    }
+
     Ok(())
 }
 
@@ -518,6 +528,7 @@ fn shifts_column_names(conn: &Connection) -> AppResult<Vec<String>> {
 fn migrate_shift_windows_syllabus_v8(conn: &mut Connection) -> AppResult<()> {
     use crate::domain::syllabus::{
         coverage_daily_span_minutes, floor_slot_count, json_preset_slot_array,
+        DEFAULT_SLOT_MINUTES,
     };
     use rusqlite::params;
     conn.execute_batch("PRAGMA foreign_keys = OFF")?;
@@ -574,7 +585,7 @@ fn migrate_shift_windows_syllabus_v8(conn: &mut Connection) -> AppResult<()> {
         for (id, name, color, notes, cs, ce) in rows {
             let span = coverage_daily_span_minutes(&cs, &ce)
                 .map_err(|e| crate::error::AppError::msg(e))?;
-            let n = floor_slot_count(span, 60);
+            let n = floor_slot_count(span, DEFAULT_SLOT_MINUTES);
             let json = json_preset_slot_array(def_id, n);
             tx.execute(
                 "INSERT INTO shift_windows (id, name, color, notes, coverage_start, coverage_end, syllabus_slot_preset_ids)
@@ -721,6 +732,49 @@ fn syllabus_presets_column_names(conn: &Connection) -> AppResult<Vec<String>> {
         out.push(r?);
     }
     Ok(out)
+}
+
+/// Denormalized prep/rest inner boundaries on each shift row.
+fn migrate_shifts_prep_end_rest_start_v15(conn: &Connection) -> AppResult<()> {
+    use crate::domain::syllabus::compute_prep_end_rest_start;
+    use rusqlite::params;
+
+    if !table_exists(conn, "shifts")? {
+        return Ok(());
+    }
+    if shifts_has_column(conn, "prep_end")? {
+        return Ok(());
+    }
+    conn.execute(
+        "ALTER TABLE shifts ADD COLUMN prep_end TEXT NOT NULL DEFAULT '00:00'",
+        [],
+    )?;
+    conn.execute(
+        "ALTER TABLE shifts ADD COLUMN rest_start TEXT NOT NULL DEFAULT '00:00'",
+        [],
+    )?;
+
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.prep_start, s.rest_end, sp.prep_minutes, sp.rest_minutes
+         FROM shifts s
+         JOIN syllabus_presets sp ON s.syllabus_preset_id = sp.id",
+    )?;
+    let rows: Vec<(i64, String, String, i64, i64)> = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    for (id, ps, re, pm, rm) in rows {
+        let pm_i = i32::try_from(pm).unwrap_or(0);
+        let rm_i = i32::try_from(rm).unwrap_or(0);
+        let (pe, rs) = compute_prep_end_rest_start(&ps, &re, pm_i, rm_i);
+        conn.execute(
+            "UPDATE shifts SET prep_end = ?1, rest_start = ?2 WHERE id = ?3",
+            params![pe, rs, id],
+        )?;
+    }
+    Ok(())
 }
 
 /// Rename `recovery_minutes` → `rest_minutes`, `joint_recovery` → `joint_rest`.

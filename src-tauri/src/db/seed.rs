@@ -1,6 +1,8 @@
 //! Default roles and shift windows when the database is empty.
 
-use crate::domain::syllabus::{coverage_daily_span_minutes, floor_slot_count, json_preset_slot_array};
+use crate::domain::syllabus::{
+    coverage_daily_span_minutes, floor_slot_count, json_preset_slot_array, DEFAULT_SLOT_MINUTES,
+};
 use crate::error::{AppError, AppResult};
 use rusqlite::{params, Connection};
 
@@ -63,7 +65,7 @@ pub fn seed_if_empty(conn: &Connection) -> AppResult<()> {
     let cov_end = "2099-12-31T21:00:00";
     let span = coverage_daily_span_minutes(cov_start, cov_end)
         .map_err(|e| AppError::msg(e))?;
-    let slot_n = floor_slot_count(span, 60);
+    let slot_n = floor_slot_count(span, DEFAULT_SLOT_MINUTES);
     let slots_json = json_preset_slot_array(default_preset_id, slot_n);
 
     let mut st = conn.prepare(
