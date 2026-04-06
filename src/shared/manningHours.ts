@@ -1,12 +1,71 @@
 import type { JsonObject } from "./api";
 import { coverageIsoToHm, formatTimeForInput } from "./timeFormat";
 
+const MINUTES_PER_DAY = 24 * 60;
+
 export function timeToMin(t: string): number {
   const parts = String(t).trim().split(":");
   const h = Number(parts[0]);
   const m = Number(parts[1] ?? 0);
   if (Number.isNaN(h) || Number.isNaN(m)) return 0;
   return h * 60 + m;
+}
+
+/** Wall-clock HH:mm from minutes since midnight (0..1440 wrapped), matches backend `minutes_to_hhmm`. */
+export function minutesToHhmm(totalMinutes: number): string {
+  const m = ((totalMinutes % MINUTES_PER_DAY) + MINUTES_PER_DAY) % MINUTES_PER_DAY;
+  const h = Math.floor(m / 60);
+  const min = m % 60;
+  return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+}
+
+/** Add minutes to an HH:mm[:ss] wall time (modulo one day on the clock). */
+export function hmAddMinutes(hm: string, deltaMinutes: number): string {
+  return minutesToHhmm(timeToMin(hm) + deltaMinutes);
+}
+
+export type PrepRestHmPair = { startHm: string; endHm: string };
+
+/** Resolved prep/rest window ends for matrix bands (API fields + fallback from preset minutes). */
+export function shiftPrepRestHmPairs(shift: JsonObject): {
+  prep: PrepRestHmPair | null;
+  rest: PrepRestHmPair | null;
+} {
+  const psRaw = shift.prep_start ?? shift.prepStart;
+  const reRaw = shift.rest_end ?? shift.restEnd;
+  if (psRaw == null || reRaw == null) return { prep: null, rest: null };
+  const prepStart = String(psRaw).trim();
+  const restEnd = String(reRaw).trim();
+  if (!prepStart || prepStart === "—" || !restEnd || restEnd === "—") {
+    return { prep: null, rest: null };
+  }
+
+  const prepM = Math.max(0, Number(shift.prep_minutes ?? shift.prepMinutes ?? 0));
+  const restM = Math.max(0, Number(shift.rest_minutes ?? shift.restMinutes ?? 0));
+
+  const peRaw = shift.prep_end ?? shift.prepEnd;
+  const prepEnd =
+    peRaw != null && String(peRaw).trim() !== "" && String(peRaw).trim() !== "—"
+      ? String(peRaw).trim()
+      : hmAddMinutes(prepStart, prepM);
+
+  const rsRaw = shift.rest_start ?? shift.restStart;
+  const restStart =
+    rsRaw != null && String(rsRaw).trim() !== "" && String(rsRaw).trim() !== "—"
+      ? String(rsRaw).trim()
+      : hmAddMinutes(restEnd, -restM);
+
+  const prep: PrepRestHmPair | null =
+    prepM <= 0 || timeToMin(prepStart) === timeToMin(prepEnd)
+      ? null
+      : { startHm: prepStart, endHm: prepEnd };
+
+  const rest: PrepRestHmPair | null =
+    restM <= 0 || timeToMin(restStart) === timeToMin(restEnd)
+      ? null
+      : { startHm: restStart, endHm: restEnd };
+
+  return { prep, rest };
 }
 
 /** True if [hourLabel, hourLabel+1h) intersects shift [start, end) (handles midnight-crossing end). */

@@ -11,6 +11,7 @@ import {
 } from "@dnd-kit/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -70,6 +71,7 @@ import {
   EmployeeMatrixShiftPillChooser,
   MatrixDraggableTypeSlotPill,
   MatrixEmployeeHourDropZone,
+  MatrixEmployeePrepRestBands,
 } from "./components/MatrixScheduleParts";
 import { RemoteRegInline } from "./components/RemoteRegInline";
 import {
@@ -753,35 +755,49 @@ export function ScheduleView() {
                                   String(shift.type_name ?? "") +
                                   (extra > 0 ? ` (+${extra} משמרות נוספות באותה תא)` : "");
                                 return (
-                                  <div
-                                    key={`${eid}-pill-${shift.id}`}
-                                    className="pointer-events-auto absolute top-1/2 box-border -translate-y-1/2 py-0.5"
-                                    style={{
-                                      // Physical `left` ignores direction; hour columns follow
-                                      // inline-start in RTL, so use inset-inline-start to align pills.
-                                      insetInlineStart: `${leftPct}%`,
-                                      width: `${widthPct}%`,
-                                      zIndex: 10 + idx,
-                                    }}
-                                  >
+                                  <Fragment key={`${eid}-pill-${shift.id}`}>
+                                    <MatrixEmployeePrepRestBands
+                                      dateStr={dateStr}
+                                      shift={shift}
+                                      frameStartMs={
+                                        scheduleMatrixFrame.frameStartMs
+                                      }
+                                      frameEndMs={
+                                        scheduleMatrixFrame.frameEndMs
+                                      }
+                                      matrixRangeMs={matrixRangeMs}
+                                      zIndexBase={3 + idx}
+                                      pillInsetClassName={MATRIX_PILL_INSET_X}
+                                    />
                                     <div
-                                      className={`box-border h-full min-h-0 w-full min-w-0 ${MATRIX_PILL_INSET_X}`}
+                                      className="pointer-events-auto absolute top-1/2 box-border -translate-y-1/2 py-0.5"
+                                      style={{
+                                        // Physical `left` ignores direction; hour columns follow
+                                        // inline-start in RTL, so use inset-inline-start to align pills.
+                                        insetInlineStart: `${leftPct}%`,
+                                        width: `${widthPct}%`,
+                                        zIndex: 10 + idx,
+                                      }}
                                     >
-                                      <EmployeeMatrixShiftPillChooser
-                                        shift={shift}
-                                        employeeId={eid}
-                                        clippedStartMs={s}
-                                        clippedEndMs={e}
-                                        typeColor={typeColor}
-                                        pillTitle={pillTitle}
-                                        onLongPressDelete={() => {
-                                          suppressCellClickUntil.current =
-                                            Date.now() + 400;
-                                          deleteMut.mutate(Number(shift.id));
-                                        }}
-                                      />
+                                      <div
+                                        className={`box-border h-full min-h-0 w-full min-w-0 ${MATRIX_PILL_INSET_X}`}
+                                      >
+                                        <EmployeeMatrixShiftPillChooser
+                                          shift={shift}
+                                          employeeId={eid}
+                                          clippedStartMs={s}
+                                          clippedEndMs={e}
+                                          typeColor={typeColor}
+                                          pillTitle={pillTitle}
+                                          onLongPressDelete={() => {
+                                            suppressCellClickUntil.current =
+                                              Date.now() + 400;
+                                            deleteMut.mutate(Number(shift.id));
+                                          }}
+                                        />
+                                      </div>
                                     </div>
-                                  </div>
+                                  </Fragment>
                                 );
                               })}
                           </div>

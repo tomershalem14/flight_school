@@ -5,6 +5,11 @@ import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
+import {
+  clipIntervalToFrame,
+  shiftPrepRestHmPairs,
+  shiftWallIntervalMs,
+} from "../../../shared/manningHours";
 import { shiftIsUpToDate } from "../helpers/scheduleShiftModel";
 import { useMatrixPillLongPress } from "../helpers/useMatrixPillLongPress";
 
@@ -212,6 +217,93 @@ export function MatrixEmployeeHourDropZone({
         onEmptyClick(e);
       }}
     />
+  );
+}
+
+/** Gray prep/rest timeline bands under the colored shift pill (employee matrix row). */
+export function MatrixEmployeePrepRestBands({
+  dateStr,
+  shift,
+  frameStartMs,
+  frameEndMs,
+  matrixRangeMs,
+  zIndexBase,
+  pillInsetClassName,
+}: {
+  dateStr: string;
+  shift: JsonObject;
+  frameStartMs: number;
+  frameEndMs: number;
+  matrixRangeMs: number;
+  zIndexBase: number;
+  pillInsetClassName: string;
+}) {
+  if (matrixRangeMs <= 0) return null;
+
+  const sid = String(shift.id ?? "");
+  const { prep, rest } = shiftPrepRestHmPairs(shift);
+
+  const bands: Array<{
+    key: string;
+    startHm: string;
+    endHm: string;
+    title: string;
+  }> = [];
+  if (prep) {
+    bands.push({
+      key: "prep",
+      startHm: prep.startHm,
+      endHm: prep.endHm,
+      title: `הכנה: ${prep.startHm}–${prep.endHm}`,
+    });
+  }
+  if (rest) {
+    bands.push({
+      key: "rest",
+      startHm: rest.startHm,
+      endHm: rest.endHm,
+      title: `מנוחה: ${rest.startHm}–${rest.endHm}`,
+    });
+  }
+
+  if (bands.length === 0) return null;
+
+  return (
+    <>
+      {bands.map(({ key, startHm, endHm, title }) => {
+        const iv = shiftWallIntervalMs(dateStr, startHm, endHm);
+        const clipped = clipIntervalToFrame(
+          iv.startMs,
+          iv.endMs,
+          frameStartMs,
+          frameEndMs,
+        );
+        if (!clipped) return null;
+        const [s, e] = clipped;
+        const leftPct = ((s - frameStartMs) / matrixRangeMs) * 100;
+        const widthPct = ((e - s) / matrixRangeMs) * 100;
+        if (widthPct <= 0) return null;
+        return (
+          <div
+            key={`${sid}-${key}`}
+            className="pointer-events-none absolute top-1/2 box-border -translate-y-1/2 py-0.5"
+            style={{
+              insetInlineStart: `${leftPct}%`,
+              width: `${widthPct}%`,
+              zIndex: zIndexBase,
+            }}
+            title={title}
+            aria-hidden={true}
+          >
+            <div
+              className={`box-border h-full min-h-0 w-full min-w-0 ${pillInsetClassName}`}
+            >
+              <span className="block h-2 w-full max-w-full rounded-pill bg-ink/25 shadow-sm ring-1 ring-black/10" />
+            </div>
+          </div>
+        );
+      })}
+    </>
   );
 }
 
