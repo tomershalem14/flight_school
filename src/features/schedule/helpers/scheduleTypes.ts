@@ -17,6 +17,8 @@ export type MatrixTypeSlotDragData = {
   kind: "typeSlot";
   shiftWindowId: number;
   syllabusNum: number;
+  /** Target `syllabus_roles.id` when the slot preset defines roles; omit for legacy single-slot. */
+  syllabusRoleId?: number;
   coveredHours: string[];
   displayHour: string;
   color: string;
@@ -30,6 +32,7 @@ export type MatrixEmployeeShiftDragData = {
   shiftId: number;
   shiftWindowId: number;
   syllabusNum: number;
+  syllabusRoleId?: number;
   employeeId: number;
   color: string;
   /** Clipped wall interval for the unified hour-strip band (same as pill span). */

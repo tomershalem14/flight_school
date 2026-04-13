@@ -14,6 +14,7 @@ export type MatrixDragEndResolution =
       shift_window_id: number;
       employee_id: number;
       syllabus_num: number;
+      syllabus_role_id?: number;
     };
 
 export function resolveMatrixDragEnd(args: {
@@ -83,5 +84,6 @@ export function resolveMatrixDragEnd(args: {
     shift_window_id: dragData.shiftWindowId,
     employee_id: dropEmpId,
     syllabus_num: dragData.syllabusNum,
+    syllabus_role_id: dragData.syllabusRoleId,
   };
 }

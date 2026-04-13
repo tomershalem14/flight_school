@@ -203,6 +203,26 @@ fn apply_schema(conn: &mut Connection) -> AppResult<()> {
         conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (15)", [])?;
     }
 
+    let v16: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 16",
+        [],
+        |r| r.get(0),
+    )?;
+    if v16 == 0 {
+        migrate_syllabus_roles_v16(conn)?;
+        conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (16)", [])?;
+    }
+
+    let v17: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 17",
+        [],
+        |r| r.get(0),
+    )?;
+    if v17 == 0 {
+        migrate_shifts_syllabus_role_v17(conn)?;
+        conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (17)", [])?;
+    }
+
     Ok(())
 }
 
@@ -774,6 +794,217 @@ fn migrate_shifts_prep_end_rest_start_v15(conn: &Connection) -> AppResult<()> {
             params![pe, rs, id],
         )?;
     }
+    Ok(())
+}
+
+/// `syllabus_roles` child rows; drop `syllabus_presets.min_role_id`.
+/// `shifts.syllabus_role_id` + partial unique index; backfill including multi-assignee slots.
+fn migrate_shifts_syllabus_role_v17(conn: &mut Connection) -> AppResult<()> {
+    use rusqlite::params;
+    use std::collections::{HashMap, HashSet};
+
+    if !table_exists(conn, "shifts")? {
+        return Ok(());
+    }
+    if shifts_has_column(conn, "syllabus_role_id")? {
+        return Ok(());
+    }
+    if !table_exists(conn, "syllabus_roles")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE shifts ADD COLUMN syllabus_role_id INTEGER REFERENCES syllabus_roles(id)",
+        [],
+    )?;
+
+    let mut preset_roles: HashMap<i64, Vec<i64>> = HashMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT syllabus_preset_id, id FROM syllabus_roles ORDER BY syllabus_preset_id, sort_order, id",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+        for row in rows {
+            let (pid, rid) = row?;
+            preset_roles.entry(pid).or_default().push(rid);
+        }
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT id, shift_date, shift_window_id, syllabus_num, syllabus_preset_id
+         FROM shifts WHERE employee_id IS NOT NULL
+         ORDER BY shift_date, shift_window_id, syllabus_num, id",
+    )?;
+    let rows: Vec<(i64, String, i64, i64, i64)> = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut i = 0usize;
+    while i < rows.len() {
+        let (date, wid, sn) = (rows[i].1.clone(), rows[i].2, rows[i].3);
+        let mut j = i + 1;
+        while j < rows.len() && rows[j].1 == date && rows[j].2 == wid && rows[j].3 == sn {
+            j += 1;
+        }
+        let group = &rows[i..j];
+        let presets: HashSet<i64> = group.iter().map(|r| r.4).collect();
+        if presets.len() != 1 {
+            return Err(AppError::msg(
+                "מיגרציה 17: סילבוסים שונים לאותו סלוט — תקן את המסד לפני העדכון",
+            ));
+        }
+        let preset_id = group[0].4;
+        let role_list = preset_roles.get(&preset_id).map(|v| v.as_slice()).unwrap_or(&[]);
+        if group.len() > role_list.len() {
+            return Err(AppError::msg(
+                "מיגרציה 17: יותר מדי משמרות מאוישות באותו סלוט ביחס למספר תפקידי הסילבוס",
+            ));
+        }
+        for (k, r) in group.iter().enumerate() {
+            let role_id = role_list[k];
+            conn.execute(
+                "UPDATE shifts SET syllabus_role_id = ?1 WHERE id = ?2",
+                params![role_id, r.0],
+            )?;
+        }
+        i = j;
+    }
+
+    conn.execute(
+        "UPDATE shifts SET syllabus_role_id = (
+            SELECT sr.id FROM syllabus_roles sr
+            WHERE sr.syllabus_preset_id = shifts.syllabus_preset_id
+            ORDER BY sr.sort_order, sr.id LIMIT 1
+        ) WHERE syllabus_role_id IS NULL",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_shifts_slot_role_unique
+         ON shifts(shift_date, shift_window_id, syllabus_num, syllabus_role_id)
+         WHERE employee_id IS NOT NULL",
+        [],
+    )?;
+
+    Ok(())
+}
+
+fn migrate_syllabus_roles_v16(conn: &mut Connection) -> AppResult<()> {
+    use rusqlite::params;
+
+    if !table_exists(conn, "syllabus_presets")? {
+        return Ok(());
+    }
+    if table_exists(conn, "syllabus_roles")? {
+        return Ok(());
+    }
+
+    let cols = syllabus_presets_column_names(conn)?;
+    let has_min_role = cols.iter().any(|c| c == "min_role_id");
+
+    conn.execute_batch("PRAGMA foreign_keys = OFF")?;
+    let tx = conn.transaction()?;
+
+    tx.execute(
+        "CREATE TABLE syllabus_roles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL DEFAULT '',
+            role_id INTEGER,
+            special TEXT NOT NULL DEFAULT '',
+            syllabus_preset_id INTEGER NOT NULL,
+            sort_order INTEGER NOT NULL,
+            FOREIGN KEY (role_id) REFERENCES roles(id),
+            FOREIGN KEY (syllabus_preset_id) REFERENCES syllabus_presets(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    if has_min_role {
+        let mut stmt = tx.prepare("SELECT id, min_role_id FROM syllabus_presets ORDER BY id")?;
+        let rows: Vec<(i64, Option<i64>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .filter_map(|x| x.ok())
+            .collect();
+        drop(stmt);
+        for (preset_id, min_rid) in rows {
+            tx.execute(
+                "INSERT INTO syllabus_roles (name, role_id, special, syllabus_preset_id, sort_order)
+                 VALUES ('', ?1, '', ?2, 0)",
+                params![min_rid, preset_id],
+            )?;
+        }
+
+        tx.execute(
+            "CREATE TABLE syllabus_presets__v16 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                duration_minutes INTEGER NOT NULL,
+                prep_minutes INTEGER NOT NULL DEFAULT 0,
+                rest_minutes INTEGER NOT NULL DEFAULT 0,
+                max_in_row INTEGER NOT NULL DEFAULT 1 CHECK (max_in_row >= 1),
+                joint_prep INTEGER NOT NULL DEFAULT 0,
+                joint_rest INTEGER NOT NULL DEFAULT 0,
+                notes TEXT,
+                system_locked INTEGER NOT NULL DEFAULT 0
+            )",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO syllabus_presets__v16 (
+                id, name, duration_minutes, prep_minutes, rest_minutes,
+                max_in_row, joint_prep, joint_rest, notes, system_locked
+            )
+            SELECT id, name, duration_minutes, prep_minutes, rest_minutes,
+                   max_in_row, joint_prep, joint_rest, notes, system_locked
+            FROM syllabus_presets",
+            [],
+        )?;
+        let max_id: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(id), 0) FROM syllabus_presets__v16",
+            [],
+            |r| r.get(0),
+        )?;
+        tx.execute("DROP TABLE syllabus_presets", [])?;
+        tx.execute(
+            "ALTER TABLE syllabus_presets__v16 RENAME TO syllabus_presets",
+            [],
+        )?;
+        if table_exists(&*tx, "sqlite_sequence")? {
+            let _ = tx.execute(
+                "INSERT OR REPLACE INTO sqlite_sequence (name, seq) VALUES ('syllabus_presets', ?1)",
+                [max_id],
+            );
+        }
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_syllabus_presets_name_unique ON syllabus_presets(name COLLATE NOCASE)",
+            [],
+        )?;
+    } else {
+        let mut stmt = tx.prepare("SELECT id FROM syllabus_presets ORDER BY id")?;
+        let ids: Vec<i64> = stmt
+            .query_map([], |r| r.get(0))?
+            .filter_map(|x| x.ok())
+            .collect();
+        drop(stmt);
+        for preset_id in ids {
+            tx.execute(
+                "INSERT INTO syllabus_roles (name, role_id, special, syllabus_preset_id, sort_order)
+                 VALUES ('', NULL, '', ?1, 0)",
+                [preset_id],
+            )?;
+        }
+    }
+
+    tx.commit()?;
+    conn.execute_batch("PRAGMA foreign_keys = ON")?;
     Ok(())
 }
 

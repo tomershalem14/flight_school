@@ -10,6 +10,11 @@ import {
   syllabusNumForHourInWindow,
 } from "../../shared/manningHours";
 import type { JsonObject } from "../../shared/api";
+import { errorMessageFromUnknown } from "../../shared/errorMessage";
+import {
+  pickDefaultSyllabusRoleIdForSlot,
+  slotHasUnmannedRole,
+} from "../schedule/helpers/scheduleShiftModel";
 
 function normalizeShiftRow(s: JsonObject): JsonObject {
   return {
@@ -22,6 +27,8 @@ function normalizeShiftRow(s: JsonObject): JsonObject {
     shift_window_id: s.shift_window_id ?? s.shiftWindowId,
     emp_name: s.emp_name ?? s.empName,
     up_to_date: s.up_to_date ?? s.upToDate,
+    syllabus_num: s.syllabus_num ?? s.syllabusNum,
+    syllabus_role_id: s.syllabus_role_id ?? s.syllabusRoleId,
   };
 }
 
@@ -40,6 +47,7 @@ type BoardModal =
       mode: "create";
       shift_window_id: number;
       syllabus_num: number;
+      syllabus_role_id?: number;
       hourLabel: string;
       employee_id: number | "";
     }
@@ -98,12 +106,16 @@ export function FlightBoardView() {
       shift_window_id: number;
       syllabus_num: number;
       employee_id: number;
+      syllabus_role_id?: number;
     }) =>
       api.createShift({
         shift_date: dateStr,
         shift_window_id: args.shift_window_id,
         syllabus_num: args.syllabus_num,
         employee_id: args.employee_id,
+        ...(args.syllabus_role_id != null
+          ? { syllabus_role_id: args.syllabus_role_id }
+          : {}),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["shifts"] });
@@ -111,7 +123,7 @@ export function FlightBoardView() {
       setModal(null);
     },
     onError: (err) => {
-      window.alert(err instanceof Error ? err.message : String(err));
+      alert(errorMessageFromUnknown(err));
     },
   });
 
@@ -123,7 +135,7 @@ export function FlightBoardView() {
       setModal(null);
     },
     onError: (err) => {
-      window.alert(err instanceof Error ? err.message : String(err));
+      alert(errorMessageFromUnknown(err));
     },
   });
 
@@ -163,6 +175,16 @@ export function FlightBoardView() {
                       const primary = cellShifts[0];
                       const extra = cellShifts.length > 1 ? cellShifts.length - 1 : 0;
                       const stale = primary && !shiftIsUpToDate(primary);
+                      const canCreateHere =
+                        sn != null &&
+                        slotHasUnmannedRole(
+                          dateStr,
+                          ty,
+                          hour,
+                          durationByPreset,
+                          presets,
+                          dayShifts,
+                        );
                       return (
                         <button
                           key={hour}
@@ -176,17 +198,26 @@ export function FlightBoardView() {
                                 empName: String(primary.emp_name ?? "—"),
                                 upToDate: shiftIsUpToDate(primary),
                               });
-                            } else if (sn != null) {
+                            } else if (canCreateHere && sn != null) {
+                              const rolePick = pickDefaultSyllabusRoleIdForSlot(
+                                ty,
+                                sn,
+                                presets,
+                                dayShifts,
+                              );
                               setModal({
                                 mode: "create",
                                 shift_window_id: tid,
                                 syllabus_num: sn,
+                                ...(rolePick != null
+                                  ? { syllabus_role_id: rolePick }
+                                  : {}),
                                 hourLabel: hour,
                                 employee_id: "",
                               });
                             }
                           }}
-                          disabled={!primary && sn == null}
+                          disabled={!primary && !canCreateHere}
                         >
                           <div className="text-xs font-bold text-muted">{hour.slice(0, 2)}:00</div>
                           {primary ? (
@@ -199,8 +230,10 @@ export function FlightBoardView() {
                               {String(primary.emp_name ?? "—")}
                               {extra > 0 ? ` +${extra}` : ""}
                             </div>
-                          ) : sn != null ? (
+                          ) : canCreateHere ? (
                             <div className="text-xs text-muted">ריק</div>
+                          ) : sn != null ? (
+                            <div className="text-xs text-muted">מלא</div>
                           ) : (
                             <div className="schedule-striped-warn-pill rounded-pill px-2 py-0.5 text-center text-[10px] font-semibold leading-none text-ink shadow-sm ring-1 ring-black/10">
                               ללא סלוט
@@ -273,6 +306,9 @@ export function FlightBoardView() {
                     shift_window_id: modal.shift_window_id,
                     syllabus_num: modal.syllabus_num,
                     employee_id: modal.employee_id,
+                    ...(modal.syllabus_role_id != null
+                      ? { syllabus_role_id: modal.syllabus_role_id }
+                      : {}),
                   });
                 }}
               >
@@ -330,6 +366,7 @@ export function FlightBoardView() {
           </div>
         </div>
       )}
+
     </div>
   );
 }

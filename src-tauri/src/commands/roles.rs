@@ -143,8 +143,8 @@ pub fn delete_role(state: State<'_, AppState>, role_id: i64) -> Result<Value, St
                 params![fallback, role_id],
             )?;
             conn.execute(
-                "UPDATE syllabus_presets SET min_role_id = NULL WHERE min_role_id = ?",
-                [role_id],
+                "UPDATE syllabus_roles SET role_id = ?1 WHERE role_id = ?2",
+                params![fallback, role_id],
             )?;
             conn.execute("DELETE FROM roles WHERE id = ?", [role_id])?;
             Ok(json!({"ok": true}))

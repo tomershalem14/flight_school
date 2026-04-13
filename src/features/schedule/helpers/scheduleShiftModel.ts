@@ -1,6 +1,12 @@
 import type { JsonObject } from "../../../shared/api";
 import { DEFAULT_SHIFT_TYPE_PASTEL_HEX } from "../../../shared/pastelPalette";
 import {
+  parseSlotPresetIdsFromWindow,
+  shiftCoversHour,
+  syllabusNumForHourInWindow,
+  windowDayTimeline,
+} from "../../../shared/manningHours";
+import {
   coverageIsoFromDayAndHm,
   coverageIsoToHm,
   formatTimeForInput,
@@ -20,7 +26,108 @@ export function normalizeShiftRow(s: JsonObject): JsonObject {
     syllabus_preset_id: s.syllabus_preset_id ?? s.syllabusPresetId,
     up_to_date: s.up_to_date ?? s.upToDate,
     syllabus_num: s.syllabus_num ?? s.syllabusNum,
+    syllabus_role_id: s.syllabus_role_id ?? s.syllabusRoleId,
+    syllabus_role_name: s.syllabus_role_name ?? s.syllabusRoleName,
+    syllabus_role_sort_order:
+      s.syllabus_role_sort_order ?? s.syllabusRoleSortOrder,
   };
+}
+
+/** `syllabus_roles` for a preset, ordered for matrix stacking. */
+export function presetSyllabusRolesSorted(
+  preset: JsonObject | undefined,
+): JsonObject[] {
+  if (!preset) return [];
+  const raw = preset.syllabus_roles as JsonObject[] | undefined;
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  return [...raw].sort(
+    (a, b) =>
+      Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0) ||
+      Number(a.id ?? 0) - Number(b.id ?? 0),
+  );
+}
+
+/** Max stacked role pills needed in any segment of this window row on `dateStr`. */
+export function maxSyllabusRolesInWindowDay(
+  dateStr: string,
+  ty: JsonObject,
+  durationByPreset: Map<number, number>,
+  presets: JsonObject[],
+): number {
+  const { segments } = windowDayTimeline(dateStr, ty, durationByPreset, "#000");
+  const presetById = new Map(presets.map((p) => [Number(p.id), p]));
+  let max = 1;
+  for (const seg of segments) {
+    const roles = presetSyllabusRolesSorted(presetById.get(seg.presetId));
+    max = Math.max(max, Math.max(1, roles.length));
+  }
+  return max;
+}
+
+/** True if this hour still has a free syllabus-role slot for `ty`. */
+export function slotHasUnmannedRole(
+  dateStr: string,
+  ty: JsonObject,
+  hour: string,
+  durationByPreset: Map<number, number>,
+  presets: JsonObject[],
+  dayShifts: JsonObject[],
+): boolean {
+  const sn = syllabusNumForHourInWindow(dateStr, ty, hour, durationByPreset);
+  if (sn == null) return false;
+  const slotIds = parseSlotPresetIdsFromWindow(ty);
+  const pid = slotIds[sn];
+  const preset = presets.find((p) => Number(p.id) === pid);
+  const roles = presetSyllabusRolesSorted(preset);
+  const tid = typeId(ty);
+  if (roles.length <= 1) {
+    const hasAssigned = dayShifts.some((s) => {
+      const sid = Number(s.shift_window_id ?? s.shiftWindowId);
+      if (sid !== tid) return false;
+      if (!shiftCoversHour(String(s.start_time), String(s.end_time), hour))
+        return false;
+      const eid = s.employee_id;
+      return eid !== null && eid !== undefined && eid !== "";
+    });
+    return !hasAssigned;
+  }
+  const manned = new Set<number>();
+  for (const s of dayShifts) {
+    if (Number(s.shift_window_id ?? s.shiftWindowId) !== tid) continue;
+    if (Number(s.syllabus_num ?? s.syllabusNum) !== sn) continue;
+    const eid = s.employee_id;
+    if (eid === null || eid === undefined || eid === "") continue;
+    manned.add(Number(s.syllabus_role_id));
+  }
+  return roles.some((r) => !manned.has(Number(r.id)));
+}
+
+/** First free role id for the slot, or the first role when all are taken (caller should block). */
+export function pickDefaultSyllabusRoleIdForSlot(
+  ty: JsonObject,
+  sn: number,
+  presets: JsonObject[],
+  dayShifts: JsonObject[],
+): number | undefined {
+  const slotIds = parseSlotPresetIdsFromWindow(ty);
+  const pid = slotIds[sn];
+  const preset = presets.find((p) => Number(p.id) === pid);
+  const roles = presetSyllabusRolesSorted(preset);
+  if (roles.length === 0) return undefined;
+  const tid = typeId(ty);
+  if (roles.length === 1) {
+    return Number(roles[0].id);
+  }
+  const manned = new Set<number>();
+  for (const s of dayShifts) {
+    if (Number(s.shift_window_id ?? s.shiftWindowId) !== tid) continue;
+    if (Number(s.syllabus_num ?? s.syllabusNum) !== sn) continue;
+    const eid = s.employee_id;
+    if (eid === null || eid === undefined || eid === "") continue;
+    manned.add(Number(s.syllabus_role_id));
+  }
+  const free = roles.find((r) => !manned.has(Number(r.id)));
+  return Number((free ?? roles[0]).id);
 }
 
 export function shiftIsUpToDate(s: JsonObject): boolean {

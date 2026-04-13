@@ -41,6 +41,7 @@ import {
   windowDayTimeline,
 } from "../../shared/manningHours";
 import { shiftTypePillColors } from "../../shared/shiftTypeColors";
+import { errorMessageFromUnknown } from "../../shared/errorMessage";
 import { hourSlotEndHm } from "../../shared/timeFormat";
 import {
   MATRIX_DRAG_HIGHLIGHT_IDLE,
@@ -55,10 +56,14 @@ import {
 } from "./helpers/scheduleMatrixGeometry";
 import { resolveMatrixDragEnd } from "./helpers/resolveMatrixDragEnd";
 import {
+  maxSyllabusRolesInWindowDay,
   newShiftTypeDraft,
   normalizeShiftRow,
+  pickDefaultSyllabusRoleIdForSlot,
+  presetSyllabusRolesSorted,
   shiftIsUpToDate,
   shiftTypeDraftFromWindow,
+  slotHasUnmannedRole,
   typeId,
 } from "./helpers/scheduleShiftModel";
 import type {
@@ -96,6 +101,10 @@ export function ScheduleView() {
   });
   const presets = useMemo(() => presetsRaw as JsonObject[], [presetsRaw]);
   const durationByPreset = useMemo(() => presetDurationById(presets), [presets]);
+  const presetById = useMemo(
+    () => new Map<number, JsonObject>(presets.map((p) => [Number(p.id), p])),
+    [presets],
+  );
 
   const { data: typesRaw = [] } = useQuery({
     queryKey: ["shift_windows", dateStr],
@@ -332,20 +341,10 @@ export function ScheduleView() {
     if (!typePicker) return [];
     const hour = typePicker.hour;
     const covering = typesCoveringHourSlot(types, dateStr, hour);
-    return covering.filter((ty) => {
-      if (syllabusNumForHourInWindow(dateStr, ty, hour, durationByPreset) == null)
-        return false;
-      const tid = typeId(ty);
-      const hasAssigned = dayShifts.some((s) => {
-        const sid = Number(s.shift_window_id ?? s.shiftWindowId);
-        if (sid !== tid) return false;
-        if (!shiftCoversHour(String(s.start_time), String(s.end_time), hour)) return false;
-        const eid = s.employee_id;
-        return eid !== null && eid !== undefined && eid !== "";
-      });
-      return !hasAssigned;
-    });
-  }, [typePicker, types, dateStr, dayShifts, durationByPreset]);
+    return covering.filter((ty) =>
+      slotHasUnmannedRole(dateStr, ty, hour, durationByPreset, presets, dayShifts),
+    );
+  }, [typePicker, types, dateStr, dayShifts, durationByPreset, presets]);
 
   // --- Mutations ---
   const reassignMut = useMutation({
@@ -359,8 +358,7 @@ export function ScheduleView() {
       qc.invalidateQueries({ queryKey: ["violations"] });
     },
     onError: (err) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      window.alert(msg);
+      alert(errorMessageFromUnknown(err));
     },
   });
 
@@ -369,12 +367,16 @@ export function ScheduleView() {
       shift_window_id: number;
       employee_id: number;
       syllabus_num: number;
+      syllabus_role_id?: number;
     }) =>
       api.createShift({
         shift_date: dateStr,
         shift_window_id: args.shift_window_id,
         syllabus_num: args.syllabus_num,
         employee_id: args.employee_id,
+        ...(args.syllabus_role_id != null
+          ? { syllabus_role_id: args.syllabus_role_id }
+          : {}),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["shifts"] });
@@ -382,8 +384,7 @@ export function ScheduleView() {
       setTypePicker(null);
     },
     onError: (err) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      window.alert(msg);
+      alert(errorMessageFromUnknown(err));
     },
   });
 
@@ -394,7 +395,7 @@ export function ScheduleView() {
       qc.invalidateQueries({ queryKey: ["violations"] });
     },
     onError: (err) => {
-      window.alert(err instanceof Error ? err.message : String(err));
+      alert(errorMessageFromUnknown(err));
     },
   });
 
@@ -407,6 +408,9 @@ export function ScheduleView() {
       setDeleteTypeConfirm(null);
       setTypePicker(null);
     },
+    onError: (err) => {
+      alert(errorMessageFromUnknown(err));
+    },
   });
 
   const createShiftWindowMut = useMutation({
@@ -418,7 +422,7 @@ export function ScheduleView() {
       setShiftTypeDraft(null);
     },
     onError: (err) => {
-      window.alert(err instanceof Error ? err.message : String(err));
+      alert(errorMessageFromUnknown(err));
     },
   });
 
@@ -432,7 +436,7 @@ export function ScheduleView() {
       setShiftTypeDraft(null);
     },
     onError: (err) => {
-      window.alert(err instanceof Error ? err.message : String(err));
+      alert(errorMessageFromUnknown(err));
     },
   });
 
@@ -560,6 +564,9 @@ export function ScheduleView() {
         shift_window_id: resolution.shift_window_id,
         employee_id: resolution.employee_id,
         syllabus_num: resolution.syllabus_num,
+        ...(resolution.syllabus_role_id != null
+          ? { syllabus_role_id: resolution.syllabus_role_id }
+          : {}),
       });
     },
     [clearMatrixDragOverlay, createMut, dateStr, dayShifts, reassignMut],
@@ -646,6 +653,27 @@ export function ScheduleView() {
                   if (se === null || se === undefined || se === "") return false;
                   return Number(se) === eid;
                 });
+                const clusterMap = new Map<string, JsonObject[]>();
+                for (const s of [...rowShifts].sort(
+                  (a, b) =>
+                    timeToMin(String(a.start_time)) - timeToMin(String(b.start_time)) ||
+                    Number(a.shift_window_id ?? a.shiftWindowId) -
+                      Number(b.shift_window_id ?? b.shiftWindowId) ||
+                    Number(a.syllabus_num ?? a.syllabusNum ?? 0) -
+                      Number(b.syllabus_num ?? b.syllabusNum ?? 0) ||
+                    Number(a.syllabus_role_sort_order ?? a.syllabusRoleSortOrder ?? 0) -
+                      Number(b.syllabus_role_sort_order ?? b.syllabusRoleSortOrder ?? 0) ||
+                    Number(a.id) - Number(b.id),
+                )) {
+                  const k = `${String(s.start_time)}|${String(s.end_time)}|${Number(s.shift_window_id ?? s.shiftWindowId)}|${Number(s.syllabus_num ?? s.syllabusNum ?? 0)}`;
+                  if (!clusterMap.has(k)) clusterMap.set(k, []);
+                  clusterMap.get(k)!.push(s);
+                }
+                const shiftClusters = [...clusterMap.values()].sort(
+                  (a, b) =>
+                    timeToMin(String(a[0].start_time)) - timeToMin(String(b[0].start_time)) ||
+                    Number(a[0].id) - Number(b[0].id),
+                );
                 return (
                   <tr key={eid} className="border-b border-line hover:bg-peach-1/30">
                     <td className="sticky right-0 z-10 w-[6.6rem] max-w-[6.6rem] min-w-0 border-s border-line bg-surface px-2 py-0.5 align-middle">
@@ -710,96 +738,104 @@ export function ScheduleView() {
                         </div>
                         {scheduleMatrixFrame && matrixRangeMs > 0 ? (
                           <div className="pointer-events-none relative z-[2] min-h-[28px] w-full">
-                            {[...rowShifts]
-                              .sort(
-                                (a, b) =>
-                                  timeToMin(String(a.start_time)) -
-                                    timeToMin(String(b.start_time)) ||
-                                  Number(a.id) - Number(b.id),
-                              )
-                              .map((shift, idx) => {
-                                const iv = shiftWallIntervalMs(
+                            {shiftClusters.map((cluster, idx) => {
+                              const shift = cluster[0];
+                              const iv = shiftWallIntervalMs(
+                                dateStr,
+                                String(shift.start_time),
+                                String(shift.end_time),
+                              );
+                              const clipped = clipIntervalToFrame(
+                                iv.startMs,
+                                iv.endMs,
+                                scheduleMatrixFrame.frameStartMs,
+                                scheduleMatrixFrame.frameEndMs,
+                              );
+                              if (!clipped) return null;
+                              const [s, e] = clipped;
+                              const leftPct =
+                                ((s - scheduleMatrixFrame.frameStartMs) / matrixRangeMs) * 100;
+                              const widthPct = ((e - s) / matrixRangeMs) * 100;
+                              const typeColor = String(
+                                shift.type_color ?? shift.typeColor ?? "#7BA3B5",
+                              );
+                              const clusterIds = new Set(cluster.map((x) => Number(x.id)));
+                              const overlap = rowShifts.filter((o) => {
+                                if (clusterIds.has(Number(o.id))) return false;
+                                const oiv = shiftWallIntervalMs(
                                   dateStr,
-                                  String(shift.start_time),
-                                  String(shift.end_time),
+                                  String(o.start_time),
+                                  String(o.end_time),
                                 );
-                                const clipped = clipIntervalToFrame(
-                                  iv.startMs,
-                                  iv.endMs,
-                                  scheduleMatrixFrame.frameStartMs,
-                                  scheduleMatrixFrame.frameEndMs,
-                                );
-                                if (!clipped) return null;
-                                const [s, e] = clipped;
-                                const leftPct =
-                                  ((s - scheduleMatrixFrame.frameStartMs) / matrixRangeMs) * 100;
-                                const widthPct = ((e - s) / matrixRangeMs) * 100;
-                                // Match window row / flight board: color comes from shift_windows (API type_color), not syllabus preset (#6366F1 default).
-                                const typeColor = String(
-                                  shift.type_color ?? shift.typeColor ?? "#7BA3B5",
-                                );
-                                const overlap = rowShifts.filter((o) => {
-                                  if (Number(o.id) === Number(shift.id)) return false;
-                                  const oiv = shiftWallIntervalMs(
-                                    dateStr,
-                                    String(o.start_time),
-                                    String(o.end_time),
-                                  );
-                                  return (
-                                    Math.max(iv.startMs, oiv.startMs) <
-                                    Math.min(iv.endMs, oiv.endMs)
-                                  );
-                                });
-                                const extra = overlap.length;
-                                const pillTitle =
-                                  String(shift.type_name ?? "") +
-                                  (extra > 0 ? ` (+${extra} משמרות נוספות באותה תא)` : "");
                                 return (
-                                  <Fragment key={`${eid}-pill-${shift.id}`}>
+                                  Math.max(iv.startMs, oiv.startMs) <
+                                  Math.min(iv.endMs, oiv.endMs)
+                                );
+                              });
+                              const extra = overlap.length;
+                              const roleHint =
+                                cluster.length > 1
+                                  ? ` · ${cluster.length} תפקידים`
+                                  : "";
+                              const pillTitle =
+                                String(shift.type_name ?? "") +
+                                roleHint +
+                                (extra > 0 ? ` (+${extra} משמרות נוספות באותה תא)` : "");
+                              return (
+                                <Fragment key={`${eid}-cl-${cluster.map((c) => c.id).join("-")}`}>
+                                  {cluster.map((clShift, subIdx) => (
                                     <MatrixEmployeePrepRestBands
+                                      key={`prep-${clShift.id}`}
                                       dateStr={dateStr}
-                                      shift={shift}
-                                      frameStartMs={
-                                        scheduleMatrixFrame.frameStartMs
-                                      }
-                                      frameEndMs={
-                                        scheduleMatrixFrame.frameEndMs
-                                      }
+                                      shift={clShift}
+                                      frameStartMs={scheduleMatrixFrame.frameStartMs}
+                                      frameEndMs={scheduleMatrixFrame.frameEndMs}
                                       matrixRangeMs={matrixRangeMs}
-                                      zIndexBase={3 + idx}
+                                      zIndexBase={3 + idx * 5 + subIdx}
                                       pillInsetClassName={MATRIX_PILL_INSET_X}
                                     />
+                                  ))}
+                                  <div
+                                    className="pointer-events-auto absolute top-1/2 box-border -translate-y-1/2 py-0.5"
+                                    style={{
+                                      insetInlineStart: `${leftPct}%`,
+                                      width: `${widthPct}%`,
+                                      zIndex: 10 + idx,
+                                    }}
+                                  >
                                     <div
-                                      className="pointer-events-auto absolute top-1/2 box-border -translate-y-1/2 py-0.5"
-                                      style={{
-                                        // Physical `left` ignores direction; hour columns follow
-                                        // inline-start in RTL, so use inset-inline-start to align pills.
-                                        insetInlineStart: `${leftPct}%`,
-                                        width: `${widthPct}%`,
-                                        zIndex: 10 + idx,
-                                      }}
+                                      className={`box-border flex min-h-0 w-full min-w-0 flex-col gap-0.5 ${MATRIX_PILL_INSET_X}`}
                                     >
-                                      <div
-                                        className={`box-border h-full min-h-0 w-full min-w-0 ${MATRIX_PILL_INSET_X}`}
-                                      >
-                                        <EmployeeMatrixShiftPillChooser
-                                          shift={shift}
-                                          employeeId={eid}
-                                          clippedStartMs={s}
-                                          clippedEndMs={e}
-                                          typeColor={typeColor}
-                                          pillTitle={pillTitle}
-                                          onLongPressDelete={() => {
-                                            suppressCellClickUntil.current =
-                                              Date.now() + 400;
-                                            deleteMut.mutate(Number(shift.id));
-                                          }}
-                                        />
-                                      </div>
+                                      {cluster.map((clShift) => {
+                                        const rname = String(
+                                          clShift.syllabus_role_name ??
+                                            clShift.syllabusRoleName ??
+                                            "",
+                                        ).trim();
+                                        const titled =
+                                          pillTitle + (rname ? `\n${rname}` : "");
+                                        return (
+                                          <EmployeeMatrixShiftPillChooser
+                                            key={String(clShift.id)}
+                                            shift={clShift}
+                                            employeeId={eid}
+                                            clippedStartMs={s}
+                                            clippedEndMs={e}
+                                            typeColor={typeColor}
+                                            pillTitle={titled}
+                                            onLongPressDelete={() => {
+                                              suppressCellClickUntil.current =
+                                                Date.now() + 400;
+                                              deleteMut.mutate(Number(clShift.id));
+                                            }}
+                                          />
+                                        );
+                                      })}
                                     </div>
-                                  </Fragment>
-                                );
-                              })}
+                                  </div>
+                                </Fragment>
+                              );
+                            })}
                           </div>
                         ) : null}
                       </div>
@@ -817,6 +853,14 @@ export function ScheduleView() {
                   durationByPreset,
                   base,
                 );
+                const maxRoles = maxSyllabusRolesInWindowDay(
+                  dateStr,
+                  ty,
+                  durationByPreset,
+                  presets,
+                );
+                const rowMinH =
+                  maxRoles <= 1 ? 28 : Math.max(28, maxRoles * 10 + (maxRoles - 1) * 2 + 8);
                 const cov = coverageOf(ty);
                 const dayInter = intersectCoverageOnDay(dateStr, cov.start, cov.end);
                 const leftPadMs =
@@ -866,11 +910,14 @@ export function ScheduleView() {
                     </td>
                     <td
                       colSpan={hours.length}
-                      className="min-h-[28px] border-s border-line bg-ink/[0.055] px-0 py-0.5 align-middle"
+                      className="border-s border-line bg-ink/[0.055] px-0 py-0.5 align-middle"
                     >
                       {/* No flex gap: gaps break ms-proportional alignment with column grid.
                           Per-segment inner padding (MATRIX_PILL_INSET_X) insets pills only; flex ratios unchanged. */}
-                      <div className="flex min-h-[28px] w-full items-center">
+                      <div
+                        className="flex w-full items-center"
+                        style={{ minHeight: rowMinH }}
+                      >
                         {leftPadMs > 0 ? (
                           <div
                             className="min-w-0 shrink"
@@ -905,21 +952,8 @@ export function ScheduleView() {
                               seg.endMs,
                             );
                           });
-                          const hasAssigned = assigned.length > 0;
                           const fillOpen = base;
                           const fillManned = muted;
-                          const names = [
-                            ...new Set(
-                              assigned
-                                .map((s) => String(s.emp_name ?? s.empName ?? "").trim())
-                                .filter(Boolean),
-                            ),
-                          ];
-                          const title =
-                            `${typeName} · ${displayHour}` +
-                            (hasAssigned
-                              ? ` — מאויש: ${names.join(", ")}`
-                              : " — זמין לאיוש");
                           const flexGrow = Math.max(1, seg.endMs - seg.startMs);
                           const hl =
                             scheduleMatrixFrame &&
@@ -933,34 +967,128 @@ export function ScheduleView() {
                               : null;
                           const highlightStartMs = hl ? hl[0] : seg.startMs;
                           const highlightEndMs = hl ? hl[1] : seg.endMs;
+                          const segPreset = presetById.get(seg.presetId);
+                          const roles = presetSyllabusRolesSorted(segPreset);
+                          const slotTitleBase = `${typeName} · ${displayHour}`;
+
+                          if (roles.length <= 1) {
+                            const hasAssigned = assigned.length > 0;
+                            const names = [
+                              ...new Set(
+                                assigned
+                                  .map((s) => String(s.emp_name ?? s.empName ?? "").trim())
+                                  .filter(Boolean),
+                              ),
+                            ];
+                            const title =
+                              slotTitleBase +
+                              (hasAssigned
+                                ? ` — מאויש: ${names.join(", ")}`
+                                : " — זמין לאיוש");
+                            const singleRoleId =
+                              roles.length === 1 ? Number(roles[0].id) : undefined;
+                            return (
+                              <div
+                                key={`seg-${tid}-${seg.syllabusNum}`}
+                                className="flex min-w-0 flex-1 items-center justify-center py-0.5"
+                                style={{ flex: `${flexGrow} 1 0` }}
+                                title={title}
+                              >
+                                <div
+                                  className={`flex w-full min-w-0 justify-center ${MATRIX_PILL_INSET_X}`}
+                                  aria-label={title}
+                                >
+                                  {hasAssigned ? (
+                                    <span
+                                      className="block h-2.5 w-full max-w-full rounded-pill shadow-sm ring-1 ring-black/10"
+                                      style={{ backgroundColor: fillManned }}
+                                    />
+                                  ) : (
+                                    <MatrixDraggableTypeSlotPill
+                                      shiftWindowId={tid}
+                                      syllabusNum={seg.syllabusNum}
+                                      syllabusRoleId={
+                                        singleRoleId !== undefined &&
+                                        !Number.isNaN(singleRoleId)
+                                          ? singleRoleId
+                                          : undefined
+                                      }
+                                      coveredHours={coveredHours}
+                                      displayHour={displayHour}
+                                      fill={fillOpen}
+                                      title={title}
+                                      highlightStartMs={highlightStartMs}
+                                      highlightEndMs={highlightEndMs}
+                                    />
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          }
+
                           return (
                             <div
                               key={`seg-${tid}-${seg.syllabusNum}`}
-                              className="flex min-w-0 flex-1 items-center justify-center py-0.5"
+                              className="flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 py-0.5"
                               style={{ flex: `${flexGrow} 1 0` }}
-                              title={title}
                             >
                               <div
-                                className={`flex w-full min-w-0 justify-center ${MATRIX_PILL_INSET_X}`}
-                                aria-label={title}
+                                className={`flex w-full min-w-0 flex-col items-stretch justify-center gap-0.5 ${MATRIX_PILL_INSET_X}`}
                               >
-                                {hasAssigned ? (
-                                  <span
-                                    className="block h-2.5 w-full max-w-full rounded-pill shadow-sm ring-1 ring-black/10"
-                                    style={{ backgroundColor: fillManned }}
-                                  />
-                                ) : (
-                                  <MatrixDraggableTypeSlotPill
-                                    shiftWindowId={tid}
-                                    syllabusNum={seg.syllabusNum}
-                                    coveredHours={coveredHours}
-                                    displayHour={displayHour}
-                                    fill={fillOpen}
-                                    title={title}
-                                    highlightStartMs={highlightStartMs}
-                                    highlightEndMs={highlightEndMs}
-                                  />
-                                )}
+                                {roles.map((role) => {
+                                  const rid = Number(role.id);
+                                  const mannedShift = assigned.find((s) => {
+                                    const raw = s.syllabus_role_id ?? s.syllabusRoleId;
+                                    if (
+                                      raw !== undefined &&
+                                      raw !== null &&
+                                      raw !== ""
+                                    ) {
+                                      return Number(raw) === rid;
+                                    }
+                                    return (
+                                      assigned.length === 1 &&
+                                      rid === Number(roles[0].id)
+                                    );
+                                  });
+                                  const rlabel = String(role.name ?? "").trim();
+                                  const mannedName = mannedShift
+                                    ? String(
+                                        mannedShift.emp_name ??
+                                          mannedShift.empName ??
+                                          "",
+                                      ).trim()
+                                    : "";
+                                  const title =
+                                    slotTitleBase +
+                                    (rlabel ? ` · ${rlabel}` : "") +
+                                    (mannedName
+                                      ? ` — מאויש: ${mannedName}`
+                                      : " — זמין לאיוש");
+                                  return (
+                                    <div key={`${tid}-${seg.syllabusNum}-r-${rid}`} title={title}>
+                                      {mannedShift ? (
+                                        <span
+                                          className="block h-2.5 w-full max-w-full rounded-pill shadow-sm ring-1 ring-black/10"
+                                          style={{ backgroundColor: fillManned }}
+                                          aria-label={title}
+                                        />
+                                      ) : (
+                                        <MatrixDraggableTypeSlotPill
+                                          shiftWindowId={tid}
+                                          syllabusNum={seg.syllabusNum}
+                                          syllabusRoleId={rid}
+                                          coveredHours={coveredHours}
+                                          displayHour={displayHour}
+                                          fill={fillOpen}
+                                          title={title}
+                                          highlightStartMs={highlightStartMs}
+                                          highlightEndMs={highlightEndMs}
+                                        />
+                                      )}
+                                    </div>
+                                  );
+                                })}
                               </div>
                             </div>
                           );
@@ -1067,10 +1195,17 @@ export function ScheduleView() {
               durationByPreset,
             );
             if (sn == null) return;
+            const roleId = pickDefaultSyllabusRoleIdForSlot(
+              t,
+              sn,
+              presets,
+              dayShifts,
+            );
             createMut.mutate({
               shift_window_id: typeId(t),
               employee_id: typePicker.employeeId,
               syllabus_num: sn,
+              ...(roleId != null ? { syllabus_role_id: roleId } : {}),
             });
           }}
         />
@@ -1101,6 +1236,7 @@ export function ScheduleView() {
         onClose={() => setDeleteTypeConfirm(null)}
         deleteShiftWindowMut={deleteShiftWindowMut}
       />
+
     </div>
   );
 }

@@ -136,6 +136,31 @@ pub fn load_presets_prep_rest_meta(
     Ok(out)
 }
 
+/// First `syllabus_roles` row for a preset (`sort_order`, `id`).
+pub fn first_syllabus_role_id_for_preset(conn: &Connection, preset_id: i64) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT id FROM syllabus_roles WHERE syllabus_preset_id = ?1 ORDER BY sort_order, id LIMIT 1",
+        [preset_id],
+        |r| r.get(0),
+    )
+    .map_err(|_| "אין תפקיד סילבוס משויך לסילבוס זה".to_string())
+}
+
+pub fn syllabus_role_matches_preset(
+    conn: &Connection,
+    syllabus_role_id: i64,
+    syllabus_preset_id: i64,
+) -> Result<bool, String> {
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM syllabus_roles WHERE id = ?1 AND syllabus_preset_id = ?2",
+            params![syllabus_role_id, syllabus_preset_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n > 0)
+}
+
 /// Anchor datetime on `shift_date` using the time-of-day from `coverage_start_iso`.
 fn coverage_anchor_on_date(coverage_start_iso: &str, shift_date: &str) -> Result<NaiveDateTime, String> {
     let cs = parse_iso_datetime(coverage_start_iso)

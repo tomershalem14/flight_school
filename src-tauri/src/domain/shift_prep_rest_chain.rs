@@ -1,7 +1,11 @@
 //! Chained `prep_start` / `rest_end` for one employee on one calendar day.
 
 use crate::domain::rules::time_to_minutes;
-use crate::domain::syllabus::{compute_prep_end_rest_start, minutes_to_hhmm, PresetPrepRestMeta};
+use crate::domain::syllabus::{
+    compute_prep_end_rest_start, load_presets_prep_rest_meta, load_preset_prep_rest_meta,
+    minutes_to_hhmm, shift_bounds_from_syllabus_num, shift_row_from_syllabus_num,
+    PresetPrepRestMeta,
+};
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
 
@@ -169,12 +173,12 @@ pub fn compute_chained_prep_rest(
         .collect())
 }
 
-/// Reload chained prep/rest for all assigned shifts of `employee_id` on `shift_date`.
-pub fn recalc_chained_prep_rest_for_employee_day(
+/// Existing shifts for one employee on one day (flight times only; chain is recomputed from geometry).
+pub fn load_day_chain_for_employee(
     conn: &Connection,
     employee_id: i64,
     shift_date: &str,
-) -> Result<(), String> {
+) -> Result<Vec<ChainShiftRow>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, shift_window_id, start_time, end_time, syllabus_preset_id
@@ -183,8 +187,7 @@ pub fn recalc_chained_prep_rest_for_employee_day(
              ORDER BY start_time, id",
         )
         .map_err(|e| e.to_string())?;
-
-    let rows: Vec<ChainShiftRow> = stmt
+    let rows = stmt
         .query_map(params![employee_id, shift_date], |r| {
             Ok(ChainShiftRow {
                 id: r.get(0)?,
@@ -194,17 +197,132 @@ pub fn recalc_chained_prep_rest_for_employee_day(
                 syllabus_preset_id: r.get(4)?,
             })
         })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+pub struct SolvedNewShiftTimes {
+    pub start_time: String,
+    pub end_time: String,
+    pub syllabus_preset_id: i64,
+    pub prep_start: String,
+    pub rest_end: String,
+    pub prep_end: String,
+    pub rest_start: String,
+}
+
+fn row_from_bounds(
+    conn: &Connection,
+    shift_window_id: i64,
+    shift_date: &str,
+    syllabus_num: i64,
+) -> Result<SolvedNewShiftTimes, String> {
+    let (start_time, end_time, syllabus_preset_id, prep_start, rest_end, prep_end, rest_start) =
+        shift_row_from_syllabus_num(conn, shift_window_id, shift_date, syllabus_num)?;
+    Ok(SolvedNewShiftTimes {
+        start_time,
+        end_time,
+        syllabus_preset_id,
+        prep_start,
+        rest_end,
+        prep_end,
+        rest_start,
+    })
+}
+
+fn synthetic_chain_quad(
+    conn: &Connection,
+    shift_date: &str,
+    new_eid: i64,
+    shift_window_id: i64,
+    st: &str,
+    et: &str,
+    pid: i64,
+) -> Result<(String, String), String> {
+    let mut chain = load_day_chain_for_employee(conn, new_eid, shift_date)?;
+    chain.push(ChainShiftRow {
+        id: 0,
+        shift_window_id,
+        start_time: st.to_string(),
+        end_time: et.to_string(),
+        syllabus_preset_id: pid,
+    });
+    chain.sort_by(|a, b| {
+        time_to_minutes(&a.start_time)
+            .cmp(&time_to_minutes(&b.start_time))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let idx = chain
+        .iter()
+        .position(|r| r.id == 0)
+        .ok_or_else(|| "שגיאה פנימית בשרשרת סילבוס".to_string())?;
+
+    let preset_ids: Vec<i64> = chain.iter().map(|r| r.syllabus_preset_id).collect();
+    let meta = load_presets_prep_rest_meta(conn, &preset_ids).map_err(|e| e.to_string())?;
+    for r in &chain {
+        if !meta.contains_key(&r.syllabus_preset_id) {
+            return Err(format!("סילבוס {} לא נמצא במסד", r.syllabus_preset_id));
+        }
+    }
+    let computed = compute_chained_prep_rest(&chain, &meta)?;
+    Ok(computed[idx].clone())
+}
+
+/// Wall clock + prep/rest quad for a new shift row (no cross-assignee alignment).
+pub fn solve_create_shift_prep_rest(
+    conn: &Connection,
+    shift_date: &str,
+    shift_window_id: i64,
+    syllabus_num: i64,
+    new_employee_id: Option<i64>,
+) -> Result<SolvedNewShiftTimes, String> {
+    let (st, et, pid) =
+        shift_bounds_from_syllabus_num(conn, shift_window_id, shift_date, syllabus_num)?;
+    let meta_one = load_preset_prep_rest_meta(conn, pid).map_err(|e| e.to_string())?;
+
+    if new_employee_id.is_none() {
+        return row_from_bounds(conn, shift_window_id, shift_date, syllabus_num);
+    }
+    let new_eid = new_employee_id.expect("checked");
+
+    let day = load_day_chain_for_employee(conn, new_eid, shift_date)?;
+    if day.is_empty() {
+        return row_from_bounds(conn, shift_window_id, shift_date, syllabus_num);
+    }
+    let (ps_star, re_star) =
+        synthetic_chain_quad(conn, shift_date, new_eid, shift_window_id, &st, &et, pid)?;
+    let (pe_star, rs_star) = compute_prep_end_rest_start(
+        &ps_star,
+        &re_star,
+        meta_one.prep_minutes,
+        meta_one.rest_minutes,
+    );
+    Ok(SolvedNewShiftTimes {
+        start_time: st,
+        end_time: et,
+        syllabus_preset_id: pid,
+        prep_start: ps_star,
+        rest_end: re_star,
+        prep_end: pe_star,
+        rest_start: rs_star,
+    })
+}
+
+/// Reload chained prep/rest for all assigned shifts of `employee_id` on `shift_date`.
+pub fn recalc_chained_prep_rest_for_employee_day(
+    conn: &Connection,
+    employee_id: i64,
+    shift_date: &str,
+) -> Result<(), String> {
+    let rows = load_day_chain_for_employee(conn, employee_id, shift_date)?;
 
     if rows.is_empty() {
         return Ok(());
     }
 
     let ids: Vec<i64> = rows.iter().map(|r| r.syllabus_preset_id).collect();
-    let meta = crate::domain::syllabus::load_presets_prep_rest_meta(conn, &ids)
-        .map_err(|e| e.to_string())?;
+    let meta = load_presets_prep_rest_meta(conn, &ids).map_err(|e| e.to_string())?;
 
     for r in &rows {
         if !meta.contains_key(&r.syllabus_preset_id) {
@@ -228,6 +346,7 @@ pub fn recalc_chained_prep_rest_for_employee_day(
         )
         .map_err(|e| e.to_string())?;
     }
+
     Ok(())
 }
 
@@ -235,6 +354,8 @@ pub fn recalc_chained_prep_rest_for_employee_day(
 mod tests {
     use super::*;
     use crate::domain::syllabus::compute_prep_end_rest_start;
+    use crate::domain::syllabus::shift_row_from_syllabus_num;
+    use rusqlite::Connection;
 
     fn meta(p: i32, r: i32, jp: bool, joint_rest: bool) -> PresetPrepRestMeta {
         PresetPrepRestMeta {
@@ -281,7 +402,6 @@ mod tests {
         let out = compute_chained_prep_rest(&shifts, &hm).unwrap();
         assert_eq!(out[0].0, "08:30");
         assert_eq!(out[1].0, "08:10");
-        // Formula A: final bunch end 11:00 + prefix offsets 15 and 25.
         assert_eq!(out[0].1, "11:15");
         assert_eq!(out[1].1, "11:25");
     }
@@ -324,5 +444,117 @@ mod tests {
         let out = compute_chained_prep_rest(&shifts, &hm).unwrap();
         assert_eq!(out[1].1, "11:20");
         assert_eq!(out[0].1, "11:20");
+    }
+
+    /// Same wall slot for two employees: prep/rest follows each employee’s own day chain.
+    #[test]
+    fn recalc_same_slot_differs_when_one_employee_has_extra_flight_that_day() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE syllabus_presets (
+                id INTEGER PRIMARY KEY,
+                prep_minutes INTEGER NOT NULL DEFAULT 0,
+                rest_minutes INTEGER NOT NULL DEFAULT 0,
+                joint_prep INTEGER NOT NULL DEFAULT 0,
+                joint_rest INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO syllabus_presets VALUES (1, 30, 15, 0, 0);
+            INSERT INTO syllabus_presets VALUES (2, 20, 10, 0, 0);
+            CREATE TABLE shift_windows (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL
+            );
+            INSERT INTO shift_windows VALUES (10, 'מבחן');
+            CREATE TABLE shifts (
+                id INTEGER PRIMARY KEY,
+                shift_date TEXT NOT NULL,
+                shift_window_id INTEGER NOT NULL,
+                syllabus_num INTEGER NOT NULL,
+                employee_id INTEGER,
+                syllabus_preset_id INTEGER NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                prep_start TEXT NOT NULL,
+                rest_end TEXT NOT NULL,
+                prep_end TEXT NOT NULL,
+                rest_start TEXT NOT NULL
+            );
+            INSERT INTO shifts VALUES
+             (1, '2026-04-01', 10, 0, 100, 1, '09:00', '10:00', '08:30', '10:15', '09:00', '10:00'),
+             (2, '2026-04-01', 10, 0, 200, 1, '09:00', '10:00', '08:30', '10:15', '09:00', '10:00'),
+             (3, '2026-04-01', 10, 1, 200, 2, '10:00', '11:00', '09:40', '11:10', '10:00', '11:00');",
+        )
+        .unwrap();
+        recalc_chained_prep_rest_for_employee_day(&c, 100, "2026-04-01").unwrap();
+        recalc_chained_prep_rest_for_employee_day(&c, 200, "2026-04-01").unwrap();
+        let re1: String = c
+            .query_row("SELECT rest_end FROM shifts WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        let re2: String = c
+            .query_row("SELECT rest_end FROM shifts WHERE id = 2", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(re1, "10:15");
+        assert_eq!(re2, "11:15");
+        assert_ne!(re1, re2);
+    }
+
+    /// Second shift on the day chains joint-rest with an earlier new slot (geometry only, no DB pins).
+    #[test]
+    fn assign_chains_with_existing_day_joint_rest() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE syllabus_presets (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                min_role_id INTEGER,
+                duration_minutes INTEGER NOT NULL,
+                prep_minutes INTEGER NOT NULL DEFAULT 0,
+                rest_minutes INTEGER NOT NULL DEFAULT 0,
+                max_in_row INTEGER NOT NULL DEFAULT 1,
+                joint_prep INTEGER NOT NULL DEFAULT 0,
+                joint_rest INTEGER NOT NULL DEFAULT 0,
+                notes TEXT,
+                system_locked INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO syllabus_presets VALUES (5, 't', NULL, 60, 0, 20, 1, 0, 1, NULL, 0);
+            CREATE TABLE shift_windows (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                color TEXT,
+                notes TEXT,
+                coverage_start TEXT NOT NULL,
+                coverage_end TEXT NOT NULL,
+                syllabus_slot_preset_ids TEXT NOT NULL DEFAULT '[]'
+            );
+            INSERT INTO shift_windows VALUES (10, 'w', '#000', NULL, '2026-04-01T09:00:00', '2026-04-01T18:00:00', '[5,5]');
+            CREATE TABLE shifts (
+                id INTEGER PRIMARY KEY,
+                shift_date TEXT NOT NULL,
+                shift_window_id INTEGER NOT NULL,
+                syllabus_num INTEGER NOT NULL,
+                employee_id INTEGER,
+                syllabus_preset_id INTEGER NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                prep_start TEXT NOT NULL,
+                rest_end TEXT NOT NULL,
+                prep_end TEXT NOT NULL,
+                rest_start TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO shifts VALUES (1, '2026-04-01', 10, 1, 99, 5, '10:00', '11:00', '10:00', '11:20', '10:00', '11:00')",
+            [],
+        )
+        .unwrap();
+
+        let (_, _, _, _, isolated_re, _, _) =
+            shift_row_from_syllabus_num(&c, 10, "2026-04-01", 0).unwrap();
+        assert_eq!(isolated_re, "10:20");
+
+        let solved = solve_create_shift_prep_rest(&c, "2026-04-01", 10, 0, Some(99)).unwrap();
+        assert_eq!(solved.rest_end, "11:20");
+        assert_ne!(solved.rest_end, isolated_re);
     }
 }

@@ -89,21 +89,77 @@ fn wall_shift_duration_minutes(start_time: &str, end_time: &str) -> i32 {
     d
 }
 
+/// Wall-clock blocks for rule 3: prep, flight (`start_time`–`end_time`), rest.
+#[derive(Clone, Debug)]
+pub struct PrepRestShiftBlocks {
+    pub prep_start: String,
+    pub prep_end: String,
+    pub start_time: String,
+    pub end_time: String,
+    pub rest_start: String,
+    pub rest_end: String,
+}
+
+/// Half-open-style overlap in minute space (same as legacy envelope check).
+pub fn intervals_overlap_hhmm(a0: &str, a1: &str, b0: &str, b1: &str) -> bool {
+    let a0m = time_to_minutes(a0);
+    let a1m = time_to_minutes(a1);
+    let b0m = time_to_minutes(b0);
+    let b1m = time_to_minutes(b1);
+    a0m < b1m && a1m > b0m
+}
+
+/// Prep, flight (`start_time`–`end_time`), and rest as labeled wall intervals for Rule 3.
+fn prep_rest_rule3_segments(s: &PrepRestShiftBlocks) -> [(&str, &str, &'static str); 3] {
+    [
+        (
+            s.prep_start.as_str(),
+            s.prep_end.as_str(),
+            "prep",
+        ),
+        (
+            s.start_time.as_str(),
+            s.end_time.as_str(),
+            "shift",
+        ),
+        (
+            s.rest_start.as_str(),
+            s.rest_end.as_str(),
+            "rest",
+        ),
+    ]
+}
+
+/// First overlapping segment pair: `candidate` vs `other`, each `start>end (kind)`.
+pub fn prep_rest_rule3_overlap_detail(
+    candidate: &PrepRestShiftBlocks,
+    other: &PrepRestShiftBlocks,
+) -> Option<String> {
+    for (a0, a1, ka) in prep_rest_rule3_segments(candidate) {
+        for (b0, b1, kb) in prep_rest_rule3_segments(other) {
+            if intervals_overlap_hhmm(a0, a1, b0, b1) {
+                return Some(format!(
+                    "overlap: {}>{} ({}) vs {}>{} ({})",
+                    a0, a1, ka, b0, b1, kb
+                ));
+            }
+        }
+    }
+    None
+}
+
 /// Check rules for a single shift row (joined columns match Python query).
 pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Result<Vec<Violation>> {
     let mut violations = Vec::new();
 
     let shift = match conn.query_row(
         "SELECT s.id, s.shift_date, s.start_time, s.end_time, s.employee_id,
-                s.prep_start, s.rest_end,
+                s.prep_start, s.prep_end, s.rest_start, s.rest_end,
                 w.name AS type_name,
-                sp.min_role_id, e.name AS emp_name, e.role_id,
-                r.name AS role_name
+                e.name AS emp_name
          FROM shifts s
          JOIN shift_windows w ON s.shift_window_id = w.id
-         JOIN syllabus_presets sp ON s.syllabus_preset_id = sp.id
          LEFT JOIN employees e ON s.employee_id = e.id
-         LEFT JOIN roles r ON e.role_id = r.id
          WHERE s.id = ?",
         [shift_id],
         ShiftRow::from_row,
@@ -117,55 +173,46 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
         return Ok(violations);
     };
 
-    let window_start = time_to_minutes(&shift.prep_start);
-    let window_end = time_to_minutes(&shift.rest_end);
     let shift_date = shift.shift_date.clone();
+    let subject = PrepRestShiftBlocks {
+        prep_start: shift.prep_start.clone(),
+        prep_end: shift.prep_end.clone(),
+        start_time: shift.start_time.clone(),
+        end_time: shift.end_time.clone(),
+        rest_start: shift.rest_start.clone(),
+        rest_end: shift.rest_end.clone(),
+    };
 
-    // Rule 1: min role
-    if let (Some(min_rid), Some(role_id)) = (shift.min_role_id, shift.role_id) {
-        let exists: bool = conn
-            .query_row("SELECT 1 FROM roles WHERE id = ?", [min_rid], |_| Ok(true))
-            .unwrap_or(false);
-        if exists && role_id < min_rid {
-            let en = shift.emp_name.as_deref().unwrap_or("");
-            let rn = shift.role_name.as_deref().unwrap_or("");
-            violations.push(Violation {
-                rule: "min_role".into(),
-                severity: "error".into(),
-                message: format!("עובד '{en}' ({rn}) אינו עומד בדרג המינימלי למשמרת זו"),
-                shift_id: Some(shift_id),
-            });
-        }
-    }
-
-    // Rule 3: prep/rest overlap (uses denormalized prep_start / rest_end on each shift)
+    // Rule 3: prep/rest segments vs other shift's prep, flight, or rest (not full prep_start–rest_end envelope)
     let mut stmt = conn.prepare(
-        "SELECT s.id, s.prep_start, s.rest_end, w.name
+        "SELECT s.prep_start, s.prep_end, s.start_time, s.end_time, s.rest_start, s.rest_end, w.name
          FROM shifts s
          JOIN shift_windows w ON s.shift_window_id = w.id
          WHERE s.employee_id = ? AND s.shift_date = ? AND s.id != ?",
     )?;
     let others = stmt.query_map(params![emp_id, shift_date, shift_id], |r| {
         Ok((
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, String>(3)?,
+            PrepRestShiftBlocks {
+                prep_start: r.get(0)?,
+                prep_end: r.get(1)?,
+                start_time: r.get(2)?,
+                end_time: r.get(3)?,
+                rest_start: r.get(4)?,
+                rest_end: r.get(5)?,
+            },
+            r.get::<_, String>(6)?,
         ))
     })?;
 
     let en = shift.emp_name.as_deref().unwrap_or("");
     let tn = &shift.type_name;
     for o in others.flatten() {
-        let (ops, ore, oname) = o;
-        let other_ws = time_to_minutes(&ops);
-        let other_we = time_to_minutes(&ore);
-        if window_start < other_we && window_end > other_ws {
+        let (blocks, oname) = o;
+        if let Some(detail) = prep_rest_rule3_overlap_detail(&subject, &blocks) {
             violations.push(Violation {
                 rule: "prep_rest_overlap".into(),
                 severity: "error".into(),
-                message: format!(
-                    "'{en}' - חפיפה בין זמן תדריך/תחקיר של '{tn}' ל'{oname}'"
-                ),
+                message: format!("'{en}' '{tn}' vs '{oname}' | {detail}"),
                 shift_id: Some(shift_id),
             });
         }
@@ -242,12 +289,11 @@ struct ShiftRow {
     end_time: String,
     employee_id: Option<i64>,
     prep_start: String,
+    prep_end: String,
+    rest_start: String,
     rest_end: String,
     type_name: String,
-    min_role_id: Option<i64>,
     emp_name: Option<String>,
-    role_id: Option<i64>,
-    role_name: Option<String>,
 }
 
 impl ShiftRow {
@@ -258,12 +304,11 @@ impl ShiftRow {
             end_time: r.get("end_time")?,
             employee_id: r.get("employee_id")?,
             prep_start: r.get("prep_start")?,
+            prep_end: r.get("prep_end")?,
+            rest_start: r.get("rest_start")?,
             rest_end: r.get("rest_end")?,
             type_name: r.get("type_name")?,
-            min_role_id: r.get("min_role_id")?,
             emp_name: r.get("emp_name")?,
-            role_id: r.get("role_id")?,
-            role_name: r.get("role_name")?,
         })
     }
 }
@@ -381,5 +426,49 @@ mod tests {
                 .and_hms_opt(0, 0, 0)
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn rule3_symmetric_detects_shift_overlap() {
+        let a = PrepRestShiftBlocks {
+            prep_start: "08:00".into(),
+            prep_end: "08:30".into(),
+            start_time: "09:30".into(),
+            end_time: "10:30".into(),
+            rest_start: "12:00".into(),
+            rest_end: "12:30".into(),
+        };
+        let b = PrepRestShiftBlocks {
+            prep_start: "07:00".into(),
+            prep_end: "07:30".into(),
+            start_time: "09:00".into(),
+            end_time: "11:00".into(),
+            rest_start: "11:00".into(),
+            rest_end: "11:30".into(),
+        };
+        assert!(prep_rest_rule3_overlap_detail(&a, &b).is_some());
+        let d = prep_rest_rule3_overlap_detail(&a, &b).expect("detail");
+        assert!(d.contains("(shift)"));
+    }
+
+    #[test]
+    fn rule3_prep_segment_overlaps_other_shift_segment() {
+        let other = PrepRestShiftBlocks {
+            prep_start: "08:00".into(),
+            prep_end: "08:30".into(),
+            start_time: "08:30".into(),
+            end_time: "09:30".into(),
+            rest_start: "09:30".into(),
+            rest_end: "10:00".into(),
+        };
+        let candidate = PrepRestShiftBlocks {
+            prep_start: "09:00".into(),
+            prep_end: "09:30".into(),
+            start_time: "09:30".into(),
+            end_time: "10:30".into(),
+            rest_start: "10:30".into(),
+            rest_end: "11:00".into(),
+        };
+        assert!(prep_rest_rule3_overlap_detail(&candidate, &other).is_some());
     }
 }

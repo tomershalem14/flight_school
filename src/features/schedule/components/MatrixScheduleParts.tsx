@@ -47,6 +47,7 @@ export function MatrixDraggableEmployeeShiftPill({
   shiftId,
   shiftWindowId,
   syllabusNum,
+  syllabusRoleId,
   employeeId,
   typeColor,
   title,
@@ -58,6 +59,7 @@ export function MatrixDraggableEmployeeShiftPill({
   shiftId: number;
   shiftWindowId: number;
   syllabusNum: number;
+  syllabusRoleId?: number;
   employeeId: number;
   typeColor: string;
   title: string;
@@ -75,6 +77,7 @@ export function MatrixDraggableEmployeeShiftPill({
       shiftId,
       shiftWindowId,
       syllabusNum,
+      syllabusRoleId,
       employeeId,
       color: typeColor,
       highlightStartMs,
@@ -139,6 +142,7 @@ export function MatrixDraggableEmployeeShiftPill({
 export function MatrixDraggableTypeSlotPill({
   shiftWindowId,
   syllabusNum,
+  syllabusRoleId,
   coveredHours,
   displayHour,
   fill,
@@ -148,6 +152,7 @@ export function MatrixDraggableTypeSlotPill({
 }: {
   shiftWindowId: number;
   syllabusNum: number;
+  syllabusRoleId?: number;
   coveredHours: string[];
   displayHour: string;
   fill: string;
@@ -155,12 +160,17 @@ export function MatrixDraggableTypeSlotPill({
   highlightStartMs: number;
   highlightEndMs: number;
 }) {
+  const dragId =
+    syllabusRoleId != null
+      ? `type-slot-${shiftWindowId}-${syllabusNum}-${syllabusRoleId}`
+      : `type-slot-${shiftWindowId}-${syllabusNum}`;
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: `type-slot-${shiftWindowId}-${syllabusNum}`,
+    id: dragId,
     data: {
       kind: "typeSlot" as const,
       shiftWindowId,
       syllabusNum,
+      syllabusRoleId,
       coveredHours,
       displayHour,
       color: fill,
@@ -329,6 +339,11 @@ export function EmployeeMatrixShiftPillChooser({
   const canDragEmp = Number.isFinite(syllabusNum) && !Number.isNaN(syllabusNum);
   const upToDate = shiftIsUpToDate(shift);
   const wid = Number(shift.shift_window_id ?? shift.shiftWindowId);
+  const sridRaw = shift.syllabus_role_id ?? shift.syllabusRoleId;
+  const syllabusRoleId =
+    sridRaw !== undefined && sridRaw !== null && sridRaw !== ""
+      ? Number(sridRaw)
+      : undefined;
 
   const prepStart = String(shift.prep_start ?? shift.prepStart ?? "—");
   const restEnd = String(shift.rest_end ?? shift.restEnd ?? "—");
@@ -340,6 +355,11 @@ export function EmployeeMatrixShiftPillChooser({
         shiftId={Number(shift.id)}
         shiftWindowId={wid}
         syllabusNum={syllabusNum}
+        syllabusRoleId={
+          syllabusRoleId !== undefined && !Number.isNaN(syllabusRoleId)
+            ? syllabusRoleId
+            : undefined
+        }
         employeeId={employeeId}
         typeColor={typeColor}
         title={titleWithPrepRest}

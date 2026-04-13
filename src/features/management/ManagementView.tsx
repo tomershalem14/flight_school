@@ -95,6 +95,44 @@ function syllabusMinutesLabel(n: number): string {
   return `${n} דק'`;
 }
 
+type SyllabusRoleDraftRow = {
+  name: string;
+  role_id: number | "";
+  special: string;
+};
+
+function normalizePresetDraftFromApi(p: JsonObject): JsonObject {
+  const raw = p.syllabus_roles;
+  let syllabus_roles: SyllabusRoleDraftRow[];
+  if (Array.isArray(raw) && raw.length > 0) {
+    syllabus_roles = raw.map((r) => {
+      const ro = r as JsonObject;
+      const rid = ro.role_id;
+      return {
+        name: String(ro.name ?? ""),
+        role_id:
+          rid != null && rid !== "" && !Number.isNaN(Number(rid)) ? Number(rid) : "",
+        special: String(ro.special ?? ""),
+      };
+    });
+  } else {
+    syllabus_roles = [{ name: "", role_id: "", special: "" }];
+  }
+  return { ...p, syllabus_roles };
+}
+
+function syllabusPresetRoleNamesLabel(p: JsonObject): string {
+  const raw = p.syllabus_roles;
+  if (!Array.isArray(raw)) return "—";
+  const names: string[] = [];
+  for (const r of raw) {
+    const ro = r as JsonObject;
+    const n = ro.name != null ? String(ro.name).trim() : "";
+    if (n) names.push(n);
+  }
+  return names.length > 0 ? names.join(", ") : "—";
+}
+
 export function ManagementView() {
   const qc = useQueryClient();
   const [tab, setTab] = useState<ManagementTab>("employees");
@@ -289,12 +327,16 @@ export function ManagementView() {
       const name = String(presetDraft.name ?? "").trim();
       if (!name) throw new Error("נא להזין שם");
       const maxInRow = Math.max(1, Number(presetDraft.max_in_row ?? 1));
-      const roleVal = presetDraft.min_role_id;
-      const min_role_id =
-        roleVal === "" || roleVal == null ? null : Number(roleVal);
+      const segs = presetDraft.syllabus_roles as JsonObject[] | undefined;
+      const syllabus_roles = Array.isArray(segs)
+        ? segs.map((r) => ({
+            name: String(r.name ?? ""),
+            role_id: r.role_id === "" || r.role_id == null ? null : Number(r.role_id),
+            special: String(r.special ?? ""),
+          }))
+        : [{ name: "", role_id: null as number | null, special: "" }];
       const body: JsonObject = {
         name,
-        min_role_id,
         duration_minutes: Number(presetDraft.duration_minutes ?? 60),
         prep_minutes: Number(presetDraft.prep_minutes ?? 0),
         rest_minutes: Number(presetDraft.rest_minutes ?? 0),
@@ -302,6 +344,7 @@ export function ManagementView() {
         joint_prep: Boolean(presetDraft.joint_prep),
         joint_rest: Boolean(presetDraft.joint_rest),
         notes: String(presetDraft.notes ?? "").trim() || null,
+        syllabus_roles,
       };
       if (id > 0) return api.updateSyllabusPreset(id, body);
       return api.createSyllabusPreset(body);
@@ -440,7 +483,6 @@ export function ManagementView() {
                 onClick={() =>
                   setPresetDraft({
                     name: "",
-                    min_role_id: "",
                     duration_minutes: 60,
                     prep_minutes: 30,
                     rest_minutes: 45,
@@ -448,6 +490,7 @@ export function ManagementView() {
                     joint_prep: true,
                     joint_rest: false,
                     notes: "",
+                    syllabus_roles: [{ name: "", role_id: "", special: "" }],
                   })
                 }
               >
@@ -708,7 +751,7 @@ export function ManagementView() {
                         שם
                       </th>
                       <th className="min-w-0 px-2 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
-                        דרג מינ׳
+                        תפקידים
                       </th>
                       <th className="min-w-0 px-2 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
                         משך
@@ -745,8 +788,11 @@ export function ManagementView() {
                           <td className="min-w-0 px-2 py-3 text-start font-medium text-ink">
                             {String(p.name ?? "")}
                           </td>
-                          <td className="min-w-0 truncate px-2 py-3 text-ink">
-                            {String(p.min_role_name ?? "—")}
+                          <td
+                            className="min-w-0 truncate px-2 py-3 text-ink"
+                            title={syllabusPresetRoleNamesLabel(p)}
+                          >
+                            {syllabusPresetRoleNamesLabel(p)}
                           </td>
                           <td className="min-w-0 px-2 py-3 tabular-nums text-ink">
                             {syllabusMinutesLabel(Number(p.duration_minutes ?? 0))}
@@ -775,7 +821,9 @@ export function ManagementView() {
                                   type="button"
                                   className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border border-line bg-background text-ink hover:bg-background/80"
                                   aria-label="ערוך"
-                                  onClick={() => setPresetDraft({ ...p })}
+                                  onClick={() =>
+                                    setPresetDraft(normalizePresetDraftFromApi({ ...p }))
+                                  }
                                 >
                                   <svg
                                     xmlns="http://www.w3.org/2000/svg"
@@ -1120,7 +1168,7 @@ export function ManagementView() {
           onClick={() => setPresetDraft(null)}
         >
           <div
-            className="flex w-full max-w-md flex-col rounded-card border border-line bg-surface shadow-airy"
+            className="flex w-full max-w-2xl flex-col rounded-card border border-line bg-surface shadow-airy"
             role="dialog"
             aria-modal="true"
             aria-labelledby="preset-modal-title"
@@ -1145,29 +1193,6 @@ export function ManagementView() {
                   value={String(presetDraft.name ?? "")}
                   onChange={(e) => setPresetDraft({ ...presetDraft, name: e.target.value })}
                 />
-              </div>
-              <div className="form-row mb-0">
-                <label className="text-sm font-semibold text-ink">דרג מינימלי</label>
-                <select
-                  value={
-                    presetDraft.min_role_id === "" || presetDraft.min_role_id == null
-                      ? ""
-                      : String(presetDraft.min_role_id)
-                  }
-                  onChange={(e) =>
-                    setPresetDraft({
-                      ...presetDraft,
-                      min_role_id: e.target.value ? Number(e.target.value) : "",
-                    })
-                  }
-                >
-                  <option value="">—</option>
-                  {roles.map((r) => (
-                    <option key={String(r.id)} value={String(r.id)}>
-                      {String(r.name)}
-                    </option>
-                  ))}
-                </select>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="form-row mb-0">
@@ -1287,6 +1312,116 @@ export function ManagementView() {
                   value={String(presetDraft.notes ?? "")}
                   onChange={(e) => setPresetDraft({ ...presetDraft, notes: e.target.value })}
                 />
+              </div>
+
+              <div className="rounded-card border border-line bg-background/50 px-3 py-2">
+                <div className="mb-2 text-sm font-semibold text-ink">תפקידי סילבוס</div>
+                <div className="grid grid-cols-[1fr_1fr_1fr] gap-2 border-b border-line pb-2 text-xs font-bold uppercase tracking-wide text-muted">
+                  <span className="min-w-0">שם</span>
+                  <span className="min-w-0">דרג</span>
+                  <span className="min-w-0">מיוחד</span>
+                </div>
+                <div className="mt-2 space-y-2">
+                  {(
+                    (presetDraft.syllabus_roles as SyllabusRoleDraftRow[] | undefined) ?? [
+                      { name: "", role_id: "", special: "" },
+                    ]
+                  ).map((row, idx) => (
+                    <div
+                      key={`preset-sr-${idx}`}
+                      className="grid grid-cols-[1fr_1fr_1fr] items-end gap-2"
+                    >
+                      <input
+                        className="min-w-0"
+                        value={row.name}
+                        onChange={(e) => {
+                          const rows = [
+                            ...(((presetDraft.syllabus_roles as SyllabusRoleDraftRow[]) ?? [
+                              { name: "", role_id: "", special: "" },
+                            ]) as SyllabusRoleDraftRow[]),
+                          ];
+                          rows[idx] = { ...rows[idx], name: e.target.value };
+                          setPresetDraft({ ...presetDraft, syllabus_roles: rows });
+                        }}
+                      />
+                      <select
+                        className="min-w-0"
+                        value={row.role_id === "" ? "" : String(row.role_id)}
+                        onChange={(e) => {
+                          const rows = [
+                            ...(((presetDraft.syllabus_roles as SyllabusRoleDraftRow[]) ?? [
+                              { name: "", role_id: "", special: "" },
+                            ]) as SyllabusRoleDraftRow[]),
+                          ];
+                          const v = e.target.value;
+                          rows[idx] = {
+                            ...rows[idx],
+                            role_id: v ? Number(v) : "",
+                          };
+                          setPresetDraft({ ...presetDraft, syllabus_roles: rows });
+                        }}
+                      >
+                        <option value="">—</option>
+                        {roles.map((r) => (
+                          <option key={String(r.id)} value={String(r.id)}>
+                            {String(r.name)}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        className="min-w-0"
+                        value={row.special}
+                        onChange={(e) => {
+                          const rows = [
+                            ...(((presetDraft.syllabus_roles as SyllabusRoleDraftRow[]) ?? [
+                              { name: "", role_id: "", special: "" },
+                            ]) as SyllabusRoleDraftRow[]),
+                          ];
+                          rows[idx] = { ...rows[idx], special: e.target.value };
+                          setPresetDraft({ ...presetDraft, syllabus_roles: rows });
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="rounded-pill border border-line bg-background px-3 py-1.5 text-sm font-semibold text-ink hover:border-primary/40"
+                    onClick={() => {
+                      const rows = [
+                        ...(((presetDraft.syllabus_roles as SyllabusRoleDraftRow[]) ?? [
+                          { name: "", role_id: "", special: "" },
+                        ]) as SyllabusRoleDraftRow[]),
+                      ];
+                      rows.push({ name: "", role_id: "", special: "" });
+                      setPresetDraft({ ...presetDraft, syllabus_roles: rows });
+                    }}
+                  >
+                    + הוסף תפקיד
+                  </button>
+                  {(
+                    (presetDraft.syllabus_roles as SyllabusRoleDraftRow[] | undefined) ?? []
+                  ).length > 1 ? (
+                    <button
+                      type="button"
+                      className="rounded-pill border border-line px-3 py-1.5 text-sm text-muted hover:bg-peach-1/30"
+                      onClick={() => {
+                        const rows = [
+                          ...(((presetDraft.syllabus_roles as SyllabusRoleDraftRow[]) ?? [
+                            { name: "", role_id: "", special: "" },
+                          ]) as SyllabusRoleDraftRow[]),
+                        ];
+                        setPresetDraft({
+                          ...presetDraft,
+                          syllabus_roles: rows.slice(0, -1),
+                        });
+                      }}
+                    >
+                      הסר שורה אחרונה
+                    </button>
+                  ) : null}
+                </div>
               </div>
             </div>
             {savePresetMut.isError ? (

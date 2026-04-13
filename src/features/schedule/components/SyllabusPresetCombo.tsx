@@ -98,7 +98,14 @@ export function SyllabusPresetCombo({
       >
         {filtered.map((p) => {
           const pid = Number(p.id);
-          const roleHint = p.min_role_name != null ? String(p.min_role_name) : "";
+          const raw = p.syllabus_roles;
+          const roleHint =
+            Array.isArray(raw) && raw.length > 0
+              ? (raw as JsonObject[])
+                  .map((r) => (r.name != null ? String(r.name).trim() : ""))
+                  .filter(Boolean)
+                  .join(", ")
+              : "";
           return (
             <li key={pid}>
               <button
