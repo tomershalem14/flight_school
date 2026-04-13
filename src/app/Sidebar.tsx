@@ -1,7 +1,7 @@
 import { useAppStore, type AppView } from "./store";
 
 const NAV: { id: AppView; label: string }[] = [
-  { id: "manning", label: "משמרות" },
+  { id: "manning", label: "לוח" },
   { id: "management", label: "ניהול" },
   { id: "reports", label: "דוחות" },
 ];
@@ -24,7 +24,7 @@ export function Sidebar() {
             key={item.id}
             type="button"
             onClick={() => setActiveView(item.id)}
-            className={`rounded-pill px-3 py-2 text-start font-heading text-sm font-semibold transition-colors ${
+            className={`rounded-sm px-3 py-2 text-start font-heading text-sm font-semibold transition-colors ${
               activeView === item.id
                 ? "bg-primary/20 text-ink shadow-sm"
                 : "text-muted hover:bg-background hover:text-ink"
