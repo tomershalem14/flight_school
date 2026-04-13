@@ -102,6 +102,75 @@ export function slotHasUnmannedRole(
   return roles.some((r) => !manned.has(Number(r.id)));
 }
 
+/** Matrix-style: any syllabus role in this materialized slot (`syllabus_num`) still unmanned. */
+export function slotHasUnmannedRoleForSyllabusNum(
+  ty: JsonObject,
+  sn: number,
+  presets: JsonObject[],
+  dayShifts: JsonObject[],
+): boolean {
+  const slotIds = parseSlotPresetIdsFromWindow(ty);
+  if (sn < 0 || sn >= slotIds.length) return false;
+  const pid = slotIds[sn]!;
+  const preset = presets.find((p) => Number(p.id) === pid);
+  const roles = presetSyllabusRolesSorted(preset);
+  const tid = typeId(ty);
+  if (roles.length === 0) return false;
+  if (roles.length <= 1) {
+    const hasAssigned = dayShifts.some((s) => {
+      const sid = Number(s.shift_window_id ?? s.shiftWindowId);
+      if (sid !== tid) return false;
+      if (Number(s.syllabus_num ?? s.syllabusNum) !== sn) return false;
+      const eid = s.employee_id;
+      return eid !== null && eid !== undefined && eid !== "";
+    });
+    return !hasAssigned;
+  }
+  const manned = new Set<number>();
+  for (const s of dayShifts) {
+    if (Number(s.shift_window_id ?? s.shiftWindowId) !== tid) continue;
+    if (Number(s.syllabus_num ?? s.syllabusNum) !== sn) continue;
+    const eid = s.employee_id;
+    if (eid === null || eid === undefined || eid === "") continue;
+    manned.add(Number(s.syllabus_role_id));
+  }
+  return roles.some((r) => !manned.has(Number(r.id)));
+}
+
+/** True if this role column is empty and can open create for `(window, sn, roleId)`. */
+export function syllabusRoleCellCanAssign(
+  ty: JsonObject,
+  sn: number,
+  roleId: number,
+  presets: JsonObject[],
+  dayShifts: JsonObject[],
+): boolean {
+  const slotIds = parseSlotPresetIdsFromWindow(ty);
+  if (sn < 0 || sn >= slotIds.length) return false;
+  const pid = slotIds[sn]!;
+  const preset = presets.find((p) => Number(p.id) === pid);
+  const roles = presetSyllabusRolesSorted(preset);
+  const tid = typeId(ty);
+  if (!roles.some((r) => Number(r.id) === roleId)) return false;
+  if (roles.length <= 1) {
+    return !dayShifts.some((s) => {
+      const sid = Number(s.shift_window_id ?? s.shiftWindowId);
+      if (sid !== tid) return false;
+      if (Number(s.syllabus_num ?? s.syllabusNum) !== sn) return false;
+      const eid = s.employee_id;
+      return eid !== null && eid !== undefined && eid !== "";
+    });
+  }
+  return !dayShifts.some((s) => {
+    const sid = Number(s.shift_window_id ?? s.shiftWindowId);
+    if (sid !== tid) return false;
+    if (Number(s.syllabus_num ?? s.syllabusNum) !== sn) return false;
+    if (Number(s.syllabus_role_id) !== roleId) return false;
+    const eid = s.employee_id;
+    return eid !== null && eid !== undefined && eid !== "";
+  });
+}
+
 /** First free role id for the slot, or the first role when all are taken (caller should block). */
 export function pickDefaultSyllabusRoleIdForSlot(
   ty: JsonObject,

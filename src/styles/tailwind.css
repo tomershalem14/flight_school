@@ -90,6 +90,26 @@
     @apply border-transparent outline-none ring-2 ring-inset ring-primary/20;
   }
 
+  /*
+   * Flight board empty slot (ריק) + inline assign input: global @layer base gives all text
+   * inputs min-h-[2.5rem], px-3 py-2, text-base — this class wins in components layer.
+   */
+  input.fb-slot-assign {
+    @apply box-border !h-5 !min-h-0 !max-h-5 w-full min-w-0 appearance-none rounded-lg border border-line bg-surface !px-1 !py-0 text-center font-body !text-[10px] !leading-5 text-ink shadow-sm;
+  }
+  input.fb-slot-assign::placeholder {
+    @apply text-center text-muted;
+  }
+  input.fb-slot-assign:focus-visible {
+    @apply border-primary outline-none ring-2 ring-primary/25;
+  }
+  input.fb-slot-assign:disabled {
+    @apply cursor-not-allowed opacity-60;
+  }
+  button.fb-slot-assign {
+    @apply box-border flex !h-5 !min-h-0 !max-h-5 w-full min-w-0 items-center justify-center rounded-lg border border-dashed border-line/80 bg-background/40 !px-1 !py-0 text-center font-body !text-[10px] !leading-5 text-muted;
+  }
+
   /* Stale shifts + uncovered window tail — red stripes only; use same h-2.5 + ring-black/10 as solid pills */
   .schedule-striped-warn-pill {
     background: repeating-linear-gradient(

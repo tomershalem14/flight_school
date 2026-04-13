@@ -1,19 +1,27 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import type { UseMutationResult } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore, weekStartString } from "../../app/store";
 import * as api from "../../shared/api";
 import { formatYmd } from "../../shared/dates";
-import {
-  hourSlotsForWindowMaterializedOnDay,
-  presetDurationById,
-  shiftCoversHour,
-  syllabusNumForHourInWindow,
-} from "../../shared/manningHours";
+import { presetDurationById, shiftPrepRestHmPairs, windowDayTimeline } from "../../shared/manningHours";
 import type { JsonObject } from "../../shared/api";
 import { errorMessageFromUnknown } from "../../shared/errorMessage";
+import { formatTimeForInput } from "../../shared/timeFormat";
 import {
+  DeleteShiftTypeConfirmDialog,
+  ShiftTypeEditorModal,
+} from "../schedule/components/ShiftTypeModals";
+import { useMatrixPillLongPress } from "../schedule/helpers/useMatrixPillLongPress";
+import {
+  maxSyllabusRolesInWindowDay,
   pickDefaultSyllabusRoleIdForSlot,
-  slotHasUnmannedRole,
+  presetSyllabusRolesSorted,
+  shiftIsUpToDate,
+  shiftTypeDraftFromWindow,
+  slotHasUnmannedRoleForSyllabusNum,
+  syllabusRoleCellCanAssign,
+  typeId,
 } from "../schedule/helpers/scheduleShiftModel";
 
 function normalizeShiftRow(s: JsonObject): JsonObject {
@@ -29,34 +37,264 @@ function normalizeShiftRow(s: JsonObject): JsonObject {
     up_to_date: s.up_to_date ?? s.upToDate,
     syllabus_num: s.syllabus_num ?? s.syllabusNum,
     syllabus_role_id: s.syllabus_role_id ?? s.syllabusRoleId,
+    prep_start: s.prep_start ?? s.prepStart,
+    prep_end: s.prep_end ?? s.prepEnd,
+    rest_start: s.rest_start ?? s.restStart,
+    rest_end: s.rest_end ?? s.restEnd,
+    prep_minutes: s.prep_minutes ?? s.prepMinutes,
+    rest_minutes: s.rest_minutes ?? s.restMinutes,
   };
 }
 
-function shiftIsUpToDate(s: JsonObject): boolean {
-  const v = s.up_to_date ?? s.upToDate;
-  if (v === false || v === 0 || v === "0") return false;
-  return true;
+function formatHmFromMs(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-function typeId(ty: JsonObject): number {
-  return Number(ty.id);
+/** Distribute `globalMax` HTML columns across `localMax` logical role columns; sums to `globalMax`. */
+function employeeColspans(localMax: number, globalMax: number): number[] {
+  if (localMax <= 0) return [globalMax];
+  const spans: number[] = [];
+  let remaining = globalMax;
+  for (let i = 0; i < localMax; i++) {
+    const colsLeft = localMax - i;
+    const span = i === localMax - 1 ? remaining : Math.ceil(remaining / colsLeft);
+    spans.push(span);
+    remaining -= span;
+  }
+  return spans;
 }
 
-type BoardModal =
-  | {
-      mode: "create";
+function prepRestDisplay(shift: JsonObject | undefined): { prep: string; rest: string } {
+  if (!shift) return { prep: "—", rest: "—" };
+  const { prep, rest } = shiftPrepRestHmPairs(shift);
+  const prepStr =
+    prep && prep.startHm && prep.endHm
+      ? `${formatTimeForInput(prep.startHm)}–${formatTimeForInput(prep.endHm)}`
+      : "—";
+  const restStr =
+    rest && rest.startHm && rest.endHm
+      ? `${formatTimeForInput(rest.startHm)}–${formatTimeForInput(rest.endHm)}`
+      : "—";
+  return { prep: prepStr, rest: restStr };
+}
+
+function representativeShiftForMeta(slotShifts: JsonObject[]): JsonObject | undefined {
+  const withEmp = slotShifts.filter((s) => {
+    const e = s.employee_id;
+    return e !== null && e !== undefined && e !== "";
+  });
+  if (withEmp.length > 0) return withEmp[0];
+  return slotShifts[0];
+}
+
+function assignedShiftForRoleCell(
+  slotShifts: JsonObject[],
+  roleId: number,
+  roles: JsonObject[],
+): JsonObject | undefined {
+  const withEmp = slotShifts.filter((s) => {
+    const e = s.employee_id;
+    return e !== null && e !== undefined && e !== "";
+  });
+  if (roles.length <= 1) return withEmp[0];
+  return withEmp.find((s) => Number(s.syllabus_role_id) === roleId);
+}
+
+type SlotEditorTarget = {
+  key: string;
+  shift_window_id: number;
+  syllabus_num: number;
+  syllabus_role_id?: number;
+};
+
+function FlightBoardAssignedPill({
+  empName,
+  colColor,
+  stale,
+  onLongPressDelete,
+}: {
+  empName: string;
+  colColor: string;
+  stale: boolean;
+  onLongPressDelete: () => void;
+}) {
+  const lp = useMatrixPillLongPress({ onLongPressDelete });
+  const label = String(empName ?? "—");
+  return (
+    <span
+      className="mx-auto flex h-5 min-h-5 max-h-5 w-full max-w-full touch-none select-none items-center justify-center rounded-lg px-1 py-0"
+      title="לחיצה ארוכה למחיקה"
+      aria-label={label}
+      onPointerDown={lp.onPointerDown}
+      onPointerMove={lp.onPointerMove}
+      onPointerUp={lp.onPointerUp}
+      onPointerCancel={lp.onPointerCancel}
+    >
+      <span
+        className={`flex h-full min-h-0 w-full max-w-full items-center justify-center rounded-pill px-1.5 py-0 text-center font-heading text-[10px] font-bold leading-5 text-white ${
+          stale
+            ? "schedule-striped-warn-pill text-ink shadow-sm ring-1 ring-inset ring-black/10"
+            : "shadow-sm ring-1 ring-inset ring-black/10"
+        }`}
+        style={stale ? undefined : { backgroundColor: colColor }}
+      >
+        {label}
+      </span>
+    </span>
+  );
+}
+
+function EmptySlotAssignCell({
+  cellKey,
+  editor,
+  slotQuery,
+  setEditor,
+  setSlotQuery,
+  employees,
+  createMut,
+  openPayload,
+}: {
+  cellKey: string;
+  editor: SlotEditorTarget | null;
+  slotQuery: string;
+  setEditor: (v: SlotEditorTarget | null) => void;
+  setSlotQuery: (q: string) => void;
+  employees: JsonObject[];
+  createMut: UseMutationResult<
+    unknown,
+    Error,
+    {
       shift_window_id: number;
       syllabus_num: number;
+      employee_id: number;
       syllabus_role_id?: number;
-      hourLabel: string;
-      employee_id: number | "";
-    }
-  | {
-      mode: "assigned";
-      shiftId: number;
-      empName: string;
-      upToDate: boolean;
-    };
+    },
+    unknown
+  >;
+  openPayload: Omit<SlotEditorTarget, "key">;
+}) {
+  const isOpen = editor?.key === cellKey;
+  const inputRef = useRef<HTMLInputElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const el = inputRef.current;
+    if (!el) return;
+    el.focus();
+    el.select();
+  }, [isOpen]);
+
+  const filtered = useMemo(() => {
+    const q = slotQuery.trim();
+    if (!q) return employees.slice(0, 25);
+    return employees.filter((e) => String(e.name ?? "").includes(q));
+  }, [employees, slotQuery]);
+
+  const closeEditor = useCallback(() => {
+    setEditor(null);
+    setSlotQuery("");
+  }, [setEditor, setSlotQuery]);
+
+  const commitPick = useCallback(
+    (employeeId: number) => {
+      if (!editor || editor.key !== cellKey) return;
+      createMut.mutate({
+        shift_window_id: editor.shift_window_id,
+        syllabus_num: editor.syllabus_num,
+        employee_id: employeeId,
+        ...(editor.syllabus_role_id != null
+          ? { syllabus_role_id: editor.syllabus_role_id }
+          : {}),
+      });
+      closeEditor();
+    },
+    [cellKey, closeEditor, createMut, editor],
+  );
+
+  const onInputBlur = useCallback(() => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const root = rootRef.current;
+        if (root?.contains(document.activeElement)) return;
+        if (!editor || editor.key !== cellKey) return;
+        closeEditor();
+      });
+    });
+  }, [cellKey, closeEditor, editor]);
+
+  if (!isOpen) {
+    return (
+      <button
+        type="button"
+        className="fb-slot-assign transition hover:border-primary/40 hover:bg-primary/5 hover:text-ink"
+        onClick={() => {
+          setEditor({
+            key: cellKey,
+            shift_window_id: openPayload.shift_window_id,
+            syllabus_num: openPayload.syllabus_num,
+            ...(openPayload.syllabus_role_id != null
+              ? { syllabus_role_id: openPayload.syllabus_role_id }
+              : {}),
+          });
+          setSlotQuery("");
+        }}
+      >
+        ריק
+      </button>
+    );
+  }
+
+  return (
+    <div ref={rootRef} className="relative h-5 min-h-0 w-full min-w-0">
+      <input
+        ref={inputRef}
+        type="text"
+        dir="rtl"
+        autoComplete="off"
+        disabled={createMut.isPending}
+        value={slotQuery}
+        onChange={(e) => setSlotQuery(e.target.value)}
+        onBlur={onInputBlur}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            const first = filtered[0];
+            if (first) commitPick(Number(first.id));
+            return;
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            closeEditor();
+          }
+        }}
+        className="fb-slot-assign"
+        placeholder="שם מפעיל"
+        aria-autocomplete="list"
+        aria-expanded={filtered.length > 0}
+      />
+      {filtered.length > 0 ? (
+        <ul
+          className="absolute start-0 top-full z-30 mt-0.5 max-h-40 min-w-full overflow-y-auto rounded-md border border-line bg-surface py-0.5 shadow-airy"
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          {filtered.map((e) => (
+            <li key={String(e.id)}>
+              <button
+                type="button"
+                className="w-full px-2 py-1 text-start text-xs text-ink hover:bg-sky-1/50"
+                onMouseDown={() => commitPick(Number(e.id))}
+              >
+                {String(e.name ?? "")}
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
 
 export function FlightBoardView() {
   const currentDay = useAppStore((s) => s.currentDay);
@@ -99,7 +337,24 @@ export function FlightBoardView() {
     [shifts, dateStr],
   );
 
-  const [modal, setModal] = useState<BoardModal | null>(null);
+  const globalMax = useMemo(() => {
+    let m = 1;
+    for (const ty of types) {
+      m = Math.max(m, maxSyllabusRolesInWindowDay(dateStr, ty, durationByPreset, presets));
+    }
+    return m;
+  }, [types, dateStr, durationByPreset, presets]);
+
+  const [slotEditor, setSlotEditor] = useState<SlotEditorTarget | null>(null);
+  const [slotQuery, setSlotQuery] = useState("");
+  const [shiftTypeDraft, setShiftTypeDraft] = useState<JsonObject | null>(null);
+  const [deleteTypeConfirm, setDeleteTypeConfirm] = useState<{
+    id: number;
+    name: string;
+  } | null>(null);
+  const [swatchMenuOpen, setSwatchMenuOpen] = useState(false);
+  const [shiftTypeTimeError, setShiftTypeTimeError] = useState<string | null>(null);
+  const shiftTypeModalBodyRef = useRef<HTMLDivElement>(null);
 
   const createMut = useMutation({
     mutationFn: (args: {
@@ -120,7 +375,8 @@ export function FlightBoardView() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["shifts"] });
       qc.invalidateQueries({ queryKey: ["violations"] });
-      setModal(null);
+      setSlotEditor(null);
+      setSlotQuery("");
     },
     onError: (err) => {
       alert(errorMessageFromUnknown(err));
@@ -132,241 +388,359 @@ export function FlightBoardView() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["shifts"] });
       qc.invalidateQueries({ queryKey: ["violations"] });
-      setModal(null);
+      setSlotEditor(null);
+      setSlotQuery("");
     },
     onError: (err) => {
       alert(errorMessageFromUnknown(err));
     },
   });
 
+  const deleteShiftWindowMut = useMutation({
+    mutationFn: (id: number) => api.deleteShiftWindow(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["shift_windows"] });
+      qc.invalidateQueries({ queryKey: ["shifts"] });
+      qc.invalidateQueries({ queryKey: ["violations"] });
+      setDeleteTypeConfirm(null);
+      setSlotEditor(null);
+      setSlotQuery("");
+    },
+    onError: (err) => {
+      alert(errorMessageFromUnknown(err));
+    },
+  });
+
+  const createShiftWindowMut = useMutation({
+    mutationFn: (payload: JsonObject) => api.createShiftWindow(payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["shift_windows"] });
+      qc.invalidateQueries({ queryKey: ["shifts"] });
+      qc.invalidateQueries({ queryKey: ["violations"] });
+      setShiftTypeDraft(null);
+    },
+    onError: (err) => {
+      alert(errorMessageFromUnknown(err));
+    },
+  });
+
+  const updateShiftWindowMut = useMutation({
+    mutationFn: ({ id, payload }: { id: number; payload: JsonObject }) =>
+      api.updateShiftWindow(id, payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["shift_windows"] });
+      qc.invalidateQueries({ queryKey: ["shifts"] });
+      qc.invalidateQueries({ queryKey: ["violations"] });
+      setShiftTypeDraft(null);
+    },
+    onError: (err) => {
+      alert(errorMessageFromUnknown(err));
+    },
+  });
+
+  function openEditShiftTypeModal(ty: JsonObject) {
+    createShiftWindowMut.reset();
+    updateShiftWindowMut.reset();
+    setShiftTypeTimeError(null);
+    setSwatchMenuOpen(false);
+    setShiftTypeDraft(shiftTypeDraftFromWindow(ty, presets));
+  }
+
+  useEffect(() => {
+    if (!shiftTypeDraft) setSwatchMenuOpen(false);
+  }, [shiftTypeDraft]);
+
+  useEffect(() => {
+    if (!slotEditor && !deleteTypeConfirm && !shiftTypeDraft) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (shiftTypeDraft && swatchMenuOpen) {
+        setSwatchMenuOpen(false);
+        return;
+      }
+      setSlotEditor(null);
+      setSlotQuery("");
+      setDeleteTypeConfirm(null);
+      setShiftTypeDraft(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [slotEditor, deleteTypeConfirm, shiftTypeDraft, swatchMenuOpen]);
+
   return (
-    <div className="mx-auto flex max-w-[1800px] flex-col gap-4">
+    <div className="flex w-full min-w-0 flex-col gap-4 px-1">
       {types.length === 0 ? (
         <div className="rounded-card border border-line bg-surface p-8 text-center text-muted shadow-airy">
           אין סוגי משמרת ליום זה.
         </div>
       ) : (
-        <div className="flex gap-3 overflow-x-auto pb-2">
-          {types.map((ty) => {
-            const tid = typeId(ty);
-            const colColor = String(ty.color ?? "#7BA3B5");
-            const slots = hourSlotsForWindowMaterializedOnDay(dateStr, ty, durationByPreset);
-            const colShifts = dayShifts.filter((s) => Number(s.shift_window_id) === tid);
-            return (
+        types.map((ty) => {
+          const tid = typeId(ty);
+          const typeName = String(ty.name ?? "");
+          const colColor = String(ty.color ?? "#7BA3B5");
+          const localMax = maxSyllabusRolesInWindowDay(dateStr, ty, durationByPreset, presets);
+          const colSpans = employeeColspans(localMax, globalMax);
+          const { segments } = windowDayTimeline(dateStr, ty, durationByPreset, colColor);
+          const colShifts = dayShifts.filter((s) => Number(s.shift_window_id) === tid);
+          const presetById = new Map(presets.map((p) => [Number(p.id), p]));
+
+          return (
+            <div
+              key={tid}
+              className={
+                slotEditor?.shift_window_id === tid
+                  ? "overflow-visible rounded-card border border-line bg-surface shadow-airy"
+                  : "overflow-hidden rounded-card border border-line bg-surface shadow-airy"
+              }
+            >
               <div
-                key={tid}
-                className="flex w-[min(100%,200px)] shrink-0 flex-col overflow-hidden rounded-card border border-line bg-surface shadow-airy"
+                className="border-b border-line px-4 py-2 font-heading text-sm font-bold text-ink"
+                style={{ backgroundColor: `${colColor}22`, borderBottomColor: colColor }}
               >
-                <div
-                  className="sticky top-0 z-10 border-b border-line px-3 py-2 text-center font-heading text-sm font-bold text-ink"
-                  style={{ backgroundColor: `${colColor}22`, borderBottomColor: colColor }}
-                >
-                  {String(ty.name ?? "")}
+                <div className="group mx-auto flex max-w-full items-center justify-center gap-1">
+                  <span className="min-w-0 truncate text-center" title={typeName}>
+                    {typeName}
+                  </span>
+                  <button
+                    type="button"
+                    className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-line bg-background text-muted opacity-0 transition-opacity hover:border-primary/40 hover:bg-background hover:text-primary focus-visible:opacity-100 group-hover:opacity-100"
+                    aria-label={`עריכת חלון ${typeName}`}
+                    title="עריכת חלון"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openEditShiftTypeModal(ty);
+                    }}
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                      className="h-3 w-3"
+                      aria-hidden={true}
+                    >
+                      <path d="M2.695 14.763l-1.262 3.154a.5.5 0 00.64.64l3.155-1.262a2 2 0 001.21-.825L14.5 7.5 12.5 5.5 3.58 14.42a2 2 0 00-.885 1.343zM15.232 5.232l1.536-1.536a1 1 0 000-1.414l-1.172-1.172a1 1 0 00-1.414 0l-1.536 1.536 2.586 2.586z" />
+                    </svg>
+                  </button>
                 </div>
-                <div className="max-h-[min(70vh,640px)] overflow-y-auto">
-                  {slots.length === 0 ? (
-                    <div className="p-3 text-center text-xs text-muted">אין שעות ביום זה</div>
-                  ) : (
-                    slots.map((hour) => {
-                      const sn = syllabusNumForHourInWindow(dateStr, ty, hour, durationByPreset);
-                      const cellShifts = colShifts.filter((s) =>
-                        shiftCoversHour(String(s.start_time), String(s.end_time), hour),
-                      );
-                      const primary = cellShifts[0];
-                      const extra = cellShifts.length > 1 ? cellShifts.length - 1 : 0;
-                      const stale = primary && !shiftIsUpToDate(primary);
-                      const canCreateHere =
-                        sn != null &&
-                        slotHasUnmannedRole(
-                          dateStr,
+              </div>
+              <div
+                className={
+                  slotEditor?.shift_window_id === tid
+                    ? "min-w-0 overflow-visible"
+                    : "overflow-x-auto"
+                }
+              >
+                <table className="w-full min-w-[640px] table-fixed border-collapse text-xs">
+                  <colgroup>
+                    <col style={{ width: "11%" }} />
+                    <col style={{ width: "9%" }} />
+                    <col style={{ width: "9%" }} />
+                    <col style={{ width: "11%" }} />
+                    {Array.from({ length: globalMax }, (_, i) => (
+                      <col key={i} style={{ width: `${(60 / globalMax).toFixed(2)}%` }} />
+                    ))}
+                  </colgroup>
+                  <thead>
+                    <tr className="border-b border-line bg-background/80 text-ink">
+                      <th className="px-2 py-1 text-center font-heading text-xs font-bold">הכנה</th>
+                      <th className="px-2 py-1 text-center font-heading text-xs font-bold">התחלה</th>
+                      <th className="px-2 py-1 text-center font-heading text-xs font-bold">סיום</th>
+                      <th className="px-2 py-1 text-center font-heading text-xs font-bold">מנוחה</th>
+                      <th
+                        colSpan={globalMax}
+                        className="px-2 py-1 text-center font-heading text-xs font-bold"
+                      >
+                        איוש
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {segments.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={4 + globalMax}
+                          className="px-3 py-4 text-center text-xs text-muted"
+                        >
+                          אין סלוטים בחלון זה
+                        </td>
+                      </tr>
+                    ) : (
+                      segments.map((seg) => {
+                        const sn = seg.syllabusNum;
+                        const slotShifts = colShifts.filter((s) => Number(s.syllabus_num) === sn);
+                        const preset = presetById.get(seg.presetId);
+                        const rowRoles = presetSyllabusRolesSorted(preset);
+                        const metaShift = representativeShiftForMeta(slotShifts);
+                        const startEndFromShift =
+                          metaShift &&
+                          String(metaShift.start_time ?? "").trim() &&
+                          String(metaShift.end_time ?? "").trim();
+                        const startCell = startEndFromShift
+                          ? formatTimeForInput(String(metaShift!.start_time))
+                          : formatHmFromMs(seg.startMs);
+                        const endCell = startEndFromShift
+                          ? formatTimeForInput(String(metaShift!.end_time))
+                          : formatHmFromMs(seg.endMs);
+                        const { prep: prepCell, rest: restCell } = prepRestDisplay(metaShift);
+                        const slotOpen = slotHasUnmannedRoleForSyllabusNum(
                           ty,
-                          hour,
-                          durationByPreset,
+                          sn,
                           presets,
                           dayShifts,
                         );
-                      return (
-                        <button
-                          key={hour}
-                          type="button"
-                          className="flex w-full flex-col gap-1 border-b border-line px-2 py-2 text-start hover:bg-sky-1/50"
-                          onClick={() => {
-                            if (primary) {
-                              setModal({
-                                mode: "assigned",
-                                shiftId: Number(primary.id),
-                                empName: String(primary.emp_name ?? "—"),
-                                upToDate: shiftIsUpToDate(primary),
-                              });
-                            } else if (canCreateHere && sn != null) {
-                              const rolePick = pickDefaultSyllabusRoleIdForSlot(
+                        return (
+                          <tr
+                            key={sn}
+                            className="border-b border-line/80 last:border-b-0 hover:bg-sky-1/30"
+                          >
+                            <td className="px-2 py-1 text-center align-middle tabular-nums" dir="ltr">
+                              {prepCell}
+                            </td>
+                            <td className="px-2 py-1 text-center align-middle tabular-nums" dir="ltr">
+                              {startCell}
+                            </td>
+                            <td className="px-2 py-1 text-center align-middle tabular-nums" dir="ltr">
+                              {endCell}
+                            </td>
+                            <td className="px-2 py-1 text-center align-middle tabular-nums" dir="ltr">
+                              {restCell}
+                            </td>
+                            {Array.from({ length: localMax }, (_, idx) => {
+                              const colspan = colSpans[idx] ?? 1;
+                              const employeeTd = "px-2 py-1 text-center align-middle";
+
+                              if (idx >= rowRoles.length) {
+                                return (
+                                  <td
+                                    key={`${sn}-pad-${idx}`}
+                                    colSpan={colspan}
+                                    className={employeeTd}
+                                  />
+                                );
+                              }
+
+                              const role = rowRoles[idx]!;
+                              const rid = Number(role.id);
+                              const cellShift = assignedShiftForRoleCell(
+                                slotShifts,
+                                rid,
+                                rowRoles,
+                              );
+                              const hasEmployee =
+                                cellShift &&
+                                cellShift.employee_id !== null &&
+                                cellShift.employee_id !== undefined &&
+                                cellShift.employee_id !== "";
+                              const stale = cellShift && !shiftIsUpToDate(cellShift);
+                              const canAssign = syllabusRoleCellCanAssign(
                                 ty,
                                 sn,
+                                rid,
                                 presets,
                                 dayShifts,
                               );
-                              setModal({
-                                mode: "create",
-                                shift_window_id: tid,
-                                syllabus_num: sn,
-                                ...(rolePick != null
-                                  ? { syllabus_role_id: rolePick }
-                                  : {}),
-                                hourLabel: hour,
-                                employee_id: "",
-                              });
-                            }
-                          }}
-                          disabled={!primary && !canCreateHere}
-                        >
-                          <div className="text-xs font-bold text-muted">{hour.slice(0, 2)}:00</div>
-                          {primary ? (
-                            <div
-                              className={`rounded-pill px-2 py-0.5 text-center font-heading text-[10px] font-bold leading-none text-white ${
-                                stale ? "schedule-striped-warn-pill text-ink shadow-sm ring-1 ring-black/10" : "shadow-sm ring-1 ring-black/10"
-                              }`}
-                              style={stale ? undefined : { backgroundColor: colColor }}
-                            >
-                              {String(primary.emp_name ?? "—")}
-                              {extra > 0 ? ` +${extra}` : ""}
-                            </div>
-                          ) : canCreateHere ? (
-                            <div className="text-xs text-muted">ריק</div>
-                          ) : sn != null ? (
-                            <div className="text-xs text-muted">מלא</div>
-                          ) : (
-                            <div className="schedule-striped-warn-pill rounded-pill px-2 py-0.5 text-center text-[10px] font-semibold leading-none text-ink shadow-sm ring-1 ring-black/10">
-                              ללא סלוט
-                            </div>
-                          )}
-                        </button>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
 
-      {modal && modal.mode === "create" && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/25 p-4 backdrop-blur-[2px]"
-          role="dialog"
-        >
-          <div className="w-full max-w-md rounded-card border border-line bg-surface shadow-airy">
-            <div className="flex items-center justify-between border-b border-line px-4 py-3">
-              <h3 className="font-heading text-lg font-bold text-ink">משמרת חדשה</h3>
-              <button
-                type="button"
-                className="rounded-pill px-2 text-muted hover:bg-background"
-                onClick={() => setModal(null)}
-              >
-                ✕
-              </button>
-            </div>
-            <div className="space-y-3 px-4 py-4">
-              <p className="text-sm text-muted">שעת סלוט: {modal.hourLabel}</p>
-              <div className="flex flex-col gap-1">
-                <label className="text-sm font-semibold text-ink">מפעיל</label>
-                <select
-                  value={modal.employee_id === "" ? "" : String(modal.employee_id)}
-                  onChange={(e) =>
-                    setModal({
-                      ...modal,
-                      employee_id: e.target.value ? Number(e.target.value) : "",
-                    })
-                  }
-                >
-                  <option value="">—</option>
-                  {employees.map((e) => (
-                    <option key={String(e.id)} value={String(e.id)}>
-                      {String(e.name)}
-                    </option>
-                  ))}
-                </select>
+                              if (hasEmployee && cellShift) {
+                                return (
+                                  <td
+                                    key={`${sn}-r-${rid}`}
+                                    colSpan={colspan}
+                                    className={employeeTd}
+                                  >
+                                    <FlightBoardAssignedPill
+                                      empName={String(cellShift.emp_name ?? "—")}
+                                      colColor={colColor}
+                                      stale={Boolean(stale)}
+                                      onLongPressDelete={() =>
+                                        deleteMut.mutate(Number(cellShift.id))
+                                      }
+                                    />
+                                  </td>
+                                );
+                              }
+
+                              if (canAssign) {
+                                const cellKey = `${tid}-${sn}-${rid}`;
+                                const roleForCreate =
+                                  rowRoles.length > 1
+                                    ? rid
+                                    : pickDefaultSyllabusRoleIdForSlot(
+                                        ty,
+                                        sn,
+                                        presets,
+                                        dayShifts,
+                                      );
+                                return (
+                                  <td
+                                    key={`${sn}-r-${rid}`}
+                                    colSpan={colspan}
+                                    className={employeeTd}
+                                  >
+                                    <EmptySlotAssignCell
+                                      cellKey={cellKey}
+                                      editor={slotEditor}
+                                      slotQuery={slotQuery}
+                                      setEditor={setSlotEditor}
+                                      setSlotQuery={setSlotQuery}
+                                      employees={employees}
+                                      createMut={createMut}
+                                      openPayload={{
+                                        shift_window_id: tid,
+                                        syllabus_num: sn,
+                                        ...(roleForCreate != null
+                                          ? { syllabus_role_id: roleForCreate }
+                                          : {}),
+                                      }}
+                                    />
+                                  </td>
+                                );
+                              }
+
+                              return (
+                                <td
+                                  key={`${sn}-r-${rid}`}
+                                  colSpan={colspan}
+                                  className={`${employeeTd} text-xs text-muted`}
+                                >
+                                  {slotOpen ? "—" : "מלא"}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
-            <div className="flex flex-wrap justify-end gap-2 border-t border-line px-4 py-3">
-              <button
-                type="button"
-                className="rounded-pill border border-line px-4 py-2 text-sm"
-                onClick={() => setModal(null)}
-              >
-                ביטול
-              </button>
-              <button
-                type="button"
-                className="rounded-pill bg-primary px-4 py-2 text-sm font-bold text-white"
-                disabled={createMut.isPending || modal.employee_id === ""}
-                onClick={() => {
-                  if (modal.employee_id === "") return;
-                  createMut.mutate({
-                    shift_window_id: modal.shift_window_id,
-                    syllabus_num: modal.syllabus_num,
-                    employee_id: modal.employee_id,
-                    ...(modal.syllabus_role_id != null
-                      ? { syllabus_role_id: modal.syllabus_role_id }
-                      : {}),
-                  });
-                }}
-              >
-                שמור
-              </button>
-            </div>
-          </div>
-        </div>
+          );
+        })
       )}
 
-      {modal && modal.mode === "assigned" && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/25 p-4 backdrop-blur-[2px]"
-          role="dialog"
-        >
-          <div className="w-full max-w-md rounded-card border border-line bg-surface shadow-airy">
-            <div className="flex items-center justify-between border-b border-line px-4 py-3">
-              <h3 className="font-heading text-lg font-bold text-ink">משמרת</h3>
-              <button
-                type="button"
-                className="rounded-pill px-2 text-muted hover:bg-background"
-                onClick={() => setModal(null)}
-              >
-                ✕
-              </button>
-            </div>
-            <div className="space-y-3 px-4 py-4">
-              <p className="text-sm text-ink">
-                <span className="font-semibold">מפעיל: </span>
-                {modal.empName}
-              </p>
-              {!modal.upToDate ? (
-                <p className="text-xs text-muted">
-                  המשמרת אינה מעודכנת לסילבוס הנוכחי; מומלץ למחוק וליצור מחדש.
-                </p>
-              ) : null}
-            </div>
-            <div className="flex flex-wrap justify-end gap-2 border-t border-line px-4 py-3">
-              <button
-                type="button"
-                className="rounded-pill border border-line px-4 py-2 text-sm"
-                onClick={() => setModal(null)}
-              >
-                סגור
-              </button>
-              <button
-                type="button"
-                className="rounded-pill bg-peach-3 px-4 py-2 text-sm font-bold text-white"
-                disabled={deleteMut.isPending}
-                onClick={() => deleteMut.mutate(modal.shiftId)}
-              >
-                מחק משמרת
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {shiftTypeDraft ? (
+        <ShiftTypeEditorModal
+          shiftTypeDraft={shiftTypeDraft}
+          setShiftTypeDraft={setShiftTypeDraft}
+          presets={presets}
+          dateStr={dateStr}
+          shiftTypeModalBodyRef={shiftTypeModalBodyRef}
+          swatchMenuOpen={swatchMenuOpen}
+          setSwatchMenuOpen={setSwatchMenuOpen}
+          shiftTypeTimeError={shiftTypeTimeError}
+          setShiftTypeTimeError={setShiftTypeTimeError}
+          createShiftWindowMut={createShiftWindowMut}
+          updateShiftWindowMut={updateShiftWindowMut}
+          onClose={() => setShiftTypeDraft(null)}
+          onRequestDelete={(id, name) => setDeleteTypeConfirm({ id, name })}
+        />
+      ) : null}
 
+      <DeleteShiftTypeConfirmDialog
+        confirm={deleteTypeConfirm}
+        onClose={() => setDeleteTypeConfirm(null)}
+        deleteShiftWindowMut={deleteShiftWindowMut}
+      />
     </div>
   );
 }
