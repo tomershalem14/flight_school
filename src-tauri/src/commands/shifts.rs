@@ -1,7 +1,8 @@
 use crate::db::AppState;
 use crate::domain::rules::check_shift_violations;
 use crate::domain::shift_prep_rest_chain::{
-    recalc_chained_prep_rest_for_employee_day, solve_create_shift_prep_rest,
+    heal_slot_group_after_delete, recalc_chained_prep_rest_for_employee_day,
+    recalc_largest_bunch_intersecting_slot_group, solve_create_shift_prep_rest,
 };
 use crate::domain::syllabus::{
     first_syllabus_role_id_for_preset, shift_row_from_syllabus_num,
@@ -10,7 +11,7 @@ use crate::domain::syllabus::{
 use crate::error::AppError;
 use crate::json_util::sqlite_row_to_object;
 use chrono::NaiveDate;
-use rusqlite::{params, Error as SqliteError};
+use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::State;
@@ -168,9 +169,14 @@ pub fn create_shift(state: State<'_, AppState>, payload: ShiftCreate) -> Result<
                 ],
             )?;
             let new_id = tx.last_insert_rowid();
-            if let Some(eid) = payload.employee_id {
-                recalc_chained_prep_rest_for_employee_day(&*tx, eid, &payload.shift_date)
-                    .map_err(schedule_err_validation)?;
+            if payload.employee_id.is_some() {
+                recalc_largest_bunch_intersecting_slot_group(
+                    &*tx,
+                    &payload.shift_date,
+                    payload.shift_window_id,
+                    payload.syllabus_num,
+                )
+                .map_err(schedule_err_validation)?;
             }
             let mut violations = Vec::new();
             if payload.employee_id.is_some() {
@@ -285,7 +291,7 @@ pub fn reassign_shift_employee(
 
             recalc_chained_prep_rest_for_employee_day(&*tx, old, &shift_date)
                 .map_err(schedule_err_validation)?;
-            recalc_chained_prep_rest_for_employee_day(&*tx, payload.employee_id, &shift_date)
+            recalc_largest_bunch_intersecting_slot_group(&*tx, &shift_date, wid, sn)
                 .map_err(schedule_err_validation)?;
 
             let mut violations = Vec::new();
@@ -302,25 +308,33 @@ pub fn reassign_shift_employee(
 pub fn delete_shift(state: State<'_, AppState>, shift_id: i64) -> Result<Value, String> {
     state
         .with_db_mut(|conn| {
-            let to_recalc: Option<(String, i64)> = match conn.query_row(
-                "SELECT shift_date, employee_id FROM shifts WHERE id = ?",
-                [shift_id],
-                |r| {
-                    let d: String = r.get(0)?;
-                    let e: Option<i64> = r.get(1)?;
-                    Ok((d, e))
-                },
-            ) {
-                Ok((d, Some(eid))) => Some((d, eid)),
-                Ok((_, None)) | Err(SqliteError::QueryReturnedNoRows) => None,
-                Err(e) => return Err(AppError::from(e)),
-            };
+            let before: Option<(String, i64, Option<i64>, Option<i64>)> = conn
+                .query_row(
+                    "SELECT shift_date, shift_window_id, syllabus_num, employee_id FROM shifts WHERE id = ?",
+                    [shift_id],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, Option<i64>>(2)?,
+                            r.get::<_, Option<i64>>(3)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(AppError::from)?;
             let tx = conn.transaction().map_err(AppError::from)?;
             tx.execute("DELETE FROM shifts WHERE id = ?", [shift_id])
                 .map_err(AppError::from)?;
-            if let Some((date, eid)) = to_recalc {
+            if let Some((date, eid)) = before
+                .as_ref()
+                .and_then(|(d, _, _, e)| e.map(|id| (d.clone(), id)))
+            {
                 recalc_chained_prep_rest_for_employee_day(&*tx, eid, &date)
                     .map_err(schedule_err_validation)?;
+            }
+            if let Some((ref date, wid, Some(sn), _)) = before {
+                heal_slot_group_after_delete(&*tx, date, wid, sn).map_err(schedule_err_validation)?;
             }
             tx.commit().map_err(AppError::from)?;
             Ok(json!({"ok": true}))
