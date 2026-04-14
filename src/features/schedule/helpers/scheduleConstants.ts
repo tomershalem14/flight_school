@@ -1,5 +1,3 @@
-export const PANEL_W = 280;
-
 export const LONG_PRESS_MS = 600;
 export const LONG_PRESS_MOVE_PX = 8;
 

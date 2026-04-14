@@ -34,20 +34,16 @@ import {
   presetDurationById,
   shiftCoversHour,
   shiftWallIntervalMs,
-  syllabusNumForHourInWindow,
   timeToMin,
-  typesCoveringHourSlot,
   wallIntervalsOverlap,
   windowDayTimeline,
 } from "../../shared/manningHours";
 import { shiftTypePillColors } from "../../shared/shiftTypeColors";
 import { errorMessageFromUnknown } from "../../shared/errorMessage";
-import { hourSlotEndHm } from "../../shared/timeFormat";
 import {
   MATRIX_DRAG_HIGHLIGHT_IDLE,
   MATRIX_DRAG_HIGHLIGHT_OVER,
   MATRIX_PILL_INSET_X,
-  PANEL_W,
 } from "./helpers/scheduleConstants";
 import { matrixPillDragSize } from "./helpers/matrixPillDragSize";
 import {
@@ -59,18 +55,15 @@ import {
   maxSyllabusRolesInWindowDay,
   newShiftTypeDraft,
   normalizeShiftRow,
-  pickDefaultSyllabusRoleIdForSlot,
   presetSyllabusRolesSorted,
   shiftIsUpToDate,
   shiftTypeDraftFromWindow,
-  slotHasUnmannedRole,
   typeId,
 } from "./helpers/scheduleShiftModel";
 import type {
   ActiveDragHighlightMs,
   MatrixEmployeeShiftDragData,
   MatrixTypeSlotDragData,
-  TypePickerState,
 } from "./helpers/scheduleTypes";
 import {
   EmployeeMatrixShiftPillChooser,
@@ -83,7 +76,27 @@ import {
   DeleteShiftTypeConfirmDialog,
   ShiftTypeEditorModal,
 } from "./components/ShiftTypeModals";
-import { TypePickerPanel } from "./components/TypePickerPanel";
+import {
+  clampMsToMatrixFrame,
+  formatLocalHmFromMs,
+  isPointerOverMatrixTimeGrid,
+  shouldSuppressMatrixHoverGuide,
+  snapToNearestQuarterHour,
+  timelineUFromPointerInHourStrip,
+} from "./helpers/matrixHoverSnap";
+
+type MatrixHoverGuideUi = {
+  snappedMs: number;
+  /** 0–100 from frame start (inline-start) to frame end; matches pill `insetInlineStart` basis. */
+  timelinePct: number;
+  overlayLeft: number;
+  overlayWidth: number;
+  /** Hour header row (relative to matrix wrap). */
+  labelTop: number;
+  labelHeight: number;
+  lineTop: number;
+  lineHeight: number;
+};
 
 export function ScheduleView() {
   // --- Server state (React Query) ---
@@ -148,7 +161,6 @@ export function ScheduleView() {
   );
 
   // --- Local UI state ---
-  const [typePicker, setTypePicker] = useState<TypePickerState | null>(null);
   const [deleteTypeConfirm, setDeleteTypeConfirm] = useState<{
     id: number;
     name: string;
@@ -158,6 +170,9 @@ export function ScheduleView() {
   const [shiftTypeTimeError, setShiftTypeTimeError] = useState<string | null>(null);
   const [activeDragHighlightMs, setActiveDragHighlightMs] =
     useState<ActiveDragHighlightMs | null>(null);
+  const [matrixHoverGuide, setMatrixHoverGuide] = useState<MatrixHoverGuideUi | null>(
+    null,
+  );
 
   // --- Refs ---
   /** Last `onDragOver` droppable id (for drag-end diagnostics). Highlight uses imperative DOM updates to avoid full-matrix re-renders. */
@@ -177,13 +192,17 @@ export function ScheduleView() {
   const [matrixEmpDragShiftId, setMatrixEmpDragShiftId] = useState<number | null>(
     null,
   );
-  const suppressCellClickUntil = useRef(0);
   const shiftTypeModalBodyRef = useRef<HTMLDivElement>(null);
   const matrixScrollRef = useRef<HTMLDivElement>(null);
   /** Scrolls with table; band is `absolute` relative to this — not the overflow viewport. */
   const matrixTableWrapRef = useRef<HTMLDivElement>(null);
   const matrixTableRef = useRef<HTMLTableElement>(null);
   const matrixHourStripThRef = useRef<HTMLTableCellElement>(null);
+  const matrixHoverRafRef = useRef<number | null>(null);
+  const matrixHoverPendingRef = useRef<{ x: number; y: number } | null>(null);
+  const blockMatrixHoverGuideRef = useRef(false);
+  blockMatrixHoverGuideRef.current = activeDragHighlightMs != null;
+
   const [matrixUnifiedBand, setMatrixUnifiedBand] = useState<{
     top: number;
     left: number;
@@ -307,6 +326,138 @@ export function ScheduleView() {
     };
   }, [activeDragHighlightMs, updateMatrixUnifiedBand]);
 
+  const flushMatrixHoverGuide = useCallback(() => {
+    matrixHoverRafRef.current = null;
+    const p = matrixHoverPendingRef.current;
+    if (!p) {
+      setMatrixHoverGuide(null);
+      return;
+    }
+    if (blockMatrixHoverGuideRef.current) {
+      setMatrixHoverGuide(null);
+      return;
+    }
+    const wrap = matrixTableWrapRef.current;
+    const th = matrixHourStripThRef.current;
+    const table = matrixTableRef.current;
+    const frame = scheduleMatrixFrame;
+    if (!wrap || !th || !table || !frame || matrixRangeMs <= 0) {
+      setMatrixHoverGuide(null);
+      return;
+    }
+    if (!isPointerOverMatrixTimeGrid(p.x, p.y, th, table)) {
+      setMatrixHoverGuide(null);
+      return;
+    }
+    if (shouldSuppressMatrixHoverGuide(p.x, p.y, table, employees.length)) {
+      setMatrixHoverGuide(null);
+      return;
+    }
+    const u = timelineUFromPointerInHourStrip(p.x, th);
+    if (u == null) {
+      setMatrixHoverGuide(null);
+      return;
+    }
+    const rawMs = frame.frameStartMs + u * matrixRangeMs;
+    const snapped = clampMsToMatrixFrame(
+      snapToNearestQuarterHour(rawMs),
+      frame.frameStartMs,
+      frame.frameEndMs,
+    );
+    const timelinePct = ((snapped - frame.frameStartMs) / matrixRangeMs) * 100;
+    const wr = wrap.getBoundingClientRect();
+    const hr = th.getBoundingClientRect();
+    const gridLeft = hr.left - wr.left;
+    const gridWidth = hr.width;
+    const labelTop = hr.top - wr.top;
+    const labelHeight = Math.max(0, hr.bottom - hr.top);
+    const headerBottom = hr.bottom - wr.top;
+    let lineTop = headerBottom;
+    let lineHeight = 0;
+    const tbody = table.tBodies[0];
+    const empCount = employees.length;
+    if (tbody && empCount > 0) {
+      const rows = tbody.rows;
+      const lastEmpIdx = empCount - 1;
+      if (lastEmpIdx < rows.length) {
+        const firstEmpRow = rows.item(0)!;
+        const lastEmpRow = rows.item(lastEmpIdx)!;
+        const empTop = firstEmpRow.getBoundingClientRect().top - wr.top;
+        const empBottom = lastEmpRow.getBoundingClientRect().bottom - wr.top;
+        lineTop = Math.max(headerBottom, empTop);
+        lineHeight = Math.max(0, empBottom - lineTop);
+      }
+    }
+    setMatrixHoverGuide({
+      snappedMs: snapped,
+      timelinePct,
+      overlayLeft: gridLeft,
+      overlayWidth: gridWidth,
+      labelTop,
+      labelHeight,
+      lineTop,
+      lineHeight,
+    });
+  }, [scheduleMatrixFrame, matrixRangeMs, employees.length]);
+
+  useEffect(() => {
+    if (activeDragHighlightMs) setMatrixHoverGuide(null);
+  }, [activeDragHighlightMs]);
+
+  useEffect(() => {
+    const scroll = matrixScrollRef.current;
+    if (!scroll || hours.length === 0) return;
+
+    const scheduleFlush = () => {
+      if (matrixHoverRafRef.current != null) return;
+      matrixHoverRafRef.current = requestAnimationFrame(() => {
+        flushMatrixHoverGuide();
+      });
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      matrixHoverPendingRef.current = { x: e.clientX, y: e.clientY };
+      scheduleFlush();
+    };
+
+    const onPointerLeave = () => {
+      matrixHoverPendingRef.current = null;
+      if (matrixHoverRafRef.current != null) {
+        cancelAnimationFrame(matrixHoverRafRef.current);
+        matrixHoverRafRef.current = null;
+      }
+      setMatrixHoverGuide(null);
+    };
+
+    scroll.addEventListener("pointermove", onPointerMove);
+    scroll.addEventListener("pointerleave", onPointerLeave);
+    scroll.addEventListener("pointercancel", onPointerLeave);
+
+    const wrap = matrixTableWrapRef.current;
+    const ro = new ResizeObserver(() => {
+      if (matrixHoverPendingRef.current) scheduleFlush();
+    });
+    if (wrap) ro.observe(wrap);
+    const tbl = matrixTableRef.current;
+    if (tbl) ro.observe(tbl);
+    const onResize = () => {
+      if (matrixHoverPendingRef.current) scheduleFlush();
+    };
+    window.addEventListener("resize", onResize);
+
+    return () => {
+      scroll.removeEventListener("pointermove", onPointerMove);
+      scroll.removeEventListener("pointerleave", onPointerLeave);
+      scroll.removeEventListener("pointercancel", onPointerLeave);
+      window.removeEventListener("resize", onResize);
+      ro.disconnect();
+      if (matrixHoverRafRef.current != null) {
+        cancelAnimationFrame(matrixHoverRafRef.current);
+        matrixHoverRafRef.current = null;
+      }
+    };
+  }, [hours.length, flushMatrixHoverGuide]);
+
   /** `onDragOver` can run before the highlight layer mounts; sync fill once layout exists. */
   useLayoutEffect(() => {
     if (!matrixUnifiedBand || !activeDragHighlightMs) return;
@@ -334,17 +485,6 @@ export function ScheduleView() {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
   );
-
-  // --- Type picker (empty cell) ---
-  /** Types that cover this hour and have no assigned shift of that type covering this hour on this day. */
-  const typesAvailableForPicker = useMemo(() => {
-    if (!typePicker) return [];
-    const hour = typePicker.hour;
-    const covering = typesCoveringHourSlot(types, dateStr, hour);
-    return covering.filter((ty) =>
-      slotHasUnmannedRole(dateStr, ty, hour, durationByPreset, presets, dayShifts),
-    );
-  }, [typePicker, types, dateStr, dayShifts, durationByPreset, presets]);
 
   // --- Mutations ---
   const reassignMut = useMutation({
@@ -381,7 +521,6 @@ export function ScheduleView() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["shifts"] });
       qc.invalidateQueries({ queryKey: ["violations"] });
-      setTypePicker(null);
     },
     onError: (err) => {
       alert(errorMessageFromUnknown(err));
@@ -406,7 +545,6 @@ export function ScheduleView() {
       qc.invalidateQueries({ queryKey: ["shifts"] });
       qc.invalidateQueries({ queryKey: ["violations"] });
       setDeleteTypeConfirm(null);
-      setTypePicker(null);
     },
     onError: (err) => {
       alert(errorMessageFromUnknown(err));
@@ -453,22 +591,21 @@ export function ScheduleView() {
     if (!shiftTypeDraft) setSwatchMenuOpen(false);
   }, [shiftTypeDraft]);
 
-  // --- Global escape: close modals / picker (swatch submenu first) ---
+  // --- Global escape: close modals (swatch submenu first) ---
   useEffect(() => {
-    if (!typePicker && !deleteTypeConfirm && !shiftTypeDraft) return;
+    if (!deleteTypeConfirm && !shiftTypeDraft) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (shiftTypeDraft && swatchMenuOpen) {
         setSwatchMenuOpen(false);
         return;
       }
-      setTypePicker(null);
       setDeleteTypeConfirm(null);
       setShiftTypeDraft(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [typePicker, deleteTypeConfirm, shiftTypeDraft, swatchMenuOpen]);
+  }, [deleteTypeConfirm, shiftTypeDraft, swatchMenuOpen]);
 
   function openAddShiftTypeModal() {
     createShiftWindowMut.reset();
@@ -476,32 +613,6 @@ export function ScheduleView() {
     setShiftTypeTimeError(null);
     setSwatchMenuOpen(false);
     setShiftTypeDraft(newShiftTypeDraft(presets));
-  }
-
-  function openTypePicker(
-    rect: DOMRect,
-    employeeId: number,
-    employeeName: string,
-    hour: string,
-  ) {
-    const start = hour;
-    const end = hourSlotEndHm(hour);
-    let left = rect.left;
-    if (left + PANEL_W > window.innerWidth - 8) {
-      left = Math.max(8, window.innerWidth - PANEL_W - 8);
-    }
-    let top = rect.bottom + 6;
-    const maxTop = window.innerHeight - 280;
-    if (top > maxTop) top = Math.max(8, rect.top - 260);
-    setTypePicker({
-      top,
-      left,
-      employeeId,
-      employeeName,
-      hour,
-      start,
-      end,
-    });
   }
 
   // --- Matrix DnD handlers ---
@@ -544,7 +655,6 @@ export function ScheduleView() {
     (event: DragEndEvent) => {
       const { active, over } = event;
       clearMatrixDragOverlay();
-      suppressCellClickUntil.current = Date.now() + 400;
 
       const resolution = resolveMatrixDragEnd({
         active,
@@ -718,20 +828,7 @@ export function ScheduleView() {
                                 hour={hour}
                                 hasEmployeeShiftInHour={hasShift}
                                 droppableDisabled={droppableDisabled}
-                                className={`cursor-pointer ${hasShift ? "" : "bg-background/40"}`}
-                                onEmptyClick={(e) => {
-                                  if (Date.now() < suppressCellClickUntil.current) {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    return;
-                                  }
-                                  openTypePicker(
-                                    e.currentTarget.getBoundingClientRect(),
-                                    eid,
-                                    name,
-                                    hour,
-                                  );
-                                }}
+                                className={hasShift ? "" : "bg-background/40"}
                               />
                             );
                           })}
@@ -824,8 +921,6 @@ export function ScheduleView() {
                                             typeColor={typeColor}
                                             pillTitle={titled}
                                             onLongPressDelete={() => {
-                                              suppressCellClickUntil.current =
-                                                Date.now() + 400;
                                               deleteMut.mutate(Number(clShift.id));
                                             }}
                                           />
@@ -1163,6 +1258,48 @@ export function ScheduleView() {
                 </div>
               </div>
             ) : null}
+            {matrixHoverGuide ? (
+              <>
+                <div
+                  className="pointer-events-none absolute z-[18]"
+                  style={{
+                    top: matrixHoverGuide.labelTop,
+                    left: matrixHoverGuide.overlayLeft,
+                    width: matrixHoverGuide.overlayWidth,
+                    height: matrixHoverGuide.labelHeight,
+                  }}
+                >
+                  <div className="relative h-full w-full">
+                    <div
+                      className="absolute inset-y-0 flex w-0 flex-col items-center justify-end pb-px"
+                      style={{ insetInlineStart: `${matrixHoverGuide.timelinePct}%` }}
+                    >
+                      <span className="max-w-[3.25rem] shrink-0 truncate rounded px-0.5 text-center font-heading text-[9px] font-medium leading-none tracking-tight text-muted tabular-nums ring-1 ring-line/40 bg-background/80">
+                        {formatLocalHmFromMs(matrixHoverGuide.snappedMs)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                {matrixHoverGuide.lineHeight > 0 ? (
+                  <div
+                    className="pointer-events-none absolute z-[18]"
+                    style={{
+                      top: matrixHoverGuide.lineTop,
+                      left: matrixHoverGuide.overlayLeft,
+                      width: matrixHoverGuide.overlayWidth,
+                      height: matrixHoverGuide.lineHeight,
+                    }}
+                  >
+                    <div className="relative h-full w-full">
+                      <div
+                        className="absolute inset-y-0 w-0 border-0 border-s border-dotted border-muted/80"
+                        style={{ insetInlineStart: `${matrixHoverGuide.timelinePct}%` }}
+                      />
+                    </div>
+                  </div>
+                ) : null}
+              </>
+            ) : null}
             </div>
         </div>
         <DragOverlay dropAnimation={null}>
@@ -1179,37 +1316,6 @@ export function ScheduleView() {
         </DragOverlay>
         </DndContext>
       )}
-
-      {typePicker ? (
-        <TypePickerPanel
-          picker={typePicker}
-          onClose={() => setTypePicker(null)}
-          typesAvailableForPicker={typesAvailableForPicker}
-          totalTypesCount={types.length}
-          createIsPending={createMut.isPending}
-          onPickShiftType={(t) => {
-            const sn = syllabusNumForHourInWindow(
-              dateStr,
-              t,
-              typePicker.hour,
-              durationByPreset,
-            );
-            if (sn == null) return;
-            const roleId = pickDefaultSyllabusRoleIdForSlot(
-              t,
-              sn,
-              presets,
-              dayShifts,
-            );
-            createMut.mutate({
-              shift_window_id: typeId(t),
-              employee_id: typePicker.employeeId,
-              syllabus_num: sn,
-              ...(roleId != null ? { syllabus_role_id: roleId } : {}),
-            });
-          }}
-        />
-      ) : null}
 
       <RemoteRegInline weekStr={weekStr} />
 

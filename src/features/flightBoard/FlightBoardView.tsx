@@ -483,6 +483,8 @@ export function FlightBoardView() {
           const { segments } = windowDayTimeline(dateStr, ty, durationByPreset, colColor);
           const colShifts = dayShifts.filter((s) => Number(s.shift_window_id) === tid);
           const presetById = new Map(presets.map((p) => [Number(p.id), p]));
+          const employeeBlockWidthPct = 33;
+          const metaColWidthPct = (100 - employeeBlockWidthPct) / 5;
 
           return (
             <div
@@ -530,27 +532,43 @@ export function FlightBoardView() {
                     : "overflow-x-auto"
                 }
               >
-                <table className="w-full min-w-[640px] table-fixed border-collapse text-xs">
+                <table className="w-full min-w-[720px] table-fixed border-collapse border-2 border-ink/18 text-xs">
                   <colgroup>
-                    <col style={{ width: "11%" }} />
-                    <col style={{ width: "9%" }} />
-                    <col style={{ width: "9%" }} />
-                    <col style={{ width: "11%" }} />
-                    {Array.from({ length: globalMax }, (_, i) => (
-                      <col key={i} style={{ width: `${(60 / globalMax).toFixed(2)}%` }} />
+                    {Array.from({ length: 4 }, (_, i) => (
+                      <col key={`t-${i}`} style={{ width: `${metaColWidthPct.toFixed(2)}%` }} />
                     ))}
+                    {Array.from({ length: globalMax }, (_, i) => (
+                      <col
+                        key={i}
+                        style={{
+                          width: `${(employeeBlockWidthPct / globalMax).toFixed(2)}%`,
+                        }}
+                      />
+                    ))}
+                    <col style={{ width: `${metaColWidthPct.toFixed(2)}%` }} />
                   </colgroup>
                   <thead>
-                    <tr className="border-b border-line bg-background/80 text-ink">
-                      <th className="px-2 py-1 text-center font-heading text-xs font-bold">הכנה</th>
-                      <th className="px-2 py-1 text-center font-heading text-xs font-bold">התחלה</th>
-                      <th className="px-2 py-1 text-center font-heading text-xs font-bold">סיום</th>
-                      <th className="px-2 py-1 text-center font-heading text-xs font-bold">מנוחה</th>
+                    <tr className="bg-background/80 text-ink">
+                      <th className="border-2 border-ink/18 px-2 py-1 text-center font-heading text-xs font-bold">
+                        תדריך
+                      </th>
+                      <th className="border-2 border-ink/18 px-2 py-1 text-center font-heading text-xs font-bold">
+                        התחלה
+                      </th>
+                      <th className="border-2 border-ink/18 px-2 py-1 text-center font-heading text-xs font-bold">
+                        סיום
+                      </th>
+                      <th className="border-2 border-ink/18 px-2 py-1 text-center font-heading text-xs font-bold">
+                        תחקיר
+                      </th>
                       <th
                         colSpan={globalMax}
-                        className="px-2 py-1 text-center font-heading text-xs font-bold"
+                        className="border-2 border-ink/18 px-2 py-1 text-center font-heading text-xs font-bold"
                       >
                         איוש
+                      </th>
+                      <th className="border-2 border-ink/18 px-2 py-1 text-center font-heading text-xs font-bold">
+                        סילבוס
                       </th>
                     </tr>
                   </thead>
@@ -558,8 +576,8 @@ export function FlightBoardView() {
                     {segments.length === 0 ? (
                       <tr>
                         <td
-                          colSpan={4 + globalMax}
-                          className="px-3 py-4 text-center text-xs text-muted"
+                          colSpan={5 + globalMax}
+                          className="border-2 border-ink/18 px-3 py-4 text-center text-xs text-muted"
                         >
                           אין סלוטים בחלון זה
                         </td>
@@ -582,6 +600,7 @@ export function FlightBoardView() {
                           ? formatTimeForInput(String(metaShift!.end_time))
                           : formatHmFromMs(seg.endMs);
                         const { prep: prepCell, rest: restCell } = prepRestDisplay(metaShift);
+                        const syllabusName = String(preset?.name ?? "—");
                         const slotOpen = slotHasUnmannedRoleForSyllabusNum(
                           ty,
                           sn,
@@ -589,25 +608,35 @@ export function FlightBoardView() {
                           dayShifts,
                         );
                         return (
-                          <tr
-                            key={sn}
-                            className="border-b border-line/80 last:border-b-0 hover:bg-sky-1/30"
-                          >
-                            <td className="px-2 py-1 text-center align-middle tabular-nums" dir="ltr">
+                          <tr key={sn} className="hover:bg-sky-1/30">
+                            <td
+                              className="border-2 border-ink/18 px-2 py-1 text-center align-middle tabular-nums"
+                              dir="ltr"
+                            >
                               {prepCell}
                             </td>
-                            <td className="px-2 py-1 text-center align-middle tabular-nums" dir="ltr">
+                            <td
+                              className="border-2 border-ink/18 px-2 py-1 text-center align-middle tabular-nums"
+                              dir="ltr"
+                            >
                               {startCell}
                             </td>
-                            <td className="px-2 py-1 text-center align-middle tabular-nums" dir="ltr">
+                            <td
+                              className="border-2 border-ink/18 px-2 py-1 text-center align-middle tabular-nums"
+                              dir="ltr"
+                            >
                               {endCell}
                             </td>
-                            <td className="px-2 py-1 text-center align-middle tabular-nums" dir="ltr">
+                            <td
+                              className="border-2 border-ink/18 px-2 py-1 text-center align-middle tabular-nums"
+                              dir="ltr"
+                            >
                               {restCell}
                             </td>
                             {Array.from({ length: localMax }, (_, idx) => {
                               const colspan = colSpans[idx] ?? 1;
-                              const employeeTd = "px-2 py-1 text-center align-middle";
+                              const employeeTd =
+                                "border-2 border-ink/18 px-2 py-1 text-center align-middle";
 
                               if (idx >= rowRoles.length) {
                                 return (
@@ -706,6 +735,12 @@ export function FlightBoardView() {
                                 </td>
                               );
                             })}
+                            <td
+                              className="min-w-0 border-2 border-ink/18 px-2 py-1 align-middle text-center text-ink"
+                              title={syllabusName}
+                            >
+                              <span className="inline-block max-w-full truncate">{syllabusName}</span>
+                            </td>
                           </tr>
                         );
                       })

@@ -210,22 +210,23 @@ export function MatrixEmployeeHourDropZone({
   /** `@dnd-kit` disabled when this cell must not accept the active drag. */
   droppableDisabled: boolean;
   className?: string;
-  onEmptyClick: (e: ReactMouseEvent<HTMLDivElement>) => void;
+  onEmptyClick?: (e: ReactMouseEvent<HTMLDivElement>) => void;
 }) {
   const { setNodeRef } = useDroppable({
     id: `emp-cell-${employeeId}-${hour}`,
     data: { employeeId, hour },
     disabled: droppableDisabled,
   });
+  const handleEmptyClick =
+    onEmptyClick && !hasEmployeeShiftInHour
+      ? (e: ReactMouseEvent<HTMLDivElement>) => onEmptyClick(e)
+      : undefined;
   return (
     <div
       ref={setNodeRef}
       role="presentation"
       className={`min-h-[28px] min-w-0 flex-1 border-s border-line ${className ?? ""}`}
-      onClick={(e) => {
-        if (hasEmployeeShiftInHour) return;
-        onEmptyClick(e);
-      }}
+      onClick={handleEmptyClick}
     />
   );
 }

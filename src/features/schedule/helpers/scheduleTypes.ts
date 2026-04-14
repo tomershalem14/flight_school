@@ -3,16 +3,6 @@ export type WindowSegmentDraft = {
   segment_start_time: string;
 };
 
-export type TypePickerState = {
-  top: number;
-  left: number;
-  employeeId: number;
-  employeeName: string;
-  hour: string;
-  start: string;
-  end: string;
-};
-
 export type MatrixTypeSlotDragData = {
   kind: "typeSlot";
   shiftWindowId: number;
