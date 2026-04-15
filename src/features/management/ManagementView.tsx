@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import * as api from "../../shared/api";
 import type { JsonObject } from "../../shared/api";
+import { activePresetIdFromList, itemHidden } from "../../shared/employeeOrderSort";
+import { errorMessageFromUnknown } from "../../shared/errorMessage";
 import { DEFAULT_SHIFT_TYPE_PASTEL_HEX } from "../../shared/pastelPalette";
 import { PastelSwatchGridDropdown } from "../../shared/PastelSwatchGridDropdown";
 
@@ -10,7 +12,10 @@ const PAGE_SIZE = 10;
 const ACTIONS_COL_CSS = "5.5rem";
 const DATA_COL_CSS = `calc((100% - ${ACTIONS_COL_CSS}) / 5)`;
 const SYLLABUS_DATA_COL = `calc((100% - ${ACTIONS_COL_CSS}) / 8)`;
-type ManagementTab = "employees" | "roles" | "syllabi";
+/** Matches `size-8` + horizontal padding in star column (`px-2`). */
+const ORDER_TAB_STAR_W = "3rem";
+const ORDER_PRESET_NAME_COL = `calc(100% - ${ORDER_TAB_STAR_W} - ${ACTIONS_COL_CSS})`;
+type ManagementTab = "employees" | "roles" | "syllabi" | "employee_orders";
 
 type EmployeeKind = "admin" | "regular" | "extra" | "reserve";
 
@@ -36,6 +41,44 @@ function parseEmployeeKind(v: unknown): EmployeeKind {
     return s;
   }
   return "regular";
+}
+
+function mergeEmployeeOrderItemsForEdit(
+  items: JsonObject[],
+  activeRegularEmployees: JsonObject[],
+): JsonObject[] {
+  const bySort = [...items].sort(
+    (a, b) => Number(a.sort_index ?? a.sortIndex ?? 0) - Number(b.sort_index ?? b.sortIndex ?? 0),
+  );
+  const seen = new Set(
+    bySort.map((i) => Number(i.employee_id ?? i.employeeId ?? 0)),
+  );
+  const rows: JsonObject[] = bySort.map((i) => ({
+    employee_id: Number(i.employee_id ?? i.employeeId),
+    name: String(i.name ?? ""),
+    role_name: String(i.role_name ?? i.roleName ?? ""),
+    affiliation: i.affiliation != null ? String(i.affiliation).trim() : "",
+    hidden: itemHidden(i),
+  }));
+  const defaultPos = new Map(
+    activeRegularEmployees.map((e, idx) => [Number(e.id), idx]),
+  );
+  const extras = activeRegularEmployees
+    .filter((e) => !seen.has(Number(e.id)))
+    .sort(
+      (a, b) =>
+        (defaultPos.get(Number(a.id)) ?? 0) - (defaultPos.get(Number(b.id)) ?? 0),
+    );
+  for (const e of extras) {
+    rows.push({
+      employee_id: Number(e.id),
+      name: String(e.name ?? ""),
+      role_name: String(e.role_name ?? e.roleName ?? ""),
+      affiliation: String(e.affiliation ?? "").trim(),
+      hidden: false,
+    });
+  }
+  return rows;
 }
 
 function rowIsAffiliationLeader(e: JsonObject): boolean {
@@ -145,6 +188,12 @@ export function ManagementView() {
   const [syllabusSearch, setSyllabusSearch] = useState("");
   const [syllabusPage, setSyllabusPage] = useState(1);
   const [presetDraft, setPresetDraft] = useState<JsonObject | null>(null);
+  const [empOrderModal, setEmpOrderModal] = useState<
+    | null
+    | { phase: "create"; name: string; rows: JsonObject[] }
+    | { phase: "edit"; presetId: number; name: string; rows: JsonObject[] }
+  >(null);
+  const [empOrderCreateSaving, setEmpOrderCreateSaving] = useState(false);
 
   const { data: employeesRaw = [] } = useQuery({
     queryKey: ["employees", "management"],
@@ -161,7 +210,27 @@ export function ManagementView() {
   });
 
   const employees = useMemo(() => employeesRaw as JsonObject[], [employeesRaw]);
+  const activeRegularEmployees = useMemo(
+    () =>
+      employees.filter(
+        (e) => rowIsActive(e) && parseEmployeeKind(e.employee_type) === "regular",
+      ),
+    [employees],
+  );
   const syllabi = useMemo(() => syllabusRaw as JsonObject[], [syllabusRaw]);
+
+  const { data: employeeOrdersRaw = [] } = useQuery({
+    queryKey: ["employee_order_presets"],
+    queryFn: () => api.listEmployeeOrderPresets(),
+  });
+  const employeeOrders = useMemo(
+    () => employeeOrdersRaw as JsonObject[],
+    [employeeOrdersRaw],
+  );
+  const activeEmployeeOrderPresetId = useMemo(
+    () => activePresetIdFromList(employeeOrders),
+    [employeeOrders],
+  );
 
   const syllabusFiltered = useMemo(() => {
     const q = syllabusSearch.trim().toLowerCase();
@@ -369,6 +438,65 @@ export function ManagementView() {
     },
   });
 
+  const setEmployeeOrderActiveMut = useMutation({
+    mutationFn: (presetId: number | null) => api.setEmployeeOrderActive(presetId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["employee_order_presets"] });
+      qc.invalidateQueries({ queryKey: ["employee_order_preset"] });
+    },
+  });
+
+  const updateEmployeeOrderMut = useMutation({
+    mutationFn: (args: {
+      presetId: number;
+      name: string;
+      items: { employee_id: number; hidden: boolean }[];
+    }) =>
+      api.updateEmployeeOrderPreset(args.presetId, {
+        name: args.name,
+        items: args.items,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["employee_order_presets"] });
+      qc.invalidateQueries({ queryKey: ["employee_order_preset"] });
+      setEmpOrderModal(null);
+    },
+    onError: (err) => {
+      alert(errorMessageFromUnknown(err));
+    },
+  });
+
+  const deleteEmployeeOrderMut = useMutation({
+    mutationFn: (pid: number) => api.deleteEmployeeOrderPreset(pid),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["employee_order_presets"] });
+      qc.invalidateQueries({ queryKey: ["employee_order_preset"] });
+    },
+    onError: (err) => {
+      alert(errorMessageFromUnknown(err));
+    },
+  });
+
+  async function openEmployeeOrderEdit(presetId: number) {
+    try {
+      const detail = await api.getEmployeeOrderPreset(presetId);
+      const items = (detail.items as JsonObject[] | undefined) ?? [];
+      const rows = mergeEmployeeOrderItemsForEdit(items, activeRegularEmployees);
+      setEmpOrderModal({
+        phase: "edit",
+        presetId,
+        name: String(detail.name ?? ""),
+        rows,
+      });
+    } catch (e) {
+      alert(errorMessageFromUnknown(e));
+    }
+  }
+
+  useEffect(() => {
+    if (!empOrderModal) setEmpOrderCreateSaving(false);
+  }, [empOrderModal]);
+
   function rowIsSystemPreset(p: JsonObject): boolean {
     const v = p.system_locked ?? p.systemLocked;
     if (v === true) return true;
@@ -450,6 +578,19 @@ export function ManagementView() {
               >
                 סילבוסים
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === "employee_orders"}
+                className={`border-b-2 pb-1.5 text-sm font-heading font-semibold leading-none transition-colors ${
+                  tab === "employee_orders"
+                    ? "border-primary text-primary"
+                    : "border-line text-muted hover:border-primary/50 hover:text-primary"
+                }`}
+                onClick={() => setTab("employee_orders")}
+              >
+                סדר מפעילים
+              </button>
             </div>
           </div>
         </div>
@@ -476,7 +617,7 @@ export function ManagementView() {
               >
                 + דרג
               </button>
-            ) : (
+            ) : tab === "syllabi" ? (
               <button
                 type="button"
                 className="rounded-pill bg-primary px-3 py-1.5 text-sm font-heading font-bold text-white shadow-sm hover:opacity-90"
@@ -496,7 +637,21 @@ export function ManagementView() {
               >
                 + סילבוס
               </button>
-            )}
+            ) : tab === "employee_orders" ? (
+              <button
+                type="button"
+                className="rounded-pill bg-primary px-3 py-1.5 text-sm font-heading font-bold text-white shadow-sm hover:opacity-90"
+                onClick={() =>
+                  setEmpOrderModal({
+                    phase: "create",
+                    name: "",
+                    rows: mergeEmployeeOrderItemsForEdit([], activeRegularEmployees),
+                  })
+                }
+              >
+                + סדר
+              </button>
+            ) : null}
         </div>
       </header>
 
@@ -996,8 +1151,416 @@ export function ManagementView() {
             </div>
           </div>
         )}
+
+        {tab === "employee_orders" && (
+          <div className="overflow-hidden rounded-card border border-line bg-surface shadow-airy">
+            <div className="overflow-x-auto">
+              <table className="table-fixed w-full border-collapse text-start text-sm">
+                <colgroup>
+                  <col style={{ width: ORDER_PRESET_NAME_COL }} />
+                  <col style={{ width: ORDER_TAB_STAR_W }} />
+                  <col style={{ width: ACTIONS_COL_CSS }} />
+                </colgroup>
+                <thead>
+                  <tr className="border-b border-line bg-background/60">
+                    <th className="min-w-0 px-4 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                      שם
+                    </th>
+                    <th className="min-w-0 px-2 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                      פעיל
+                    </th>
+                    <th className="px-1 py-3 font-heading text-xs font-bold uppercase tracking-wide text-muted">
+                      פעולות
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="border-b border-line bg-background/20 hover:bg-background/40">
+                    <td className="min-w-0 px-4 py-3 text-start font-medium text-ink">
+                      ברירת מחדל
+                    </td>
+                    <td className="px-2 py-3">
+                      <button
+                        type="button"
+                        className={`inline-flex size-8 shrink-0 items-center justify-center text-2xl leading-none transition-opacity hover:opacity-80 disabled:opacity-40 ${
+                          activeEmployeeOrderPresetId == null
+                            ? "text-primary"
+                            : "text-muted"
+                        }`}
+                        aria-label="קבע כסדר פעיל"
+                        disabled={setEmployeeOrderActiveMut.isPending}
+                        onClick={() => setEmployeeOrderActiveMut.mutate(null)}
+                      >
+                        {activeEmployeeOrderPresetId == null ? "★" : "☆"}
+                      </button>
+                    </td>
+                    <td className="px-1 py-3 text-center text-muted">—</td>
+                  </tr>
+                  {employeeOrders.map((p) => {
+                    const pid = Number(p.id);
+                    const nm = String(p.name ?? "");
+                    const isActiveRow =
+                      activeEmployeeOrderPresetId != null &&
+                      activeEmployeeOrderPresetId === pid;
+                    return (
+                      <tr
+                        key={pid}
+                        className="border-b border-line last:border-0 hover:bg-background/40"
+                      >
+                        <td className="min-w-0 px-4 py-3 text-start font-medium text-ink">
+                          {nm}
+                        </td>
+                        <td className="px-2 py-3">
+                          <button
+                            type="button"
+                            className={`inline-flex size-8 shrink-0 items-center justify-center text-2xl leading-none transition-opacity hover:opacity-80 disabled:opacity-40 ${
+                              isActiveRow ? "text-primary" : "text-muted"
+                            }`}
+                            aria-label="קבע כסדר פעיל"
+                            disabled={setEmployeeOrderActiveMut.isPending}
+                            onClick={() => setEmployeeOrderActiveMut.mutate(pid)}
+                          >
+                            {isActiveRow ? "★" : "☆"}
+                          </button>
+                        </td>
+                        <td className="px-1 py-3">
+                          <div className="flex items-center justify-center gap-1">
+                            <button
+                              type="button"
+                              className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border border-line bg-background text-ink hover:bg-background/80"
+                              aria-label="ערוך סדר"
+                              onClick={() => void openEmployeeOrderEdit(pid)}
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                strokeWidth={1.5}
+                                stroke="currentColor"
+                                className="size-4"
+                                aria-hidden
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125"
+                                />
+                              </svg>
+                            </button>
+                            <button
+                              type="button"
+                              className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border border-line bg-background text-peach-4 hover:bg-peach-1/40"
+                              aria-label="מחק סדר"
+                              disabled={deleteEmployeeOrderMut.isPending}
+                              onClick={() => {
+                                if (
+                                  !window.confirm(
+                                    `למחוק את הסדר «${nm}»? פעולה זו אינה הפיכה.`,
+                                  )
+                                )
+                                  return;
+                                deleteEmployeeOrderMut.mutate(pid);
+                              }}
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                strokeWidth={1.5}
+                                stroke="currentColor"
+                                className="size-4"
+                                aria-hidden
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  d="M5 12h14"
+                                />
+                              </svg>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
         </div>
       </div>
+
+      {empOrderModal ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/25 p-4 backdrop-blur-[2px]"
+          role="presentation"
+          onClick={() => setEmpOrderModal(null)}
+        >
+          <div
+            className="flex w-full max-w-2xl flex-col rounded-card border border-line bg-surface shadow-airy"
+            role="dialog"
+            aria-modal="true"
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <>
+              <div className="flex items-center justify-between border-b border-line px-4 py-3">
+                <h2 className="font-heading text-lg font-bold text-ink">
+                  {empOrderModal.phase === "create" ? "סדר חדש" : "עריכת סדר"}
+                </h2>
+                <button
+                  type="button"
+                  className="rounded-pill px-2 text-muted hover:bg-background hover:text-ink"
+                  onClick={() => setEmpOrderModal(null)}
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="flex max-h-[min(75vh,520px)] flex-col gap-3 overflow-y-auto px-4 py-4">
+                <div className="form-row mb-0">
+                  <label className="text-sm font-semibold text-ink">שם</label>
+                  <input
+                    value={empOrderModal.name}
+                    onChange={(e) =>
+                      setEmpOrderModal({ ...empOrderModal, name: e.target.value })
+                    }
+                    placeholder={
+                      empOrderModal.phase === "create"
+                        ? "אופציונלי — אם ריק יישמר כ״סדר חדש״"
+                        : undefined
+                    }
+                  />
+                </div>
+                <div className="overflow-hidden rounded-card border border-line bg-background/50">
+                  <table className="w-full border-collapse text-center text-sm">
+                    <thead>
+                      <tr className="border-b border-line bg-background/60">
+                        <th className="px-2 py-2 text-center text-xs font-bold uppercase tracking-wide text-muted">
+                          מפעיל
+                        </th>
+                        <th className="px-2 py-2 text-center text-xs font-bold uppercase tracking-wide text-muted">
+                          דרג
+                        </th>
+                        <th className="px-2 py-2 text-center text-xs font-bold uppercase tracking-wide text-muted">
+                          שיוך
+                        </th>
+                        <th className="w-14 px-1 py-2 text-center text-xs font-bold uppercase tracking-wide text-muted">
+                          מוסתר
+                        </th>
+                        <th className="w-20 px-1 py-2 text-center text-xs font-bold uppercase tracking-wide text-muted">
+                          סדר
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {empOrderModal.rows.map((row, idx) => (
+                        <tr
+                          key={Number(row.employee_id)}
+                          className={`border-b border-line ${
+                            Boolean(row.hidden) ? "bg-muted/10 opacity-80" : ""
+                          }`}
+                        >
+                          <td className="px-2 py-2 text-center text-ink">
+                            {String(row.name ?? "")}
+                          </td>
+                          <td className="px-2 py-2 text-center text-ink">
+                            {String(row.role_name ?? "")}
+                          </td>
+                          <td className="px-2 py-2 text-center text-ink">
+                            {String(row.affiliation ?? "") || "—"}
+                          </td>
+                          <td className="px-1 py-2 text-center">
+                            <button
+                              type="button"
+                              className={`mx-auto flex size-8 items-center justify-center rounded-md border border-line/80 bg-surface shadow-sm transition-all hover:border-primary/45 hover:bg-primary/8 active:scale-95 disabled:pointer-events-none disabled:opacity-35 ${
+                                Boolean(row.hidden) ? "text-muted" : "text-ink"
+                              }`}
+                              title={
+                                Boolean(row.hidden)
+                                  ? "מוסתר בלוח — לחץ להצגה"
+                                  : "גלוי בלוח — לחץ להסתרה"
+                              }
+                              aria-label={
+                                Boolean(row.hidden)
+                                  ? "הצג מפעיל בלוח כשהסדר פעיל"
+                                  : "הסתר מפעיל בלוח כשהסדר פעיל"
+                              }
+                              disabled={
+                                updateEmployeeOrderMut.isPending || empOrderCreateSaving
+                              }
+                              onClick={() => {
+                                const next = empOrderModal.rows.map((r, i) =>
+                                  i === idx ? { ...r, hidden: !Boolean(r.hidden) } : r,
+                                );
+                                setEmpOrderModal({ ...empOrderModal, rows: next });
+                              }}
+                            >
+                              {Boolean(row.hidden) ? (
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth={1.5}
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  className="size-[18px]"
+                                  aria-hidden
+                                >
+                                  <path d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.242 15.053 6.68 17.25 10.5 17.25c.922 0 1.818-.11 2.674-.312M6.228 6.228A10.45 10.45 0 0 1 12 5c4.756 0 8.773 3.162 10.065 7.498M17.742 17.742 21 21M3 3l18 18M9.88 9.88A3 3 0 0 0 12 15a3 3 0 0 0 2.12-5.12" />
+                                </svg>
+                              ) : (
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth={1.5}
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  className="size-[18px]"
+                                  aria-hidden
+                                >
+                                  <path d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 5 12 5c4.638 0 8.573 2.607 9.963 6.034a1.01 1.01 0 0 1 0 .639c-1.39 3.427-5.325 6.034-9.963 6.034-4.639 0-8.574-2.607-9.963-6.034z" />
+                                  <path d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+                                </svg>
+                              )}
+                            </button>
+                          </td>
+                          <td className="px-1 py-2 text-center">
+                            <div className="flex flex-row items-center justify-center gap-0.5">
+                              <button
+                                type="button"
+                                className="inline-flex size-7 items-center justify-center rounded-md border border-line/80 bg-surface text-muted shadow-sm transition-all hover:border-primary/45 hover:bg-primary/8 hover:text-primary active:scale-95 disabled:pointer-events-none disabled:opacity-35"
+                                aria-label="הזז למעלה"
+                                disabled={
+                                  idx === 0 ||
+                                  updateEmployeeOrderMut.isPending ||
+                                  empOrderCreateSaving
+                                }
+                                onClick={() => {
+                                  if (idx === 0) return;
+                                  const next = [...empOrderModal.rows];
+                                  [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+                                  setEmpOrderModal({ ...empOrderModal, rows: next });
+                                }}
+                              >
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth={2}
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  className="size-3.5"
+                                  aria-hidden
+                                >
+                                  <path d="M18 15l-6-6-6 6" />
+                                </svg>
+                              </button>
+                              <button
+                                type="button"
+                                className="inline-flex size-7 items-center justify-center rounded-md border border-line/80 bg-surface text-muted shadow-sm transition-all hover:border-primary/45 hover:bg-primary/8 hover:text-primary active:scale-95 disabled:pointer-events-none disabled:opacity-35"
+                                aria-label="הזז למטה"
+                                disabled={
+                                  idx >= empOrderModal.rows.length - 1 ||
+                                  updateEmployeeOrderMut.isPending ||
+                                  empOrderCreateSaving
+                                }
+                                onClick={() => {
+                                  if (idx >= empOrderModal.rows.length - 1) return;
+                                  const next = [...empOrderModal.rows];
+                                  [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
+                                  setEmpOrderModal({ ...empOrderModal, rows: next });
+                                }}
+                              >
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth={2}
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  className="size-3.5"
+                                  aria-hidden
+                                >
+                                  <path d="M6 9l6 6 6-6" />
+                                </svg>
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex flex-wrap justify-end gap-2 border-t border-line pt-3">
+                  <button
+                    type="button"
+                    className="rounded-pill border border-line px-4 py-2 text-sm font-semibold text-ink hover:bg-background"
+                    onClick={() => setEmpOrderModal(null)}
+                  >
+                    ביטול
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-pill bg-primary px-4 py-2 text-sm font-bold text-white hover:opacity-90 disabled:opacity-50"
+                    disabled={
+                      updateEmployeeOrderMut.isPending || empOrderCreateSaving
+                    }
+                    onClick={async () => {
+                      const nameTrim = empOrderModal.name.trim();
+                      const itemsPayload = empOrderModal.rows.map((r) => ({
+                        employee_id: Number(r.employee_id),
+                        hidden: Boolean(r.hidden),
+                      }));
+
+                      if (empOrderModal.phase === "create") {
+                        const createName = nameTrim || "סדר חדש";
+                        setEmpOrderCreateSaving(true);
+                        try {
+                          const r = await api.createEmployeeOrderPreset(createName);
+                          const id = Number(r.id);
+                          await api.updateEmployeeOrderPreset(id, {
+                            name: nameTrim || createName,
+                            items: itemsPayload,
+                          });
+                          await qc.invalidateQueries({
+                            queryKey: ["employee_order_presets"],
+                          });
+                          await qc.invalidateQueries({
+                            queryKey: ["employee_order_preset"],
+                          });
+                          setEmpOrderModal(null);
+                        } catch (e) {
+                          alert(errorMessageFromUnknown(e));
+                        } finally {
+                          setEmpOrderCreateSaving(false);
+                        }
+                        return;
+                      }
+
+                      if (!nameTrim) {
+                        alert("נא להזין שם");
+                        return;
+                      }
+                      updateEmployeeOrderMut.mutate({
+                        presetId: empOrderModal.presetId,
+                        name: nameTrim,
+                        items: itemsPayload,
+                      });
+                    }}
+                  >
+                    שמור
+                  </button>
+                </div>
+              </div>
+            </>
+          </div>
+        </div>
+      ) : null}
 
       {empModal && (
         <div

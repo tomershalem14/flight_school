@@ -49,6 +49,35 @@ export async function reactivateEmployee(emp_id: number): Promise<JsonObject> {
   return invoke("reactivate_employee", { empId: emp_id });
 }
 
+export async function listEmployeeOrderPresets(): Promise<JsonObject[]> {
+  return invoke("list_employee_order_presets", {});
+}
+
+export async function setEmployeeOrderActive(
+  preset_id: number | null,
+): Promise<JsonObject> {
+  return invoke("set_employee_order_active", { presetId: preset_id });
+}
+
+export async function createEmployeeOrderPreset(name: string): Promise<JsonObject> {
+  return invoke("create_employee_order_preset", { payload: { name } });
+}
+
+export async function getEmployeeOrderPreset(preset_id: number): Promise<JsonObject> {
+  return invoke("get_employee_order_preset", { presetId: preset_id });
+}
+
+export async function updateEmployeeOrderPreset(
+  preset_id: number,
+  payload: JsonObject,
+): Promise<JsonObject> {
+  return invoke("update_employee_order_preset", { presetId: preset_id, payload });
+}
+
+export async function deleteEmployeeOrderPreset(preset_id: number): Promise<JsonObject> {
+  return invoke("delete_employee_order_preset", { presetId: preset_id });
+}
+
 export async function getShiftWindows(date?: string): Promise<JsonObject[]> {
   if (date === undefined) {
     return invoke("get_shift_windows", {});

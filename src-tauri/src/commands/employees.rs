@@ -1,3 +1,4 @@
+use crate::commands::employee_order_presets::remove_employee_from_order_presets;
 use crate::db::AppState;
 use crate::error::AppError;
 use crate::json_util::sqlite_row_to_object;
@@ -172,6 +173,12 @@ pub fn update_employee(
                 return Err(AppError::msg("עובד לא נמצא"));
             }
 
+            let old_type: String = conn.query_row(
+                "SELECT employee_type FROM employees WHERE id = ?",
+                [emp_id],
+                |r| r.get(0),
+            )?;
+
             let et = normalize_employee_type(&payload.employee_type)?;
             let affiliation = affiliation_for_type(et, payload.affiliation);
             let aff_leader = affiliation_leader_for_type(et, &affiliation, payload.affiliation_leader);
@@ -189,6 +196,10 @@ pub fn update_employee(
                     emp_id,
                 ],
             )?;
+
+            if old_type == "regular" && et != "regular" {
+                remove_employee_from_order_presets(conn, emp_id)?;
+            }
 
             Ok(json!({"ok": true}))
         })

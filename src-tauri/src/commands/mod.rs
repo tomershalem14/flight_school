@@ -1,6 +1,7 @@
 //! Tauri `invoke` handlers grouped by domain.
 
 pub mod constraints;
+pub mod employee_order_presets;
 pub mod employees;
 pub mod fixed_assignments;
 pub mod remote_reg;

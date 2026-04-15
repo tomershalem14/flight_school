@@ -223,6 +223,28 @@ fn apply_schema(conn: &mut Connection) -> AppResult<()> {
         conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (17)", [])?;
     }
 
+    let v18: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 18",
+        [],
+        |r| r.get(0),
+    )?;
+    if v18 == 0 {
+        const M18: &str = include_str!("../../migrations/018_employee_order_presets.sql");
+        conn.execute_batch(M18)?;
+        conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (18)", [])?;
+    }
+
+    let v19: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 19",
+        [],
+        |r| r.get(0),
+    )?;
+    if v19 == 0 {
+        const M19: &str = include_str!("../../migrations/019_employee_order_preset_hidden.sql");
+        conn.execute_batch(M19)?;
+        conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (19)", [])?;
+    }
+
     Ok(())
 }
 

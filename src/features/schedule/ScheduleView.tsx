@@ -41,6 +41,11 @@ import {
 import { shiftTypePillColors } from "../../shared/shiftTypeColors";
 import { errorMessageFromUnknown } from "../../shared/errorMessage";
 import {
+  activePresetIdFromList,
+  sortEmployeesByActivePreset,
+} from "../../shared/employeeOrderSort";
+import { MatrixEmployeeOrderMenu } from "./components/MatrixEmployeeOrderMenu";
+import {
   MATRIX_DRAG_HIGHLIGHT_IDLE,
   MATRIX_DRAG_HIGHLIGHT_OVER,
   MATRIX_PILL_INSET_X,
@@ -77,12 +82,12 @@ import {
   ShiftTypeEditorModal,
 } from "./components/ShiftTypeModals";
 import {
-  clampMsToMatrixFrame,
+  clientXToSnappedMatrixMs,
+  employeeTbodyRowIndexFromPoint,
   formatLocalHmFromMs,
   isPointerOverMatrixTimeGrid,
+  normalizeRangeMs,
   shouldSuppressMatrixHoverGuide,
-  snapToNearestQuarterHour,
-  timelineUFromPointerInHourStrip,
 } from "./helpers/matrixHoverSnap";
 
 type MatrixHoverGuideUi = {
@@ -97,6 +102,63 @@ type MatrixHoverGuideUi = {
   lineTop: number;
   lineHeight: number;
 };
+
+/** Coexists with @dnd-kit `PointerSensor` default activation distance (8px); raise if empty-cell drags feel wrong in QA. */
+const MATRIX_RANGE_DRAG_THRESHOLD_PX = 4;
+
+type MatrixRangeDragUi = {
+  pointerId: number;
+  employeeId: number;
+  /** Tbody row index (0 .. employees.length - 1). */
+  rowIndex: number;
+  anchorMs: number;
+  currentMs: number;
+  gridLeft: number;
+  gridWidth: number;
+  bandTop: number;
+  bandHeight: number;
+  startPct: number;
+  widthPct: number;
+};
+
+type MatrixRangePending = {
+  pointerId: number;
+  downX: number;
+  employeeId: number;
+  rowIndex: number;
+  anchorMs: number;
+};
+
+function computeMatrixRangeBandLayout(
+  wrap: HTMLElement,
+  hourStripTh: HTMLElement,
+  table: HTMLTableElement,
+  rowIndex: number,
+  anchorMs: number,
+  currentMs: number,
+  frame: { frameStartMs: number; frameEndMs: number },
+  matrixRangeMs: number,
+): Pick<
+  MatrixRangeDragUi,
+  "gridLeft" | "gridWidth" | "bandTop" | "bandHeight" | "startPct" | "widthPct"
+> {
+  const wr = wrap.getBoundingClientRect();
+  const hr = hourStripTh.getBoundingClientRect();
+  const tbody = table.tBodies[0];
+  const row = tbody?.rows.item(rowIndex);
+  const rr = row?.getBoundingClientRect();
+  const [lo, hi] = normalizeRangeMs(anchorMs, currentMs);
+  const startPct = ((lo - frame.frameStartMs) / matrixRangeMs) * 100;
+  const widthPct = Math.max(0.12, ((hi - lo) / matrixRangeMs) * 100);
+  return {
+    gridLeft: hr.left - wr.left,
+    gridWidth: hr.width,
+    bandTop: rr ? rr.top - wr.top : 0,
+    bandHeight: rr ? rr.height : 0,
+    startPct,
+    widthPct,
+  };
+}
 
 export function ScheduleView() {
   // --- Server state (React Query) ---
@@ -160,6 +222,34 @@ export function ScheduleView() {
     [shifts, dateStr],
   );
 
+  const { data: employeeOrderPresetsRaw = [] } = useQuery({
+    queryKey: ["employee_order_presets"],
+    queryFn: () => api.listEmployeeOrderPresets(),
+  });
+  const employeeOrderPresets = useMemo(
+    () => employeeOrderPresetsRaw as JsonObject[],
+    [employeeOrderPresetsRaw],
+  );
+  const activeEmployeeOrderPresetId = useMemo(
+    () => activePresetIdFromList(employeeOrderPresets),
+    [employeeOrderPresets],
+  );
+
+  const { data: activeEmployeeOrderPreset } = useQuery({
+    queryKey: ["employee_order_preset", activeEmployeeOrderPresetId],
+    queryFn: () => api.getEmployeeOrderPreset(activeEmployeeOrderPresetId!),
+    enabled: activeEmployeeOrderPresetId != null,
+  });
+
+  const sortedEmployees = useMemo(() => {
+    const itemsRaw = activeEmployeeOrderPreset?.items;
+    const items = Array.isArray(itemsRaw) ? (itemsRaw as JsonObject[]) : null;
+    return sortEmployeesByActivePreset(
+      employees,
+      activeEmployeeOrderPresetId != null ? items : null,
+    );
+  }, [employees, activeEmployeeOrderPresetId, activeEmployeeOrderPreset]);
+
   // --- Local UI state ---
   const [deleteTypeConfirm, setDeleteTypeConfirm] = useState<{
     id: number;
@@ -173,6 +263,10 @@ export function ScheduleView() {
   const [matrixHoverGuide, setMatrixHoverGuide] = useState<MatrixHoverGuideUi | null>(
     null,
   );
+  const [matrixRangeDrag, setMatrixRangeDrag] = useState<MatrixRangeDragUi | null>(null);
+  /** Finished empty-cell range: same band as drag, cleared on next pointerdown / day / pill drag. */
+  const [matrixRangeCommittedBand, setMatrixRangeCommittedBand] =
+    useState<MatrixRangeDragUi | null>(null);
 
   // --- Refs ---
   /** Last `onDragOver` droppable id (for drag-end diagnostics). Highlight uses imperative DOM updates to avoid full-matrix re-renders. */
@@ -202,6 +296,21 @@ export function ScheduleView() {
   const matrixHoverPendingRef = useRef<{ x: number; y: number } | null>(null);
   const blockMatrixHoverGuideRef = useRef(false);
   blockMatrixHoverGuideRef.current = activeDragHighlightMs != null;
+
+  const matrixRangePendingRef = useRef<MatrixRangePending | null>(null);
+  /** Stable layout roots for the active range gesture (avoid ref nulls mid-gesture when React re-renders). */
+  const matrixRangeGestureLayoutRef = useRef<{
+    wrap: HTMLElement;
+    th: HTMLElement;
+    tbl: HTMLTableElement;
+  } | null>(null);
+  const matrixRangeDragRef = useRef<MatrixRangeDragUi | null>(null);
+  /** Element that received `setPointerCapture` for the active range gesture (`scroll` or `document.body`). */
+  const matrixRangePointerCaptureElRef = useRef<HTMLElement | null>(null);
+  /** Removes body `pointer*` listeners when capture falls back to `document.body`. */
+  const matrixRangeBodyPointerCleanupRef = useRef<(() => void) | null>(null);
+  const matrixRangeEndGestureRef = useRef<(e: PointerEvent) => void>(() => {});
+  const matrixRangeMoveRef = useRef<(e: PointerEvent) => void>(() => {});
 
   const [matrixUnifiedBand, setMatrixUnifiedBand] = useState<{
     top: number;
@@ -326,6 +435,94 @@ export function ScheduleView() {
     };
   }, [activeDragHighlightMs, updateMatrixUnifiedBand]);
 
+  useEffect(() => {
+    matrixRangeDragRef.current = matrixRangeDrag;
+  }, [matrixRangeDrag]);
+
+  const refreshMatrixCommittedBandLayout = useCallback(() => {
+    setMatrixRangeCommittedBand((prev) => {
+      if (!prev) return null;
+      const wrap = matrixTableWrapRef.current;
+      const th = matrixHourStripThRef.current;
+      const tbl = matrixTableRef.current;
+      const frame = scheduleMatrixFrame;
+      if (!wrap || !th || !tbl || !frame || matrixRangeMs <= 0) return prev;
+      const layout = computeMatrixRangeBandLayout(
+        wrap,
+        th,
+        tbl,
+        prev.rowIndex,
+        prev.anchorMs,
+        prev.currentMs,
+        frame,
+        matrixRangeMs,
+      );
+      const next = { ...prev, ...layout };
+      const near = (a: number, b: number) => Math.abs(a - b) < 0.5;
+      if (
+        near(next.bandTop, prev.bandTop) &&
+        near(next.bandHeight, prev.bandHeight) &&
+        near(next.gridLeft, prev.gridLeft) &&
+        near(next.gridWidth, prev.gridWidth) &&
+        near(next.startPct, prev.startPct) &&
+        near(next.widthPct, prev.widthPct)
+      ) {
+        return prev;
+      }
+      return next;
+    });
+  }, [scheduleMatrixFrame, matrixRangeMs]);
+
+  const matrixCommittedBandLayoutKey =
+    matrixRangeCommittedBand == null
+      ? null
+      : `${matrixRangeCommittedBand.rowIndex}:${matrixRangeCommittedBand.anchorMs}:${matrixRangeCommittedBand.currentMs}`;
+
+  const matrixRangeBandUi = matrixRangeDrag ?? matrixRangeCommittedBand;
+
+  useLayoutEffect(() => {
+    if (matrixCommittedBandLayoutKey == null) return;
+    refreshMatrixCommittedBandLayout();
+    const scroll = matrixScrollRef.current;
+    const wrap = matrixTableWrapRef.current;
+    const ro = new ResizeObserver(() => {
+      refreshMatrixCommittedBandLayout();
+    });
+    if (wrap) ro.observe(wrap);
+    const tbl = matrixTableRef.current;
+    if (tbl) ro.observe(tbl);
+    window.addEventListener("resize", refreshMatrixCommittedBandLayout);
+    if (scroll) {
+      scroll.addEventListener("scroll", refreshMatrixCommittedBandLayout, {
+        passive: true,
+      });
+    }
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", refreshMatrixCommittedBandLayout);
+      if (scroll) {
+        scroll.removeEventListener("scroll", refreshMatrixCommittedBandLayout);
+      }
+    };
+  }, [
+    matrixCommittedBandLayoutKey,
+    scheduleMatrixFrame,
+    matrixRangeMs,
+    refreshMatrixCommittedBandLayout,
+  ]);
+
+  useEffect(() => {
+    const clear = () => {
+      setMatrixRangeCommittedBand(null);
+    };
+    document.addEventListener("pointerdown", clear, true);
+    return () => document.removeEventListener("pointerdown", clear, true);
+  }, []);
+
+  useEffect(() => {
+    setMatrixRangeCommittedBand(null);
+  }, [dateStr]);
+
   const flushMatrixHoverGuide = useCallback(() => {
     matrixHoverRafRef.current = null;
     const p = matrixHoverPendingRef.current;
@@ -349,21 +546,15 @@ export function ScheduleView() {
       setMatrixHoverGuide(null);
       return;
     }
-    if (shouldSuppressMatrixHoverGuide(p.x, p.y, table, employees.length)) {
+    if (shouldSuppressMatrixHoverGuide(p.x, p.y, table, sortedEmployees.length)) {
       setMatrixHoverGuide(null);
       return;
     }
-    const u = timelineUFromPointerInHourStrip(p.x, th);
-    if (u == null) {
+    const snapped = clientXToSnappedMatrixMs(p.x, th, frame, matrixRangeMs);
+    if (snapped == null) {
       setMatrixHoverGuide(null);
       return;
     }
-    const rawMs = frame.frameStartMs + u * matrixRangeMs;
-    const snapped = clampMsToMatrixFrame(
-      snapToNearestQuarterHour(rawMs),
-      frame.frameStartMs,
-      frame.frameEndMs,
-    );
     const timelinePct = ((snapped - frame.frameStartMs) / matrixRangeMs) * 100;
     const wr = wrap.getBoundingClientRect();
     const hr = th.getBoundingClientRect();
@@ -375,7 +566,7 @@ export function ScheduleView() {
     let lineTop = headerBottom;
     let lineHeight = 0;
     const tbody = table.tBodies[0];
-    const empCount = employees.length;
+    const empCount = sortedEmployees.length;
     if (tbody && empCount > 0) {
       const rows = tbody.rows;
       const lastEmpIdx = empCount - 1;
@@ -398,10 +589,105 @@ export function ScheduleView() {
       lineTop,
       lineHeight,
     });
-  }, [scheduleMatrixFrame, matrixRangeMs, employees.length]);
+  }, [scheduleMatrixFrame, matrixRangeMs, sortedEmployees.length]);
+
+  /** Range gesture entry from the matrix scroll container (`pointerdown` capture). */
+  const tryStartMatrixRangeFromPointerDown = useCallback((e: PointerEvent): boolean => {
+      if (e.button !== 0) return false;
+      if (blockMatrixHoverGuideRef.current) return false;
+      const scroll = matrixScrollRef.current;
+      const wrap = matrixTableWrapRef.current;
+      const th = matrixHourStripThRef.current;
+      const table = matrixTableRef.current;
+      if (!scroll || !wrap || !th || !table) return false;
+      const frame = scheduleMatrixFrame;
+      if (!frame || matrixRangeMs <= 0) return false;
+      if (!isPointerOverMatrixTimeGrid(e.clientX, e.clientY, th, table)) {
+        return false;
+      }
+      if (shouldSuppressMatrixHoverGuide(e.clientX, e.clientY, table, sortedEmployees.length)) {
+        return false;
+      }
+      const rowIdx = employeeTbodyRowIndexFromPoint(
+        e.clientX,
+        e.clientY,
+        table,
+        sortedEmployees.length,
+      );
+      if (rowIdx == null) {
+        return false;
+      }
+      const emp = sortedEmployees[rowIdx];
+      if (!emp) return false;
+      const snapped = clientXToSnappedMatrixMs(e.clientX, th, frame, matrixRangeMs);
+      if (snapped == null) return false;
+      matrixRangeGestureLayoutRef.current = { wrap, th, tbl: table };
+      matrixRangePendingRef.current = {
+        pointerId: e.pointerId,
+        downX: e.clientX,
+        employeeId: Number(emp.id),
+        rowIndex: rowIdx,
+        anchorMs: snapped,
+      };
+
+      matrixRangeBodyPointerCleanupRef.current?.();
+      matrixRangeBodyPointerCleanupRef.current = null;
+      matrixRangePointerCaptureElRef.current = null;
+
+      const pid = e.pointerId;
+      let capEl: HTMLElement | null = null;
+      try {
+        scroll.setPointerCapture(pid);
+      } catch {
+        /* another handler may own capture */
+      }
+      if (scroll.hasPointerCapture(pid)) capEl = scroll;
+      else {
+        try {
+          document.body.setPointerCapture(pid);
+        } catch {
+          /* ignore */
+        }
+        if (document.body.hasPointerCapture(pid)) capEl = document.body;
+      }
+      matrixRangePointerCaptureElRef.current = capEl;
+
+      if (capEl === document.body) {
+        const move = (ev: PointerEvent) => matrixRangeMoveRef.current(ev);
+        const up = (ev: PointerEvent) => matrixRangeEndGestureRef.current(ev);
+        const onLost = (ev: PointerEvent) => {
+          if (ev.pointerId !== pid) return;
+          matrixRangeEndGestureRef.current(ev);
+        };
+        document.body.addEventListener("pointermove", move);
+        document.body.addEventListener("pointerup", up);
+        document.body.addEventListener("pointercancel", up);
+        document.body.addEventListener("lostpointercapture", onLost);
+        matrixRangeBodyPointerCleanupRef.current = () => {
+          document.body.removeEventListener("pointermove", move);
+          document.body.removeEventListener("pointerup", up);
+          document.body.removeEventListener("pointercancel", up);
+          document.body.removeEventListener("lostpointercapture", onLost);
+          matrixRangeBodyPointerCleanupRef.current = null;
+        };
+      }
+
+      return true;
+    },
+    [scheduleMatrixFrame, matrixRangeMs, sortedEmployees],
+  );
 
   useEffect(() => {
-    if (activeDragHighlightMs) setMatrixHoverGuide(null);
+    if (!activeDragHighlightMs) return;
+    setMatrixHoverGuide(null);
+    matrixRangeBodyPointerCleanupRef.current?.();
+    matrixRangeBodyPointerCleanupRef.current = null;
+    matrixRangePointerCaptureElRef.current = null;
+    matrixRangeGestureLayoutRef.current = null;
+    matrixRangePendingRef.current = null;
+    matrixRangeDragRef.current = null;
+    setMatrixRangeDrag(null);
+    setMatrixRangeCommittedBand(null);
   }, [activeDragHighlightMs]);
 
   useEffect(() => {
@@ -415,7 +701,138 @@ export function ScheduleView() {
       });
     };
 
+    const onScrollPointerDownCapture = (e: PointerEvent) => {
+      void tryStartMatrixRangeFromPointerDown(e);
+    };
+
+    const releaseRangePointerCapture = (pointerId: number) => {
+      matrixRangeBodyPointerCleanupRef.current?.();
+      matrixRangeBodyPointerCleanupRef.current = null;
+      const cap = matrixRangePointerCaptureElRef.current;
+      matrixRangePointerCaptureElRef.current = null;
+      try {
+        if (cap?.hasPointerCapture(pointerId)) {
+          cap.releasePointerCapture(pointerId);
+          return;
+        }
+        if (scroll.hasPointerCapture(pointerId)) {
+          scroll.releasePointerCapture(pointerId);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const endRangeGesture = (e: PointerEvent) => {
+      const pend = matrixRangePendingRef.current;
+      const drag = matrixRangeDragRef.current;
+      if (pend && e.pointerId === pend.pointerId) {
+        matrixRangePendingRef.current = null;
+        matrixRangeGestureLayoutRef.current = null;
+        releaseRangePointerCapture(e.pointerId);
+        return;
+      }
+      if (drag && e.pointerId === drag.pointerId) {
+        if (e.type === "pointerup") {
+          const L = matrixRangeGestureLayoutRef.current;
+          const wrap = L?.wrap ?? matrixTableWrapRef.current;
+          const th = L?.th ?? matrixHourStripThRef.current;
+          const tbl = L?.tbl ?? matrixTableRef.current;
+          const frame = scheduleMatrixFrame;
+          if (wrap && th && tbl && frame && matrixRangeMs > 0) {
+            const [lo, hi] = normalizeRangeMs(drag.anchorMs, drag.currentMs);
+            const layout = computeMatrixRangeBandLayout(
+              wrap,
+              th,
+              tbl,
+              drag.rowIndex,
+              lo,
+              hi,
+              frame,
+              matrixRangeMs,
+            );
+            setMatrixRangeCommittedBand({
+              pointerId: -1,
+              employeeId: drag.employeeId,
+              rowIndex: drag.rowIndex,
+              anchorMs: lo,
+              currentMs: hi,
+              ...layout,
+            });
+          }
+        }
+        matrixRangeDragRef.current = null;
+        matrixRangeGestureLayoutRef.current = null;
+        setMatrixRangeDrag(null);
+        releaseRangePointerCapture(e.pointerId);
+      }
+    };
+
     const onPointerMove = (e: PointerEvent) => {
+      const L = matrixRangeGestureLayoutRef.current;
+      const pend = matrixRangePendingRef.current;
+      if (pend && e.pointerId === pend.pointerId) {
+        if (Math.abs(e.clientX - pend.downX) >= MATRIX_RANGE_DRAG_THRESHOLD_PX) {
+          const wrap = L?.wrap ?? matrixTableWrapRef.current;
+          const th = L?.th ?? matrixHourStripThRef.current;
+          const tbl = L?.tbl ?? matrixTableRef.current;
+          const frame = scheduleMatrixFrame;
+          if (wrap && th && tbl && frame && matrixRangeMs > 0) {
+            const cur =
+              clientXToSnappedMatrixMs(e.clientX, th, frame, matrixRangeMs) ?? pend.anchorMs;
+            const layout = computeMatrixRangeBandLayout(
+              wrap,
+              th,
+              tbl,
+              pend.rowIndex,
+              pend.anchorMs,
+              cur,
+              frame,
+              matrixRangeMs,
+            );
+            const next: MatrixRangeDragUi = {
+              pointerId: pend.pointerId,
+              employeeId: pend.employeeId,
+              rowIndex: pend.rowIndex,
+              anchorMs: pend.anchorMs,
+              currentMs: cur,
+              ...layout,
+            };
+            matrixRangePendingRef.current = null;
+            matrixRangeDragRef.current = next;
+            setMatrixRangeDrag(next);
+          }
+        }
+      }
+      const drag = matrixRangeDragRef.current;
+      if (drag && e.pointerId === drag.pointerId) {
+        const wrap = L?.wrap ?? matrixTableWrapRef.current;
+        const th = L?.th ?? matrixHourStripThRef.current;
+        const tbl = L?.tbl ?? matrixTableRef.current;
+        const frame = scheduleMatrixFrame;
+        if (wrap && th && tbl && frame && matrixRangeMs > 0) {
+          const cur =
+            clientXToSnappedMatrixMs(e.clientX, th, frame, matrixRangeMs) ?? drag.anchorMs;
+          const layout = computeMatrixRangeBandLayout(
+            wrap,
+            th,
+            tbl,
+            drag.rowIndex,
+            drag.anchorMs,
+            cur,
+            frame,
+            matrixRangeMs,
+          );
+          const next: MatrixRangeDragUi = {
+            ...drag,
+            currentMs: cur,
+            ...layout,
+          };
+          matrixRangeDragRef.current = next;
+          setMatrixRangeDrag(next);
+        }
+      }
+
       matrixHoverPendingRef.current = { x: e.clientX, y: e.clientY };
       scheduleFlush();
     };
@@ -429,9 +846,24 @@ export function ScheduleView() {
       setMatrixHoverGuide(null);
     };
 
+    const onPointerUpOrCancel = (e: PointerEvent) => {
+      endRangeGesture(e);
+    };
+
+    matrixRangeEndGestureRef.current = onPointerUpOrCancel;
+    matrixRangeMoveRef.current = onPointerMove;
+
+    const onPointerCancel = (e: PointerEvent) => {
+      endRangeGesture(e);
+      onPointerLeave();
+    };
+
+    scroll.addEventListener("pointerdown", onScrollPointerDownCapture, true);
     scroll.addEventListener("pointermove", onPointerMove);
+    scroll.addEventListener("pointerup", onPointerUpOrCancel);
+    scroll.addEventListener("pointercancel", onPointerCancel);
+    scroll.addEventListener("lostpointercapture", onPointerUpOrCancel);
     scroll.addEventListener("pointerleave", onPointerLeave);
-    scroll.addEventListener("pointercancel", onPointerLeave);
 
     const wrap = matrixTableWrapRef.current;
     const ro = new ResizeObserver(() => {
@@ -446,9 +878,14 @@ export function ScheduleView() {
     window.addEventListener("resize", onResize);
 
     return () => {
+      matrixRangeEndGestureRef.current = () => {};
+      matrixRangeMoveRef.current = () => {};
+      scroll.removeEventListener("pointerdown", onScrollPointerDownCapture, true);
       scroll.removeEventListener("pointermove", onPointerMove);
+      scroll.removeEventListener("pointerup", onPointerUpOrCancel);
+      scroll.removeEventListener("pointercancel", onPointerCancel);
+      scroll.removeEventListener("lostpointercapture", onPointerUpOrCancel);
       scroll.removeEventListener("pointerleave", onPointerLeave);
-      scroll.removeEventListener("pointercancel", onPointerLeave);
       window.removeEventListener("resize", onResize);
       ro.disconnect();
       if (matrixHoverRafRef.current != null) {
@@ -456,7 +893,7 @@ export function ScheduleView() {
         matrixHoverRafRef.current = null;
       }
     };
-  }, [hours.length, flushMatrixHoverGuide]);
+  }, [hours.length, flushMatrixHoverGuide, scheduleMatrixFrame, matrixRangeMs, tryStartMatrixRangeFromPointerDown]);
 
   /** `onDragOver` can run before the highlight layer mounts; sync fill once layout exists. */
   useLayoutEffect(() => {
@@ -572,6 +1009,17 @@ export function ScheduleView() {
       qc.invalidateQueries({ queryKey: ["shifts"] });
       qc.invalidateQueries({ queryKey: ["violations"] });
       setShiftTypeDraft(null);
+    },
+    onError: (err) => {
+      alert(errorMessageFromUnknown(err));
+    },
+  });
+
+  const setEmployeeOrderActiveMut = useMutation({
+    mutationFn: (presetId: number | null) => api.setEmployeeOrderActive(presetId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["employee_order_presets"] });
+      qc.invalidateQueries({ queryKey: ["employee_order_preset"] });
     },
     onError: (err) => {
       alert(errorMessageFromUnknown(err));
@@ -726,15 +1174,24 @@ export function ScheduleView() {
               className="w-full min-w-full table-fixed border-collapse"
             >
             <colgroup>
-              <col className="w-[6.6rem]" />
+              <col className="w-[7.75rem]" />
               {hours.map((h) => (
                 <col key={h} />
               ))}
             </colgroup>
             <thead>
               <tr>
-                <th className="sticky right-0 z-20 w-[6.6rem] min-w-0 border-b border-line border-s border-line bg-surface px-2 py-1 text-start font-heading text-[10px] font-bold uppercase tracking-wide text-muted">
-                  <span className="block truncate">מפעיל</span>
+                <th className="sticky right-0 z-20 w-[7.75rem] min-w-0 max-w-[7.75rem] border-b border-line border-s border-line bg-surface px-1.5 py-1 text-start font-heading text-[10px] font-bold uppercase tracking-wide text-muted">
+                  <div className="flex min-w-0 items-center gap-0.5">
+                    <span className="min-w-0 flex-1 truncate">מפעיל</span>
+                    <MatrixEmployeeOrderMenu
+                      presets={employeeOrderPresets}
+                      scrollContainerRef={matrixScrollRef}
+                      onPick={(presetId) =>
+                        void setEmployeeOrderActiveMut.mutateAsync(presetId)
+                      }
+                    />
+                  </div>
                 </th>
                 <th
                   ref={matrixHourStripThRef}
@@ -755,7 +1212,7 @@ export function ScheduleView() {
               </tr>
             </thead>
             <tbody>
-              {employees.map((emp) => {
+              {sortedEmployees.map((emp) => {
                 const eid = Number(emp.id);
                 const name = String(emp.name ?? "");
                 const rowShifts = dayShifts.filter((s) => {
@@ -786,7 +1243,7 @@ export function ScheduleView() {
                 );
                 return (
                   <tr key={eid} className="border-b border-line hover:bg-peach-1/30">
-                    <td className="sticky right-0 z-10 w-[6.6rem] max-w-[6.6rem] min-w-0 border-s border-line bg-surface px-2 py-0.5 align-middle">
+                    <td className="sticky right-0 z-10 w-[7.75rem] max-w-[7.75rem] min-w-0 border-s border-line bg-surface px-1.5 py-0.5 align-middle">
                       <span
                         className="block truncate font-heading text-sm font-bold text-ink"
                         title={name}
@@ -973,7 +1430,7 @@ export function ScheduleView() {
                       idx === 0 ? "border-t-2 border-t-line" : ""
                     }`}
                   >
-                    <td className="sticky right-0 z-10 w-[6.6rem] max-w-[6.6rem] min-w-0 border-s border-line bg-ink/[0.055] px-2 py-0.5 align-middle">
+                    <td className="sticky right-0 z-10 w-[7.75rem] max-w-[7.75rem] min-w-0 border-s border-line bg-ink/[0.055] px-2 py-0.5 align-middle">
                       <div className="group flex min-w-0 items-center gap-1">
                         <span
                           className="min-w-0 flex-1 truncate font-heading text-sm font-semibold text-ink"
@@ -1215,7 +1672,7 @@ export function ScheduleView() {
                 );
               })}
               <tr className="border-t-2 border-line bg-ink/[0.055]">
-                <td className="sticky right-0 z-10 w-[6.6rem] max-w-[6.6rem] min-w-0 border-s border-line bg-ink/[0.055] px-2 py-0.5 align-middle">
+                <td className="sticky right-0 z-10 w-[7.75rem] max-w-[7.75rem] min-w-0 border-s border-line bg-ink/[0.055] px-2 py-0.5 align-middle">
                   <button
                     type="button"
                     className="block max-w-full truncate text-start font-heading text-sm font-semibold text-primary hover:underline"
@@ -1261,7 +1718,7 @@ export function ScheduleView() {
             {matrixHoverGuide ? (
               <>
                 <div
-                  className="pointer-events-none absolute z-[18]"
+                  className={`pointer-events-none absolute ${matrixRangeDrag ? "z-[20]" : "z-[18]"}`}
                   style={{
                     top: matrixHoverGuide.labelTop,
                     left: matrixHoverGuide.overlayLeft,
@@ -1282,7 +1739,7 @@ export function ScheduleView() {
                 </div>
                 {matrixHoverGuide.lineHeight > 0 ? (
                   <div
-                    className="pointer-events-none absolute z-[18]"
+                    className={`pointer-events-none absolute ${matrixRangeDrag ? "z-[20]" : "z-[18]"}`}
                     style={{
                       top: matrixHoverGuide.lineTop,
                       left: matrixHoverGuide.overlayLeft,
@@ -1299,6 +1756,27 @@ export function ScheduleView() {
                   </div>
                 ) : null}
               </>
+            ) : null}
+            {matrixRangeBandUi ? (
+              <div
+                className="pointer-events-none absolute z-[19]"
+                style={{
+                  top: matrixRangeBandUi.bandTop,
+                  left: matrixRangeBandUi.gridLeft,
+                  width: matrixRangeBandUi.gridWidth,
+                  height: matrixRangeBandUi.bandHeight,
+                }}
+              >
+                <div
+                  className={`absolute inset-y-0 box-border ${MATRIX_PILL_INSET_X}`}
+                  style={{
+                    insetInlineStart: `${matrixRangeBandUi.startPct}%`,
+                    width: `${matrixRangeBandUi.widthPct}%`,
+                  }}
+                >
+                  <div className="h-full w-full rounded-sm bg-primary/15 ring-1 ring-primary/35" />
+                </div>
+              </div>
             ) : null}
             </div>
         </div>
@@ -1342,7 +1820,6 @@ export function ScheduleView() {
         onClose={() => setDeleteTypeConfirm(null)}
         deleteShiftWindowMut={deleteShiftWindowMut}
       />
-
     </div>
   );
 }

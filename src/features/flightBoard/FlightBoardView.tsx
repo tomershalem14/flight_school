@@ -7,6 +7,10 @@ import { formatYmd } from "../../shared/dates";
 import { presetDurationById, shiftPrepRestHmPairs, windowDayTimeline } from "../../shared/manningHours";
 import type { JsonObject } from "../../shared/api";
 import { errorMessageFromUnknown } from "../../shared/errorMessage";
+import {
+  activePresetIdFromList,
+  sortEmployeesByActivePreset,
+} from "../../shared/employeeOrderSort";
 import { formatTimeForInput } from "../../shared/timeFormat";
 import {
   DeleteShiftTypeConfirmDialog,
@@ -322,6 +326,32 @@ export function FlightBoardView() {
     queryKey: ["employees"],
     queryFn: () => api.getEmployees(true),
   });
+
+  const { data: employeeOrderPresetsRaw = [] } = useQuery({
+    queryKey: ["employee_order_presets"],
+    queryFn: () => api.listEmployeeOrderPresets(),
+  });
+  const employeeOrderPresets = useMemo(
+    () => employeeOrderPresetsRaw as JsonObject[],
+    [employeeOrderPresetsRaw],
+  );
+  const activeEmployeeOrderPresetId = useMemo(
+    () => activePresetIdFromList(employeeOrderPresets),
+    [employeeOrderPresets],
+  );
+  const { data: activeEmployeeOrderPreset } = useQuery({
+    queryKey: ["employee_order_preset", activeEmployeeOrderPresetId],
+    queryFn: () => api.getEmployeeOrderPreset(activeEmployeeOrderPresetId!),
+    enabled: activeEmployeeOrderPresetId != null,
+  });
+  const sortedEmployees = useMemo(() => {
+    const itemsRaw = activeEmployeeOrderPreset?.items;
+    const items = Array.isArray(itemsRaw) ? (itemsRaw as JsonObject[]) : null;
+    return sortEmployeesByActivePreset(
+      employees,
+      activeEmployeeOrderPresetId != null ? items : null,
+    );
+  }, [employees, activeEmployeeOrderPresetId, activeEmployeeOrderPreset]);
 
   const { data: shiftsRaw = [] } = useQuery({
     queryKey: ["shifts", weekStr],
@@ -711,7 +741,7 @@ export function FlightBoardView() {
                                       slotQuery={slotQuery}
                                       setEditor={setSlotEditor}
                                       setSlotQuery={setSlotQuery}
-                                      employees={employees}
+                                      employees={sortedEmployees}
                                       createMut={createMut}
                                       openPayload={{
                                         shift_window_id: tid,

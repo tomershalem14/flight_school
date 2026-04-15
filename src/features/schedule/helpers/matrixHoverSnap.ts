@@ -31,17 +31,65 @@ export function isPointerOverMatrixTimeGrid(
   return clientX >= hr.left && clientX <= hr.right;
 }
 
-/** Position along timeline 0 = frame start (inline-start), 1 = frame end; null if outside horizontal strip. */
+/**
+ * Position along timeline 0 = frame start (inline-start), 1 = frame end.
+ * `clientX` is clamped to the strip rect so drags toward later time in RTL (physical
+ * movement toward inline-start / often left) still map when the pointer sits on the
+ * sticky name column edge or barely outside the `<th>` box.
+ */
 export function timelineUFromPointerInHourStrip(
   clientX: number,
   hourStripTh: HTMLElement,
-): number | null {
+): number {
   const r = hourStripTh.getBoundingClientRect();
   const w = r.width || 1;
-  if (clientX < r.left || clientX > r.right) return null;
+  const clampedX = Math.min(r.right, Math.max(r.left, clientX));
   const rtl = getComputedStyle(hourStripTh).direction === "rtl";
-  const u = rtl ? (r.right - clientX) / w : (clientX - r.left) / w;
+  const u = rtl ? (r.right - clampedX) / w : (clampedX - r.left) / w;
   return Math.min(1, Math.max(0, u));
+}
+
+export type MatrixFrameBounds = { frameStartMs: number; frameEndMs: number };
+
+/** Snapped-to-quarter + clamped wall time from pointer X on the hour strip; null if outside strip or invalid range. */
+export function clientXToSnappedMatrixMs(
+  clientX: number,
+  hourStripTh: HTMLElement,
+  frame: MatrixFrameBounds,
+  matrixRangeMs: number,
+): number | null {
+  if (matrixRangeMs <= 0 || frame.frameEndMs <= frame.frameStartMs) return null;
+  const u = timelineUFromPointerInHourStrip(clientX, hourStripTh);
+  const rawMs = frame.frameStartMs + u * matrixRangeMs;
+  return clampMsToMatrixFrame(
+    snapToNearestQuarterHour(rawMs),
+    frame.frameStartMs,
+    frame.frameEndMs,
+  );
+}
+
+export function normalizeRangeMs(a: number, b: number): [number, number] {
+  return a <= b ? [a, b] : [b, a];
+}
+
+/** Tbody row index for an employee row under the pointer, or null if not over an employee data row. */
+export function employeeTbodyRowIndexFromPoint(
+  clientX: number,
+  clientY: number,
+  table: HTMLTableElement,
+  employeeRowCount: number,
+): number | null {
+  if (employeeRowCount <= 0) return null;
+  const tbody = table.tBodies[0];
+  if (!tbody) return null;
+  for (const node of document.elementsFromPoint(clientX, clientY)) {
+    if (!(node instanceof Element)) continue;
+    const row = node.closest("tr");
+    if (!row || row.parentElement !== tbody) continue;
+    const idx = Array.prototype.indexOf.call(tbody.rows, row);
+    if (idx >= 0 && idx < employeeRowCount) return idx;
+  }
+  return null;
 }
 
 /**
@@ -55,12 +103,16 @@ export function shouldSuppressMatrixHoverGuide(
   table: HTMLTableElement,
   employeeRowCount: number,
 ): boolean {
-  const hit = document.elementFromPoint(clientX, clientY);
-  if (!(hit instanceof Element)) return false;
-  if (hit.closest("[data-matrix-pill]") != null) return true;
-  const row = hit.closest("tr");
   const tbody = table.tBodies[0];
-  if (!row || !tbody || row.parentElement !== tbody) return false;
-  const idx = Array.prototype.indexOf.call(tbody.rows, row);
-  return idx >= employeeRowCount && idx < tbody.rows.length - 1;
+  if (!tbody) return false;
+  for (const node of document.elementsFromPoint(clientX, clientY)) {
+    if (!(node instanceof Element)) continue;
+    if (node.closest("[data-matrix-pill]") != null) return true;
+    const row = node.closest("tr");
+    if (!row || row.parentElement !== tbody) continue;
+    const idx = Array.prototype.indexOf.call(tbody.rows, row);
+    if (idx >= employeeRowCount && idx < tbody.rows.length - 1) return true;
+    if (idx >= 0 && idx < employeeRowCount) return false;
+  }
+  return false;
 }
