@@ -1,4 +1,3 @@
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { useAppStore } from "./store";
 import { AppShell } from "./AppShell";
 import { ManningLayout } from "../features/manning/ManningLayout";
@@ -6,7 +5,6 @@ import { ScheduleView } from "../features/schedule/ScheduleView";
 import { FlightBoardView } from "../features/flightBoard/FlightBoardView";
 import { ManagementView } from "../features/management/ManagementView";
 import { ReportsView } from "../features/reports/ReportsView";
-import { RegisterPage } from "../features/remoteRegistration/RegisterPage";
 import "./App.css";
 
 function MainApp() {
@@ -31,13 +29,5 @@ function MainApp() {
 }
 
 export default function App() {
-  return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/register" element={<RegisterPage />} />
-        <Route path="/" element={<MainApp />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </BrowserRouter>
-  );
+  return <MainApp />;
 }

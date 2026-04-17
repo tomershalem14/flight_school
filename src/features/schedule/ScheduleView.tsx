@@ -81,7 +81,6 @@ import {
   MatrixScheduleEventBar,
   type ScheduleMatrixEventKind,
 } from "./components/MatrixScheduleParts";
-import { RemoteRegInline } from "./components/RemoteRegInline";
 import {
   DeleteShiftTypeConfirmDialog,
   ShiftTypeEditorModal,
@@ -2345,8 +2344,6 @@ export function ScheduleView() {
         </DragOverlay>
         </DndContext>
       )}
-
-      <RemoteRegInline weekStr={weekStr} />
 
       {shiftTypeDraft ? (
         <ShiftTypeEditorModal
