@@ -5,6 +5,7 @@ import { useAppStore, weekStartString } from "../../app/store";
 import * as api from "../../shared/api";
 import { DAYS_HE, addDays, formatDdMmYy, formatYmd } from "../../shared/dates";
 import type { JsonObject } from "../../shared/api";
+import { ManningInspectorSidebar } from "./ManningInspectorSidebar";
 
 export function ManningLayout({ children }: { children: ReactNode }) {
   const currentDay = useAppStore((s) => s.currentDay);
@@ -15,7 +16,7 @@ export function ManningLayout({ children }: { children: ReactNode }) {
   const dateStr = formatYmd(currentDay);
   const weekStr = weekStartString(currentDay);
 
-  const { data: violations = [] } = useQuery({
+  const { data: warnings = [] } = useQuery({
     queryKey: ["violations", dateStr],
     queryFn: () => api.getDayViolations(dateStr),
   });
@@ -114,19 +115,12 @@ export function ManningLayout({ children }: { children: ReactNode }) {
             שלח בוואטסאפ
           </button>
         </div>
-
-        {violations.length > 0 && (
-          <div className="mt-3 max-h-28 overflow-y-auto rounded-card border border-lilac-2 bg-lilac-1 px-3 py-2 text-sm text-ink">
-            {violations.map((v, i) => (
-              <div key={i} className="py-0.5">
-                {String((v as JsonObject).message ?? "")}
-              </div>
-            ))}
-          </div>
-        )}
       </header>
 
-      <div className="min-h-0 flex-1 overflow-auto p-4">{children}</div>
+      <div className="flex min-h-0 flex-1 flex-row">
+        <div className="min-h-0 min-w-0 flex-1 overflow-auto p-4">{children}</div>
+        <ManningInspectorSidebar warnings={warnings} />
+      </div>
     </div>
   );
 }
