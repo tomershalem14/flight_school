@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { getMonday, formatYmd } from "../shared/dates";
+import { getSunday, formatYmd } from "../shared/dates";
 
 export type AppView = "manning" | "management" | "reports";
 
@@ -10,7 +10,7 @@ interface AppState {
   setActiveView: (v: AppView) => void;
   manningMode: ManningMode;
   setManningMode: (m: ManningMode) => void;
-  /** Calendar day for manning views (week derived from Monday). */
+  /** Calendar day for manning views (week derived from Sunday). */
   currentDay: Date;
   setCurrentDay: (d: Date) => void;
   reportWeekStart: Date;
@@ -24,10 +24,10 @@ export const useAppStore = create<AppState>((set) => ({
   setManningMode: (manningMode) => set({ manningMode }),
   currentDay: new Date(),
   setCurrentDay: (currentDay) => set({ currentDay }),
-  reportWeekStart: getMonday(new Date()),
+  reportWeekStart: getSunday(new Date()),
   setReportWeekStart: (reportWeekStart) => set({ reportWeekStart }),
 }));
 
 export function weekStartString(d: Date): string {
-  return formatYmd(getMonday(d));
+  return formatYmd(getSunday(d));
 }

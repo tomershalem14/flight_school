@@ -1,5 +1,13 @@
-/** Week starts Monday (matches legacy `getMonday`). */
+/** Week starts Sunday (inclusive Sun–Sat for `week_start` strings). */
+export function getSunday(d: Date): Date {
+  const x = new Date(d);
+  const day = x.getDay();
+  x.setDate(x.getDate() - day);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
 
+/** @deprecated Prefer `getSunday` for week boundaries; kept for non-week callers. */
 export function getMonday(d: Date): Date {
   const x = new Date(d);
   const day = x.getDay();

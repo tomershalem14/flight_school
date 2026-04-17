@@ -1705,6 +1705,19 @@ export function ScheduleView() {
                     timeToMin(String(a[0].start_time)) - timeToMin(String(b[0].start_time)) ||
                     Number(a[0].id) - Number(b[0].id),
                 );
+                const rowScheduleEvents = dayScheduleEvents.filter(
+                  (ev) => Number(ev.employee_id ?? 0) === eid,
+                );
+                /** Prep/rest bands sit above calendar event bars but below the main shift pill stack. */
+                const zEventStart = 4;
+                const zPrepStart = zEventStart + rowScheduleEvents.length + 1;
+                const maxClusterSize = shiftClusters.reduce(
+                  (acc, c) => Math.max(acc, c.length),
+                  0,
+                );
+                const zPrepStridePerCluster = Math.max(12, maxClusterSize + 4);
+                const zShiftClusterStart =
+                  zPrepStart + shiftClusters.length * zPrepStridePerCluster + 2;
                 return (
                   <tr key={eid} className="border-b border-line hover:bg-peach-1/30">
                     <td className="sticky right-0 z-10 w-[7.75rem] max-w-[7.75rem] min-w-0 border-s border-line bg-surface px-1.5 py-0.5 align-middle">
@@ -1756,9 +1769,7 @@ export function ScheduleView() {
                         </div>
                         {scheduleMatrixFrame && matrixRangeMs > 0 ? (
                           <div className="pointer-events-none relative z-[2] min-h-[28px] w-full">
-                            {dayScheduleEvents
-                              .filter((ev) => Number(ev.employee_id ?? 0) === eid)
-                              .map((ev, evIdx) => {
+                            {rowScheduleEvents.map((ev, evIdx) => {
                                 const rawKind = String(ev.event_kind ?? "event");
                                 const eventKind: ScheduleMatrixEventKind =
                                   rawKind === "constraint" ||
@@ -1805,7 +1816,7 @@ export function ScheduleView() {
                                     eventKind={eventKind}
                                     leftPct={leftPct}
                                     widthPct={widthPct}
-                                    zIndex={4 + evIdx}
+                                    zIndex={zEventStart + evIdx}
                                     pillInsetClassName={MATRIX_PILL_INSET_X}
                                     showStartContinuation={sh === "00:00"}
                                     showEndContinuation={eh === "23:59"}
@@ -1877,7 +1888,7 @@ export function ScheduleView() {
                                       frameStartMs={scheduleMatrixFrame.frameStartMs}
                                       frameEndMs={scheduleMatrixFrame.frameEndMs}
                                       matrixRangeMs={matrixRangeMs}
-                                      zIndexBase={3 + idx * 5 + subIdx}
+                                      zIndexBase={zPrepStart + idx * zPrepStridePerCluster + subIdx}
                                       pillInsetClassName={MATRIX_PILL_INSET_X}
                                     />
                                   ))}
@@ -1886,7 +1897,7 @@ export function ScheduleView() {
                                     style={{
                                       insetInlineStart: `${leftPct}%`,
                                       width: `${widthPct}%`,
-                                      zIndex: 10 + idx,
+                                      zIndex: zShiftClusterStart + idx,
                                     }}
                                   >
                                     <div

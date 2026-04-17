@@ -26,23 +26,26 @@ function ViolationCard({ v }: { v: JsonObject }) {
   const rule = typeof v.rule === "string" ? v.rule : "";
   const message = typeof v.message === "string" ? v.message : "";
 
-  const isOverlap = rule === "segment_overlap";
+  const isSegmentOverlap = rule === "segment_overlap";
+  const isGlobalEventOverlap = rule === "global_event_overlap";
+  const isRedOverlap = isSegmentOverlap || isGlobalEventOverlap;
   const isMaxRow = rule === "max_in_row_bunch";
   const isSyllabus = rule === "syllabus_role_level";
+  const isGlobalWeekRule =
+    rule === "global_week_late_days" ||
+    rule === "global_week_early_days" ||
+    rule === "global_week_extreme_days";
 
-  const shell =
-    isOverlap
-      ? "border-2 border-red-400 bg-red-100 shadow-sm"
-      : isMaxRow || isSyllabus
-        ? "border-2 border-amber-400 bg-amber-100 shadow-sm"
-        : "border border-line bg-background";
+  const shell = isRedOverlap
+    ? "border-2 border-red-400 bg-red-100 shadow-sm"
+    : "border-2 border-amber-400 bg-amber-100 shadow-sm";
 
-  const bodyTone =
-    isOverlap ? "text-red-900" : isMaxRow || isSyllabus ? "text-amber-900" : "text-ink";
+  const bodyTone = isRedOverlap ? "text-red-900" : "text-amber-900";
 
   const emp = jsonString(v, "display_employee");
   const times = jsonStringArray(v, "display_shift_times");
-  const hasStructuredHeader = Boolean(emp) && times.length > 0;
+  const hasStructuredHeader =
+    Boolean(emp) && (times.length > 0 || isGlobalWeekRule);
 
   const bunchX = jsonNumber(v, "bunch_count");
   const bunchY = jsonNumber(v, "bunch_cap");
@@ -52,8 +55,10 @@ function ViolationCard({ v }: { v: JsonObject }) {
   const roleNameReq = jsonString(v, "required_role_name");
 
   let body: string;
-  if (isOverlap) {
+  if (isSegmentOverlap) {
     body = "התנגשות בין זמנים של משמרות";
+  } else if (isGlobalEventOverlap) {
+    body = message || "התנגשות בזמנים בין אירוע לטיסה";
   } else if (isMaxRow && bunchX !== undefined && bunchY !== undefined) {
     body = `יותר מדי משמרות ברצף, ישנן ${bunchX} כאשר מותרות עד ${bunchY}`;
   } else if (isSyllabus && roleNameEmp && roleNameReq) {
@@ -82,10 +87,14 @@ function ViolationCard({ v }: { v: JsonObject }) {
     >
       <div className="border-b border-black/10 bg-black/10 px-2.5 py-1.5 text-xs leading-snug text-ink">
         <span className="font-medium">{emp}</span>
-        <span className="text-muted">, </span>
-        <span dir="ltr" className="tabular-nums">
-          {times.join(", ")}
-        </span>
+        {times.length > 0 ? (
+          <>
+            <span className="text-muted">, </span>
+            <span dir="ltr" className="tabular-nums">
+              {times.join(", ")}
+            </span>
+          </>
+        ) : null}
       </div>
       <div className={`px-2.5 py-1.5 text-xs leading-snug ${bodyTone}`}>{body}</div>
     </article>
@@ -156,7 +165,9 @@ export function ManningInspectorSidebar({ warnings }: { warnings: JsonObject[] }
   /** Extensible when more inspector menus are added */
   const activeMenu = "warnings" as const;
   const panelId = useId();
-  const hasOverlapError = warnings.some((w) => w.rule === "segment_overlap");
+  const hasOverlapError = warnings.some(
+    (w) => w.rule === "segment_overlap" || w.rule === "global_event_overlap",
+  );
   const warningsPanelOpen = wideOpen && activeMenu === "warnings";
 
   useEffect(() => {

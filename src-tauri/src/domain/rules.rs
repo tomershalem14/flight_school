@@ -1,6 +1,6 @@
-//! Violation checks (three rules) and weekly workload for reports.
+//! Violation checks (shift overlap, max-in-row, syllabus role) plus global-rules warnings.
 
-use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime};
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -399,6 +399,655 @@ fn bunch_ranges(rows: &[DayShiftRow]) -> Vec<(usize, usize)> {
     out
 }
 
+// --- Global rules (warnings) -------------------------------------------------
+
+#[derive(Clone, Debug)]
+struct GlobalRulesSnapshot {
+    rest_between_shifts: i64,
+    rest_between_outer: i64,
+    max_workday_minutes: i64,
+    early_min: i32,
+    late_min: i32,
+    max_late_days: i64,
+    max_early_days: i64,
+    max_days_extreme: i64,
+}
+
+#[derive(Clone, Debug)]
+struct ScheduleEventRow {
+    id: i64,
+    shift_date: String,
+    employee_id: i64,
+    start_time: String,
+    end_time: String,
+    name: String,
+    event_kind: String,
+}
+
+#[derive(Clone, Debug)]
+struct DayShiftWithDate {
+    shift_date: String,
+    row: DayShiftRow,
+}
+
+fn wall_minutes_pair(min_m: i32, max_m: i32) -> i32 {
+    let mut span = max_m - min_m;
+    if span < 0 {
+        span += 24 * 60;
+    }
+    span
+}
+
+fn gap_minutes_same_day(prev_end_hhmm: &str, next_start_hhmm: &str) -> i32 {
+    time_to_minutes(next_start_hhmm) - time_to_minutes(prev_end_hhmm)
+}
+
+fn week_sunday_for_date(d: NaiveDate) -> NaiveDate {
+    d - Duration::days(d.weekday().num_days_from_sunday() as i64)
+}
+
+fn default_global_rules_snapshot() -> GlobalRulesSnapshot {
+    GlobalRulesSnapshot {
+        rest_between_shifts: 0,
+        rest_between_outer: 0,
+        max_workday_minutes: 720,
+        early_min: time_to_minutes("06:00"),
+        late_min: time_to_minutes("22:00"),
+        max_late_days: 0,
+        max_early_days: 0,
+        max_days_extreme: 0,
+    }
+}
+
+fn load_global_rules_snapshot(conn: &Connection) -> rusqlite::Result<GlobalRulesSnapshot> {
+    let row: Option<(
+        i64,
+        i64,
+        i64,
+        String,
+        String,
+        i64,
+        i64,
+        i64,
+    )> = conn
+        .query_row(
+            "SELECT rest_between_shifts, rest_between_outer, max_workday, early_time, late_time,
+                    max_late_days, max_early_days, max_days_extreme
+             FROM global_rules WHERE id = 1",
+            [],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((rbs, rbo, mw, et_early, et_late, mld, mad, mde)) = row else {
+        return Ok(default_global_rules_snapshot());
+    };
+    Ok(GlobalRulesSnapshot {
+        rest_between_shifts: rbs,
+        rest_between_outer: rbo,
+        max_workday_minutes: mw,
+        early_min: time_to_minutes(et_early.trim()),
+        late_min: time_to_minutes(et_late.trim()),
+        max_late_days: mld,
+        max_early_days: mad,
+        max_days_extreme: mde,
+    })
+}
+
+fn load_shifts_range(conn: &Connection, lo: &str, hi: &str) -> rusqlite::Result<Vec<DayShiftWithDate>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.shift_date, s.id, s.employee_id, s.shift_window_id, s.start_time, s.end_time,
+                s.prep_start, s.prep_end, s.rest_start, s.rest_end,
+                s.syllabus_preset_id, sp.joint_prep, sp.joint_rest, sp.max_in_row,
+                w.name AS type_name, e.name AS emp_name
+         FROM shifts s
+         JOIN shift_windows w ON s.shift_window_id = w.id
+         JOIN syllabus_presets sp ON s.syllabus_preset_id = sp.id
+         LEFT JOIN employees e ON s.employee_id = e.id
+         WHERE s.shift_date >= ?1 AND s.shift_date <= ?2 AND s.employee_id IS NOT NULL
+         ORDER BY s.shift_date, s.employee_id, s.start_time, s.id",
+    )?;
+    let rows = stmt
+        .query_map(params![lo, hi], |r| {
+            Ok(DayShiftWithDate {
+                shift_date: r.get(0)?,
+                row: DayShiftRow {
+                    id: r.get(1)?,
+                    employee_id: r.get(2)?,
+                    shift_window_id: r.get(3)?,
+                    start_time: r.get(4)?,
+                    end_time: r.get(5)?,
+                    prep_start: r.get(6)?,
+                    prep_end: r.get(7)?,
+                    rest_start: r.get(8)?,
+                    rest_end: r.get(9)?,
+                    syllabus_preset_id: r.get(10)?,
+                    joint_prep: r.get::<_, i32>(11)? != 0,
+                    joint_rest: r.get::<_, i32>(12)? != 0,
+                    max_in_row: r.get(13)?,
+                    type_name: r.get(14)?,
+                    emp_name: r.get(15)?,
+                },
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn load_schedule_events_range(conn: &Connection, lo: &str, hi: &str) -> rusqlite::Result<Vec<ScheduleEventRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, shift_date, employee_id, start_time, end_time, name, event_kind
+         FROM schedule_events
+         WHERE shift_date >= ?1 AND shift_date <= ?2
+         ORDER BY shift_date, employee_id, start_time, id",
+    )?;
+    let rows = stmt
+        .query_map(params![lo, hi], |r| {
+            Ok(ScheduleEventRow {
+                id: r.get(0)?,
+                shift_date: r.get(1)?,
+                employee_id: r.get(2)?,
+                start_time: r.get(3)?,
+                end_time: r.get(4)?,
+                name: r.get(5)?,
+                event_kind: r.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn fmt_hours_one_dec(minutes: i64) -> String {
+    let h = (minutes as f64 / 60.0 * 10.0).round() / 10.0;
+    format!("{h}")
+}
+
+fn global_rules_violation(
+    rule: &str,
+    severity: &str,
+    message: String,
+    shift_id: Option<i64>,
+    display_employee: Option<String>,
+    display_shift_times: Option<Vec<String>>,
+) -> Violation {
+    Violation {
+        rule: rule.into(),
+        severity: severity.into(),
+        message,
+        shift_id,
+        display_employee,
+        display_shift_times,
+        bunch_count: None,
+        bunch_cap: None,
+        employee_role_level: None,
+        required_role_level: None,
+        employee_role_name: None,
+        required_role_name: None,
+    }
+}
+
+fn global_violation_warning(
+    rule: &str,
+    message: String,
+    shift_id: Option<i64>,
+    display_employee: Option<String>,
+    display_shift_times: Option<Vec<String>>,
+) -> Violation {
+    global_rules_violation(
+        rule,
+        "warning",
+        message,
+        shift_id,
+        display_employee,
+        display_shift_times,
+    )
+}
+
+#[derive(Clone, Debug)]
+struct DayEnvelope {
+    min_start: i32,
+    max_end: i32,
+}
+
+/// Rule 4–6 workday envelope: only `event_kind = event` rows extend the day span.
+fn envelope_for_day(
+    employee_id: i64,
+    date: &str,
+    shifts: &[DayShiftRow],
+    events: &[ScheduleEventRow],
+) -> Option<DayEnvelope> {
+    let mut mins: Vec<i32> = Vec::new();
+    let mut maxs: Vec<i32> = Vec::new();
+    for s in shifts {
+        mins.push(time_to_minutes(s.prep_start.trim()));
+        maxs.push(time_to_minutes(s.rest_end.trim()));
+    }
+    for ev in events.iter().filter(|e| {
+        e.shift_date == date && e.employee_id == employee_id && e.event_kind == "event"
+    }) {
+        mins.push(time_to_minutes(ev.start_time.trim()));
+        maxs.push(time_to_minutes(ev.end_time.trim()));
+    }
+    if mins.is_empty() {
+        return None;
+    }
+    Some(DayEnvelope {
+        min_start: mins.into_iter().min().unwrap_or(0),
+        max_end: maxs.into_iter().max().unwrap_or(0),
+    })
+}
+
+fn collect_employees_on_date(
+    query_date: &str,
+    dated_shifts: &[DayShiftWithDate],
+    events: &[ScheduleEventRow],
+) -> Vec<(i64, Option<String>)> {
+    let mut out: Vec<(i64, Option<String>)> = Vec::new();
+    for d in dated_shifts {
+        if d.shift_date == query_date {
+            let name = d.row.emp_name.clone();
+            if !out.iter().any(|(id, _)| *id == d.row.employee_id) {
+                out.push((d.row.employee_id, name));
+            }
+        }
+    }
+    for ev in events.iter().filter(|e| e.shift_date == query_date) {
+        if !out.iter().any(|(id, _)| *id == ev.employee_id) {
+            out.push((ev.employee_id, None));
+        }
+    }
+    out
+}
+
+fn events_for_emp_date<'a>(
+    events: &'a [ScheduleEventRow],
+    emp: i64,
+    date: &str,
+) -> Vec<&'a ScheduleEventRow> {
+    events
+        .iter()
+        .filter(|e| e.shift_date == date && e.employee_id == emp)
+        .collect()
+}
+
+/// Rule 1.1: shift–calendar overlap uses `event`, `constraint`, and `operational` rows.
+fn schedule_event_kind_blocks_shift_segments(kind: &str) -> bool {
+    matches!(
+        kind.trim(),
+        "event" | "constraint" | "operational"
+    )
+}
+
+fn schedule_calendar_row_label(ev: &ScheduleEventRow) -> String {
+    let prefix = match ev.event_kind.as_str() {
+        "constraint" => "אילוץ",
+        "operational" => "משמרת",
+        _ => "אירוע",
+    };
+    format!("{}: {}", prefix, ev.name.trim())
+}
+
+/// Display name for Rule 6 header: shift rows in loaded range first, else `employees.name`.
+fn employee_name_for_week_rule(
+    conn: &Connection,
+    employee_id: i64,
+    dated: &[DayShiftWithDate],
+) -> rusqlite::Result<String> {
+    if let Some(n) = dated
+        .iter()
+        .find(|d| d.row.employee_id == employee_id)
+        .and_then(|d| d.row.emp_name.clone())
+    {
+        let t = n.trim();
+        if !t.is_empty() {
+            return Ok(t.to_string());
+        }
+    }
+    let n: Option<String> = conn
+        .query_row(
+            "SELECT name FROM employees WHERE id = ?",
+            [employee_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(n
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("מפעיל {}", employee_id)))
+}
+
+fn global_rules_violations_for_query_date(
+    conn: &Connection,
+    query_date: &str,
+) -> rusqlite::Result<Vec<Violation>> {
+    let qd = match NaiveDate::parse_from_str(query_date, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => return Ok(vec![]),
+    };
+    let week_sun = week_sunday_for_date(qd);
+    let week_sat = week_sun + Duration::days(6);
+    let load_lo = (week_sun - Duration::days(1)).format("%Y-%m-%d").to_string();
+    let load_hi = (week_sat + Duration::days(1)).format("%Y-%m-%d").to_string();
+    let prev_d = (qd - Duration::days(1)).format("%Y-%m-%d").to_string();
+    let next_d = (qd + Duration::days(1)).format("%Y-%m-%d").to_string();
+
+    let rules = load_global_rules_snapshot(conn)?;
+    let dated = load_shifts_range(conn, &load_lo, &load_hi)?;
+    let events = load_schedule_events_range(conn, &load_lo, &load_hi)?;
+
+    let mut violations: Vec<Violation> = Vec::new();
+    let employees = collect_employees_on_date(query_date, &dated, &events);
+
+    for (emp_id, emp_name_opt) in employees {
+        let emp_name = emp_name_opt.clone();
+        let shifts_q: Vec<DayShiftRow> = dated
+            .iter()
+            .filter(|d| d.shift_date == query_date && d.row.employee_id == emp_id)
+            .map(|d| d.row.clone())
+            .collect();
+        let ev_q: Vec<&ScheduleEventRow> = events_for_emp_date(&events, emp_id, query_date);
+
+        // Rule 1.1: calendar rows (event | constraint | operational) vs any shift segment;
+        // one violation per (shift, calendar row); message uses flight window only.
+        let mut seen_shift_event: std::collections::HashSet<(i64, i64)> =
+            std::collections::HashSet::new();
+        for s in &shifts_q {
+            for ev in ev_q
+                .iter()
+                .filter(|e| schedule_event_kind_blocks_shift_segments(&e.event_kind))
+            {
+                let overlaps = s.overlap_segments().iter().any(|(a0, a1, _)| {
+                    intervals_overlap_hhmm(a0, a1, ev.start_time.trim(), ev.end_time.trim())
+                });
+                if !overlaps {
+                    continue;
+                }
+                if !seen_shift_event.insert((s.id, ev.id)) {
+                    continue;
+                }
+                let flight_rng = format_flight_range(&s.start_time, &s.end_time);
+                let msg = "התנגשות בזמנים בין אירוע לטיסה".to_string();
+                let times = vec![flight_rng.clone(), schedule_calendar_row_label(ev)];
+                violations.push(global_rules_violation(
+                    "global_event_overlap",
+                    "error",
+                    msg,
+                    Some(s.id),
+                    emp_name.clone(),
+                    Some(times),
+                ));
+            }
+        }
+
+        // Rule 1.2: gaps between consecutive bunches (same day)
+        if !shifts_q.is_empty() {
+            let bunches = bunch_ranges(&shifts_q);
+            for bi in 0..bunches.len().saturating_sub(1) {
+                let (_s0, e0) = bunches[bi];
+                let (s1, _e1) = bunches[bi + 1];
+                let last_in_b0 = &shifts_q[e0 - 1];
+                let first_in_b1 = &shifts_q[s1];
+                let gap_flight = gap_minutes_same_day(&last_in_b0.end_time, &first_in_b1.start_time);
+                if rules.rest_between_shifts > 0 && (gap_flight as i64) < rules.rest_between_shifts {
+                    let msg = format!(
+                        "מנוחה קצרה מדי בין טיסות, {} דק' כאשר נדרש {} דק'",
+                        gap_flight, rules.rest_between_shifts
+                    );
+                    violations.push(global_violation_warning(
+                        "global_rest_between_shifts",
+                        msg,
+                        Some(first_in_b1.id),
+                        emp_name.clone(),
+                        Some(vec![
+                            format_flight_range(&last_in_b0.start_time, &last_in_b0.end_time),
+                            format_flight_range(&first_in_b1.start_time, &first_in_b1.end_time),
+                        ]),
+                    ));
+                }
+                let gap_outer =
+                    gap_minutes_same_day(&last_in_b0.rest_end, &first_in_b1.prep_start);
+                if rules.rest_between_outer > 0 && (gap_outer as i64) < rules.rest_between_outer {
+                    let msg = format!(
+                        "מנוחה קצרה מדי בין תחקיר לתדריך, {} דק' כאשר נדרש {} דק'",
+                        gap_outer, rules.rest_between_outer
+                    );
+                    violations.push(global_violation_warning(
+                        "global_rest_between_outer",
+                        msg,
+                        Some(first_in_b1.id),
+                        emp_name.clone(),
+                        Some(vec![
+                            format_flight_range(&last_in_b0.rest_start, &last_in_b0.rest_end),
+                            format_flight_range(&first_in_b1.prep_start, &first_in_b1.prep_end),
+                        ]),
+                    ));
+                }
+            }
+        }
+
+        // Rule 4: max workday (same calendar envelope)
+        let ev_day: Vec<ScheduleEventRow> = events
+            .iter()
+            .filter(|e| e.shift_date == query_date && e.employee_id == emp_id)
+            .cloned()
+            .collect();
+        if let Some(env) = envelope_for_day(emp_id, query_date, &shifts_q, &ev_day) {
+            let span = wall_minutes_pair(env.min_start, env.max_end);
+            if span as i64 > rules.max_workday_minutes {
+                let msg = format!(
+                    "יום עבודה ארוך מדי, {} שע' כאשר מותר עד' {} שע'",
+                    fmt_hours_one_dec(span as i64),
+                    fmt_hours_one_dec(rules.max_workday_minutes)
+                );
+                let sid = shifts_q
+                    .iter()
+                    .max_by_key(|s| time_to_minutes(s.rest_end.trim()))
+                    .map(|s| s.id)
+                    .or_else(|| shifts_q.first().map(|s| s.id));
+                violations.push(global_violation_warning(
+                    "global_max_workday",
+                    msg,
+                    sid,
+                    emp_name.clone(),
+                    shifts_q
+                        .first()
+                        .map(|s| vec![format_flight_range(&s.start_time, &s.end_time)]),
+                ));
+            }
+        }
+
+        // Rule 5: cross-day (needs envelope on query_date even if max-workday not exceeded)
+        let ev_day5 = ev_day.clone();
+        if let Some(env) = envelope_for_day(emp_id, query_date, &shifts_q, &ev_day5) {
+            if let Some(env_prev) = envelope_from_maps(emp_id, &prev_d, &dated, &events) {
+                if env_prev.max_end > rules.late_min && env.min_start < rules.early_min {
+                    violations.push(global_violation_warning(
+                        "global_cross_day_early_late_prev",
+                        "יום עבודה מתחיל מוקדם והיום הקודם נגמר מאוחר".into(),
+                        shifts_q.first().map(|s| s.id),
+                        emp_name.clone(),
+                        shifts_q.first().map(|s| {
+                            vec![format_flight_range(&s.prep_start, &s.rest_end)]
+                        }),
+                    ));
+                }
+            }
+            if let Some(env_next) = envelope_from_maps(emp_id, &next_d, &dated, &events) {
+                if env.max_end > rules.late_min && env_next.min_start < rules.early_min {
+                    violations.push(global_violation_warning(
+                        "global_cross_day_early_late_next",
+                        "יום עבודה נגמר מאוחר והיום הבא מתחיל מוקדם".into(),
+                        shifts_q.first().map(|s| s.id),
+                        emp_name.clone(),
+                        shifts_q.first().map(|s| {
+                            vec![format_flight_range(&s.prep_start, &s.rest_end)]
+                        }),
+                    ));
+                }
+            }
+        }
+    }
+
+    // Rule 6: weekly caps (Sun–Sat) — at most one warning per (rule, employee).
+    let week_start_s = week_sun.format("%Y-%m-%d").to_string();
+    let week_end_s = week_sat.format("%Y-%m-%d").to_string();
+    let mut emps_week: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for d in &dated {
+        if d.shift_date >= week_start_s && d.shift_date <= week_end_s {
+            emps_week.insert(d.row.employee_id);
+        }
+    }
+    for ev in &events {
+        if ev.shift_date >= week_start_s && ev.shift_date <= week_end_s {
+            emps_week.insert(ev.employee_id);
+        }
+    }
+
+    for eid in emps_week {
+        let ename = employee_name_for_week_rule(conn, eid, &dated)?;
+        let mut late_days = 0i64;
+        let mut early_days = 0i64;
+        let mut extreme_days = 0i64;
+        let mut d0 = week_sun;
+        while d0 <= week_sat {
+            let ds = d0.format("%Y-%m-%d").to_string();
+            let sh: Vec<DayShiftRow> = dated
+                .iter()
+                .filter(|x| x.shift_date == ds && x.row.employee_id == eid)
+                .map(|x| x.row.clone())
+                .collect();
+            let evd: Vec<ScheduleEventRow> = events
+                .iter()
+                .filter(|x| x.shift_date == ds && x.employee_id == eid)
+                .cloned()
+                .collect();
+            if let Some(env) = envelope_for_day(eid, &ds, &sh, &evd) {
+                let late = env.max_end > rules.late_min;
+                let early = env.min_start < rules.early_min;
+                if late {
+                    late_days += 1;
+                }
+                if early {
+                    early_days += 1;
+                }
+                if late || early {
+                    extreme_days += 1;
+                }
+            }
+            d0 += Duration::days(1);
+        }
+
+        // Only surface each week-cap warning on calendar days that contribute to that cap.
+        let sh_query: Vec<DayShiftRow> = dated
+            .iter()
+            .filter(|x| x.shift_date == query_date && x.row.employee_id == eid)
+            .map(|x| x.row.clone())
+            .collect();
+        let ev_query: Vec<ScheduleEventRow> = events
+            .iter()
+            .filter(|x| x.shift_date == query_date && x.employee_id == eid)
+            .cloned()
+            .collect();
+        let query_env = envelope_for_day(eid, query_date, &sh_query, &ev_query);
+        let query_day_late = query_env
+            .as_ref()
+            .is_some_and(|e| e.max_end > rules.late_min);
+        let query_day_early = query_env
+            .as_ref()
+            .is_some_and(|e| e.min_start < rules.early_min);
+        let query_day_extreme = query_day_late || query_day_early;
+
+        if late_days > rules.max_late_days && query_day_late {
+            violations.push(global_violation_warning(
+                "global_week_late_days",
+                format!(
+                    "יותר מדי ימים מאוחרים בשבוע, {} כאשר מותר עד {}",
+                    late_days, rules.max_late_days
+                ),
+                None,
+                Some(ename.clone()),
+                None,
+            ));
+        }
+        if early_days > rules.max_early_days && query_day_early {
+            violations.push(global_violation_warning(
+                "global_week_early_days",
+                format!(
+                    "יותר מדי ימים מוקדמים בשבוע, {} כאשר מותר עד {}",
+                    early_days, rules.max_early_days
+                ),
+                None,
+                Some(ename.clone()),
+                None,
+            ));
+        }
+        if extreme_days > rules.max_days_extreme && query_day_extreme {
+            violations.push(global_violation_warning(
+                "global_week_extreme_days",
+                format!(
+                    "יותר מדי ימים קיצוניים בשבוע, {} כאשר מותר עד {}",
+                    extreme_days, rules.max_days_extreme
+                ),
+                None,
+                Some(ename.clone()),
+                None,
+            ));
+        }
+    }
+
+    Ok(dedupe_global_week_violations(violations))
+}
+
+/// At most one `global_week_*` row per (`rule`, `display_employee`) in a single response.
+fn dedupe_global_week_violations(violations: Vec<Violation>) -> Vec<Violation> {
+    let mut seen: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
+    let mut out: Vec<Violation> = Vec::with_capacity(violations.len());
+    for v in violations {
+        if v.rule.starts_with("global_week") {
+            let key = (
+                v.rule.clone(),
+                v.display_employee.clone().unwrap_or_default(),
+            );
+            if !seen.insert(key) {
+                continue;
+            }
+        }
+        out.push(v);
+    }
+    out
+}
+
+/// Build envelope for (emp, date) using preloaded `dated` + `events` (no extra DB).
+fn envelope_from_maps(
+    emp_id: i64,
+    date: &str,
+    dated: &[DayShiftWithDate],
+    events: &[ScheduleEventRow],
+) -> Option<DayEnvelope> {
+    let shifts: Vec<DayShiftRow> = dated
+        .iter()
+        .filter(|d| d.shift_date == date && d.row.employee_id == emp_id)
+        .map(|d| d.row.clone())
+        .collect();
+    let evd: Vec<ScheduleEventRow> = events
+        .iter()
+        .filter(|e| e.shift_date == date && e.employee_id == emp_id)
+        .cloned()
+        .collect();
+    envelope_for_day(emp_id, date, &shifts, &evd)
+}
+
 /// Rule 2: one violation per violating bunch; `shift_id` = first shift in bunch (timeline order).
 fn max_in_row_violations_for_date(
     conn: &Connection,
@@ -562,6 +1211,25 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
         }
     }
 
+    let emp_name: Option<String> = conn
+        .query_row(
+            "SELECT e.name FROM shifts s JOIN employees e ON s.employee_id = e.id WHERE s.id = ?",
+            [shift_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+
+    for v in global_rules_violations_for_query_date(conn, &shift_date)? {
+        let applies = v.shift_id == Some(shift_id)
+            || v.display_employee
+                .as_deref()
+                .zip(emp_name.as_deref())
+                .is_some_and(|(a, b)| a == b);
+        if applies {
+            violations.push(v);
+        }
+    }
+
     Ok(violations)
 }
 
@@ -581,6 +1249,9 @@ pub fn check_all_violations_for_date(conn: &Connection, shift_date: &str) -> rus
         if let Some(v) = syllabus_role_level_violation(conn, id)? {
             all.push(v.to_json());
         }
+    }
+    for v in global_rules_violations_for_query_date(conn, shift_date)? {
+        all.push(v.to_json());
     }
     Ok(all)
 }
@@ -655,6 +1326,32 @@ mod tests {
     fn time_to_minutes_parses() {
         assert_eq!(time_to_minutes("08:30"), 8 * 60 + 30);
         assert_eq!(time_to_minutes("00:00"), 0);
+    }
+
+    #[test]
+    fn week_sunday_for_date_monday_returns_previous_sunday() {
+        let mon = NaiveDate::from_ymd_opt(2025, 6, 9).unwrap();
+        assert_eq!(
+            week_sunday_for_date(mon),
+            NaiveDate::from_ymd_opt(2025, 6, 8).unwrap()
+        );
+    }
+
+    #[test]
+    fn week_sunday_for_date_sunday_is_identity() {
+        let sun = NaiveDate::from_ymd_opt(2025, 6, 8).unwrap();
+        assert_eq!(week_sunday_for_date(sun), sun);
+    }
+
+    #[test]
+    fn gap_minutes_same_day_between_flights() {
+        assert_eq!(gap_minutes_same_day("10:00", "11:00"), 60);
+        assert_eq!(gap_minutes_same_day("10:00", "10:00"), 0);
+    }
+
+    #[test]
+    fn wall_minutes_pair_same_day_span() {
+        assert_eq!(wall_minutes_pair(time_to_minutes("06:00"), time_to_minutes("18:00")), 12 * 60);
     }
 
     #[test]

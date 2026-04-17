@@ -53,6 +53,7 @@ pub fn get_shifts(state: State<'_, AppState>, week_start: String) -> Result<Vec<
         .map_err(|e| e.to_string())
 }
 
+/// Inclusive end of the 7-day window: `week_start` + 6 days (expects Sunday `week_start` from the client).
 pub(crate) fn parse_week_end(week_start: &str) -> Result<String, AppError> {
     let dt = NaiveDate::parse_from_str(week_start, "%Y-%m-%d")
         .map_err(|_| AppError::msg("פורמט תאריך שגוי - השתמש ב-YYYY-MM-DD"))?;

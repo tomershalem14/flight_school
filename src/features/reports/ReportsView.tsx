@@ -1,12 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { useAppStore } from "../../app/store";
-import { formatYmd, getMonday } from "../../shared/dates";
+import { formatYmd, getSunday } from "../../shared/dates";
 import * as api from "../../shared/api";
 
 export function ReportsView() {
   const reportWeekStart = useAppStore((s) => s.reportWeekStart);
   const setReportWeekStart = useAppStore((s) => s.setReportWeekStart);
-  const weekStr = formatYmd(getMonday(reportWeekStart));
+  const weekStr = formatYmd(getSunday(reportWeekStart));
 
   const { data: shiftCount = [] } = useQuery({
     queryKey: ["shift_count", weekStr],
@@ -26,7 +26,7 @@ export function ReportsView() {
           type="date"
           value={weekStr}
           onChange={(e) =>
-            setReportWeekStart(getMonday(new Date(e.target.value + "T12:00:00")))
+            setReportWeekStart(getSunday(new Date(e.target.value + "T12:00:00")))
           }
         />
       </div>
