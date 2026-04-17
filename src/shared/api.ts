@@ -139,26 +139,20 @@ export async function getDayViolations(date: string): Promise<JsonObject[]> {
   return invoke("get_day_violations", { date });
 }
 
-export async function getConstraints(employee_id?: number): Promise<JsonObject[]> {
-  if (employee_id !== undefined) {
-    return invoke("get_constraints", { employeeId: employee_id });
-  }
-  return invoke("get_constraints", {});
+export async function getScheduleEvents(week_start: string): Promise<JsonObject[]> {
+  return invoke("get_schedule_events", { weekStart: week_start });
 }
 
-export async function createConstraint(payload: JsonObject): Promise<JsonObject> {
-  return invoke("create_constraint", { payload });
+export async function createScheduleEvent(payload: JsonObject): Promise<JsonObject> {
+  return invoke("create_schedule_event", { payload });
 }
 
-export async function updateConstraint(
-  con_id: number,
-  payload: JsonObject,
-): Promise<JsonObject> {
-  return invoke("update_constraint", { conId: con_id, payload });
+export async function updateScheduleEvent(payload: JsonObject): Promise<JsonObject> {
+  return invoke("update_schedule_event", { payload });
 }
 
-export async function deleteConstraint(con_id: number): Promise<JsonObject> {
-  return invoke("delete_constraint", { conId: con_id });
+export async function deleteScheduleEvent(event_id: number): Promise<JsonObject> {
+  return invoke("delete_schedule_event", { eventId: event_id });
 }
 
 export async function getWorkloadReport(week_start: string): Promise<JsonObject[]> {

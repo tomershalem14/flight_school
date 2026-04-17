@@ -254,32 +254,6 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
         }
     }
 
-    // Rule 5: constraints
-    let mut cstmt = conn.prepare(
-        "SELECT constraint_type, reason FROM constraints
-         WHERE employee_id = ?
-           AND start_datetime <= ? AND end_datetime >= ?",
-    )?;
-    let end_dt = format!("{} {}", shift_date, shift.end_time);
-    let start_dt = format!("{} {}", shift_date, shift.start_time);
-    let cons = cstmt.query_map(params![emp_id, end_dt, start_dt], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-    })?;
-    for c in cons.flatten() {
-        let reason = c.1.unwrap_or_default();
-        let label = if reason.is_empty() {
-            c.0.clone()
-        } else {
-            reason
-        };
-        violations.push(Violation {
-            rule: "employee_constraint".into(),
-            severity: "error".into(),
-            message: format!("'{en}' - מאויש בזמן שהוגדר כאילוץ: {label}"),
-            shift_id: Some(shift_id),
-        });
-    }
-
     Ok(violations)
 }
 

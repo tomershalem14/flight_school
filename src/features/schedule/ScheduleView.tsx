@@ -19,6 +19,8 @@ import {
   useRef,
   useState,
 } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
+import { createPortal } from "react-dom";
 import { useAppStore, weekStartString } from "../../app/store";
 import type { JsonObject } from "../../shared/api";
 import * as api from "../../shared/api";
@@ -75,6 +77,9 @@ import {
   MatrixDraggableTypeSlotPill,
   MatrixEmployeeHourDropZone,
   MatrixEmployeePrepRestBands,
+  MatrixEventCreatePopup,
+  MatrixScheduleEventBar,
+  type ScheduleMatrixEventKind,
 } from "./components/MatrixScheduleParts";
 import { RemoteRegInline } from "./components/RemoteRegInline";
 import {
@@ -85,10 +90,38 @@ import {
   clientXToSnappedMatrixMs,
   employeeTbodyRowIndexFromPoint,
   formatLocalHmFromMs,
+  formatMatrixEventPersistHmForPopup,
   isPointerOverMatrixTimeGrid,
+  matrixFrameSnappedEdges,
+  matrixRangeDayEdgeFlags,
+  matrixRangePersistTimes,
   normalizeRangeMs,
   shouldSuppressMatrixHoverGuide,
 } from "./helpers/matrixHoverSnap";
+import {
+  clampScheduleEventResizeToPersist,
+  scheduleEventWallIntervalMsSameDay,
+} from "./helpers/scheduleEventResize";
+import {
+  buildOptimisticShiftRowTemplate,
+  type CreateShiftMutationVars,
+  type ScheduleEventCreatePayload,
+  invalidateViolationsDeferred,
+  restoreList,
+  rollbackScheduleEventCreate,
+  scheduleDelayedShiftsRefetch,
+  scheduleEventCreateOnMutate,
+  scheduleEventCreateOnSuccess,
+  scheduleEventDeleteOnMutate,
+  scheduleEventUpdateOnMutate,
+  shiftCreateOnMutate,
+  shiftCreateOnSuccess,
+  shiftDeleteOnMutate,
+  shiftReassignOnMutate,
+  shiftReassignOnSuccess,
+  shiftsListKey,
+  scheduleEventsListKey,
+} from "./helpers/scheduleMatrixQueryCache";
 
 type MatrixHoverGuideUi = {
   snappedMs: number;
@@ -222,6 +255,18 @@ export function ScheduleView() {
     [shifts, dateStr],
   );
 
+  const { data: scheduleEventsRaw = [] } = useQuery({
+    queryKey: ["schedule_events", weekStr],
+    queryFn: () => api.getScheduleEvents(weekStr),
+  });
+  const dayScheduleEvents = useMemo(
+    () =>
+      (scheduleEventsRaw as JsonObject[]).filter(
+        (ev) => String(ev.shift_date ?? "") === dateStr,
+      ),
+    [scheduleEventsRaw, dateStr],
+  );
+
   const { data: employeeOrderPresetsRaw = [] } = useQuery({
     queryKey: ["employee_order_presets"],
     queryFn: () => api.listEmployeeOrderPresets(),
@@ -267,6 +312,20 @@ export function ScheduleView() {
   /** Finished empty-cell range: same band as drag, cleared on next pointerdown / day / pill drag. */
   const [matrixRangeCommittedBand, setMatrixRangeCommittedBand] =
     useState<MatrixRangeDragUi | null>(null);
+  /** Range-drag finished: show create popup anchored to band. */
+  const [matrixEventCreateDraft, setMatrixEventCreateDraft] = useState<{
+    employeeId: number;
+    rowIndex: number;
+    loMs: number;
+    hiMs: number;
+    persistStartHm: string;
+    persistEndHm: string;
+    nameInput: string;
+  } | null>(null);
+  const [matrixEventPopupPos, setMatrixEventPopupPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
 
   // --- Refs ---
   /** Last `onDragOver` droppable id (for drag-end diagnostics). Highlight uses imperative DOM updates to avoid full-matrix re-renders. */
@@ -295,7 +354,44 @@ export function ScheduleView() {
   const matrixHoverRafRef = useRef<number | null>(null);
   const matrixHoverPendingRef = useRef<{ x: number; y: number } | null>(null);
   const blockMatrixHoverGuideRef = useRef(false);
+  const scheduleEventResizeActiveRef = useRef(false);
+
+  type ScheduleEventResizeSession = {
+    eventId: number;
+    edge: "start" | "end";
+    pointerId: number;
+    origStartHm: string;
+    origEndHm: string;
+    origPersistStart: string;
+    origPersistEnd: string;
+  };
+
+  type ScheduleEventResizeDraft = {
+    eventId: number;
+    loMs: number;
+    hiMs: number;
+    persistStartHm: string;
+    persistEndHm: string;
+  };
+
+  const scheduleEventResizeSessionRef = useRef<ScheduleEventResizeSession | null>(
+    null,
+  );
   blockMatrixHoverGuideRef.current = activeDragHighlightMs != null;
+
+  const [scheduleEventResizeDraft, setScheduleEventResizeDraft] =
+    useState<ScheduleEventResizeDraft | null>(null);
+  const scheduleEventResizeDraftRef = useRef<ScheduleEventResizeDraft | null>(
+    null,
+  );
+  const scheduleEventResizeBodyCleanupRef = useRef<(() => void) | null>(null);
+  /** Negative ids for optimistic schedule_events rows until `create` returns the real id. */
+  const scheduleEventCreateOptimisticIdRef = useRef(0);
+  const shiftCreateOptimisticIdRef = useRef(0);
+
+  useEffect(() => {
+    scheduleEventResizeDraftRef.current = scheduleEventResizeDraft;
+  }, [scheduleEventResizeDraft]);
 
   const matrixRangePendingRef = useRef<MatrixRangePending | null>(null);
   /** Stable layout roots for the active range gesture (avoid ref nulls mid-gesture when React re-renders). */
@@ -311,6 +407,8 @@ export function ScheduleView() {
   const matrixRangeBodyPointerCleanupRef = useRef<(() => void) | null>(null);
   const matrixRangeEndGestureRef = useRef<(e: PointerEvent) => void>(() => {});
   const matrixRangeMoveRef = useRef<(e: PointerEvent) => void>(() => {});
+  const matrixEventCreatePopupRef = useRef<HTMLDivElement>(null);
+  const matrixRangeBandMeasureRef = useRef<HTMLDivElement>(null);
 
   const [matrixUnifiedBand, setMatrixUnifiedBand] = useState<{
     top: number;
@@ -480,6 +578,15 @@ export function ScheduleView() {
 
   const matrixRangeBandUi = matrixRangeDrag ?? matrixRangeCommittedBand;
 
+  const matrixRangeBandEdgeFlags = useMemo(() => {
+    if (!matrixRangeBandUi || !scheduleMatrixFrame) return null;
+    const [lo, hi] = normalizeRangeMs(
+      matrixRangeBandUi.anchorMs,
+      matrixRangeBandUi.currentMs,
+    );
+    return matrixRangeDayEdgeFlags(dateStr, lo, hi, scheduleMatrixFrame);
+  }, [matrixRangeBandUi, scheduleMatrixFrame, dateStr]);
+
   useLayoutEffect(() => {
     if (matrixCommittedBandLayoutKey == null) return;
     refreshMatrixCommittedBandLayout();
@@ -512,8 +619,12 @@ export function ScheduleView() {
   ]);
 
   useEffect(() => {
-    const clear = () => {
+    const clear = (ev: PointerEvent) => {
+      const t = ev.target;
+      if (t instanceof Node && matrixEventCreatePopupRef.current?.contains(t)) return;
       setMatrixRangeCommittedBand(null);
+      setMatrixEventCreateDraft(null);
+      setMatrixEventPopupPos(null);
     };
     document.addEventListener("pointerdown", clear, true);
     return () => document.removeEventListener("pointerdown", clear, true);
@@ -521,7 +632,49 @@ export function ScheduleView() {
 
   useEffect(() => {
     setMatrixRangeCommittedBand(null);
+    setMatrixEventCreateDraft(null);
+    setMatrixEventPopupPos(null);
+    scheduleEventResizeBodyCleanupRef.current?.();
+    scheduleEventResizeSessionRef.current = null;
+    scheduleEventResizeActiveRef.current = false;
+    setScheduleEventResizeDraft(null);
   }, [dateStr]);
+
+  useLayoutEffect(() => {
+    if (!matrixEventCreateDraft || !matrixRangeCommittedBand) {
+      setMatrixEventPopupPos(null);
+      return;
+    }
+    const el = matrixRangeBandMeasureRef.current;
+    if (!el) {
+      setMatrixEventPopupPos(null);
+      return;
+    }
+    const r = el.getBoundingClientRect();
+    const margin = 8;
+    const popW = 200;
+    const popH = 220;
+    let left = r.right + 4;
+    let top = r.bottom + 4;
+    left = Math.min(left, window.innerWidth - popW - margin);
+    top = Math.min(top, window.innerHeight - popH - margin);
+    top = Math.max(margin, top);
+    left = Math.max(margin, left);
+    setMatrixEventPopupPos({ top, left });
+  }, [matrixEventCreateDraft, matrixCommittedBandLayoutKey, matrixRangeCommittedBand]);
+
+  useEffect(() => {
+    if (!matrixEventCreateDraft) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") {
+        setMatrixEventCreateDraft(null);
+        setMatrixEventPopupPos(null);
+        setMatrixRangeCommittedBand(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [matrixEventCreateDraft]);
 
   const flushMatrixHoverGuide = useCallback(() => {
     matrixHoverRafRef.current = null;
@@ -530,7 +683,7 @@ export function ScheduleView() {
       setMatrixHoverGuide(null);
       return;
     }
-    if (blockMatrixHoverGuideRef.current) {
+    if (blockMatrixHoverGuideRef.current || scheduleEventResizeActiveRef.current) {
       setMatrixHoverGuide(null);
       return;
     }
@@ -552,6 +705,11 @@ export function ScheduleView() {
     }
     const snapped = clientXToSnappedMatrixMs(p.x, th, frame, matrixRangeMs);
     if (snapped == null) {
+      setMatrixHoverGuide(null);
+      return;
+    }
+    const { earliestMs, latestMs } = matrixFrameSnappedEdges(frame);
+    if (snapped === earliestMs || snapped === latestMs) {
       setMatrixHoverGuide(null);
       return;
     }
@@ -594,7 +752,13 @@ export function ScheduleView() {
   /** Range gesture entry from the matrix scroll container (`pointerdown` capture). */
   const tryStartMatrixRangeFromPointerDown = useCallback((e: PointerEvent): boolean => {
       if (e.button !== 0) return false;
-      if (blockMatrixHoverGuideRef.current) return false;
+      const target = e.target;
+      if (target instanceof Element && target.closest("[data-matrix-schedule-event]")) {
+        return false;
+      }
+      if (blockMatrixHoverGuideRef.current || scheduleEventResizeActiveRef.current) {
+        return false;
+      }
       const scroll = matrixScrollRef.current;
       const wrap = matrixTableWrapRef.current;
       const th = matrixHourStripThRef.current;
@@ -688,6 +852,12 @@ export function ScheduleView() {
     matrixRangeDragRef.current = null;
     setMatrixRangeDrag(null);
     setMatrixRangeCommittedBand(null);
+    setMatrixEventCreateDraft(null);
+    setMatrixEventPopupPos(null);
+    scheduleEventResizeBodyCleanupRef.current?.();
+    scheduleEventResizeSessionRef.current = null;
+    scheduleEventResizeActiveRef.current = false;
+    setScheduleEventResizeDraft(null);
   }, [activeDragHighlightMs]);
 
   useEffect(() => {
@@ -758,6 +928,16 @@ export function ScheduleView() {
               anchorMs: lo,
               currentMs: hi,
               ...layout,
+            });
+            const persist = matrixRangePersistTimes(dateStr, lo, hi, frame);
+            setMatrixEventCreateDraft({
+              employeeId: drag.employeeId,
+              rowIndex: drag.rowIndex,
+              loMs: lo,
+              hiMs: hi,
+              persistStartHm: persist.persistStartHm,
+              persistEndHm: persist.persistEndHm,
+              nameInput: "",
             });
           }
         }
@@ -893,7 +1073,14 @@ export function ScheduleView() {
         matrixHoverRafRef.current = null;
       }
     };
-  }, [hours.length, flushMatrixHoverGuide, scheduleMatrixFrame, matrixRangeMs, tryStartMatrixRangeFromPointerDown]);
+  }, [
+    dateStr,
+    hours.length,
+    flushMatrixHoverGuide,
+    scheduleMatrixFrame,
+    matrixRangeMs,
+    tryStartMatrixRangeFromPointerDown,
+  ]);
 
   /** `onDragOver` can run before the highlight layer mounts; sync fill once layout exists. */
   useLayoutEffect(() => {
@@ -930,50 +1117,284 @@ export function ScheduleView() {
         shift_id: args.shift_id,
         employee_id: args.employee_id,
       }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["shifts"] });
-      qc.invalidateQueries({ queryKey: ["violations"] });
+    onMutate: (args) =>
+      shiftReassignOnMutate({
+        qc,
+        weekStr,
+        shiftId: args.shift_id,
+        employeeId: args.employee_id,
+      }),
+    onSuccess: (data, variables) => {
+      shiftReassignOnSuccess({
+        qc,
+        weekStr,
+        oldShiftId: variables.shift_id,
+        data: data as JsonObject,
+      });
+      invalidateViolationsDeferred(qc);
+      scheduleDelayedShiftsRefetch(qc, weekStr);
     },
-    onError: (err) => {
+    onError: (err, _args, context) => {
+      restoreList(qc, shiftsListKey(weekStr), context?.previous);
       alert(errorMessageFromUnknown(err));
     },
   });
 
   const createMut = useMutation({
-    mutationFn: (args: {
-      shift_window_id: number;
-      employee_id: number;
-      syllabus_num: number;
-      syllabus_role_id?: number;
-    }) =>
-      api.createShift({
+    mutationFn: (args: CreateShiftMutationVars) => {
+      const { optimisticRow: _ignored, ...rest } = args;
+      return api.createShift({
         shift_date: dateStr,
-        shift_window_id: args.shift_window_id,
-        syllabus_num: args.syllabus_num,
-        employee_id: args.employee_id,
-        ...(args.syllabus_role_id != null
-          ? { syllabus_role_id: args.syllabus_role_id }
+        shift_window_id: rest.shift_window_id,
+        syllabus_num: rest.syllabus_num,
+        employee_id: rest.employee_id,
+        ...(rest.syllabus_role_id != null
+          ? { syllabus_role_id: rest.syllabus_role_id }
           : {}),
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["shifts"] });
-      qc.invalidateQueries({ queryKey: ["violations"] });
+      });
     },
-    onError: (err) => {
+    onMutate: (args) =>
+      shiftCreateOnMutate({
+        qc,
+        weekStr,
+        optimisticRow: args.optimisticRow,
+        tempIdRef: shiftCreateOptimisticIdRef,
+      }),
+    onSuccess: (data, _variables, context) => {
+      shiftCreateOnSuccess({
+        qc,
+        weekStr,
+        data: data as JsonObject,
+        tempId: context?.tempId,
+      });
+      invalidateViolationsDeferred(qc);
+    },
+    onError: (err, _args, context) => {
+      restoreList(qc, shiftsListKey(weekStr), context?.previous);
       alert(errorMessageFromUnknown(err));
     },
   });
 
   const deleteMut = useMutation({
     mutationFn: (id: number) => api.deleteShift(id),
+    onMutate: (id) => shiftDeleteOnMutate({ qc, weekStr, shiftId: id }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["shifts"] });
-      qc.invalidateQueries({ queryKey: ["violations"] });
+      invalidateViolationsDeferred(qc);
     },
-    onError: (err) => {
+    onError: (err, _id, context) => {
+      restoreList(qc, shiftsListKey(weekStr), context?.previous);
       alert(errorMessageFromUnknown(err));
     },
   });
+
+  const scheduleEventCreateMut = useMutation({
+    mutationFn: (payload: JsonObject) => api.createScheduleEvent(payload),
+    /** Synchronous: append the new row and dismiss create UI in the same frame so the bar never vanishes. */
+    onMutate: (payload) =>
+      scheduleEventCreateOnMutate({
+        qc,
+        weekStr,
+        payload: payload as ScheduleEventCreatePayload,
+        tempIdRef: scheduleEventCreateOptimisticIdRef,
+        sortedEmployees,
+        employees,
+        clearCreateUi: () => {
+          setMatrixEventCreateDraft(null);
+          setMatrixEventPopupPos(null);
+          setMatrixRangeCommittedBand(null);
+        },
+      }),
+    onError: (err, _payload, context) => {
+      rollbackScheduleEventCreate(qc, weekStr, context);
+      alert(errorMessageFromUnknown(err));
+    },
+    onSuccess: (data, _variables, context) => {
+      scheduleEventCreateOnSuccess({
+        qc,
+        weekStr,
+        data: data as JsonObject,
+        tempId: context?.tempId,
+      });
+      invalidateViolationsDeferred(qc);
+    },
+  });
+
+  const scheduleEventDeleteMut = useMutation({
+    mutationFn: (id: number) => api.deleteScheduleEvent(id),
+    onMutate: (id) => scheduleEventDeleteOnMutate({ qc, weekStr, eventId: id }),
+    onSuccess: () => {
+      invalidateViolationsDeferred(qc);
+    },
+    onError: (err, _id, context) => {
+      restoreList(qc, scheduleEventsListKey(weekStr), context?.previous);
+      alert(errorMessageFromUnknown(err));
+    },
+  });
+
+  const scheduleEventUpdateMut = useMutation({
+    mutationFn: (payload: JsonObject) => api.updateScheduleEvent(payload),
+    /** Must stay synchronous: `mutate()` does not await async `onMutate`, so the UI clears the resize draft in the same tick. */
+    onMutate: (payload) =>
+      scheduleEventUpdateOnMutate({ qc, weekStr, payload }),
+    onError: (err, _payload, context) => {
+      restoreList(qc, scheduleEventsListKey(weekStr), context?.previous);
+      alert(errorMessageFromUnknown(err));
+    },
+    onSuccess: () => {
+      invalidateViolationsDeferred(qc);
+    },
+  });
+
+  const beginScheduleEventResize = useCallback(
+    (
+      eventId: number,
+      edge: "start" | "end",
+      startHmRaw: unknown,
+      endHmRaw: unknown,
+      e: ReactPointerEvent<HTMLDivElement>,
+    ) => {
+      if (e.button !== 0) return;
+      if (scheduleEventUpdateMut.isPending) return;
+      if (scheduleEventResizeSessionRef.current) return;
+
+      const th = matrixHourStripThRef.current;
+      const frame = scheduleMatrixFrame;
+      if (!th || !frame || matrixRangeMs <= 0) return;
+
+      const sh = String(startHmRaw ?? "").trim().slice(0, 5);
+      const eh = String(endHmRaw ?? "").trim().slice(0, 5);
+      const { startMs: sm0, endMs: em0 } = scheduleEventWallIntervalMsSameDay(
+        dateStr,
+        sh,
+        eh,
+      );
+      const p0 = matrixRangePersistTimes(dateStr, sm0, em0, frame);
+
+      const snapped = clientXToSnappedMatrixMs(e.clientX, th, frame, matrixRangeMs);
+      if (snapped == null) return;
+
+      scheduleEventResizeBodyCleanupRef.current?.();
+      scheduleEventResizeBodyCleanupRef.current = null;
+
+      const first = clampScheduleEventResizeToPersist(
+        dateStr,
+        frame,
+        edge,
+        snapped,
+        sh,
+        eh,
+      );
+      const sess: ScheduleEventResizeSession = {
+        eventId,
+        edge,
+        pointerId: e.pointerId,
+        origStartHm: sh,
+        origEndHm: eh,
+        origPersistStart: p0.persistStartHm,
+        origPersistEnd: p0.persistEndHm,
+      };
+      scheduleEventResizeSessionRef.current = sess;
+      const draft0: ScheduleEventResizeDraft = { eventId, ...first };
+      scheduleEventResizeDraftRef.current = draft0;
+      setScheduleEventResizeDraft(draft0);
+
+      scheduleEventResizeActiveRef.current = true;
+
+      const pid = e.pointerId;
+      const frameSnap = frame;
+      const mrm = matrixRangeMs;
+      const ds = dateStr;
+
+      let listenersDetached = false;
+      function teardownListeners() {
+        if (listenersDetached) return;
+        listenersDetached = true;
+        document.body.removeEventListener("pointermove", move);
+        document.body.removeEventListener("pointerup", end);
+        document.body.removeEventListener("pointercancel", end);
+        document.body.removeEventListener("lostpointercapture", onLost);
+        scheduleEventResizeBodyCleanupRef.current = null;
+      }
+
+      function move(ev: PointerEvent) {
+        const s = scheduleEventResizeSessionRef.current;
+        if (!s || ev.pointerId !== pid) return;
+        const th2 = matrixHourStripThRef.current;
+        if (!th2) return;
+        const sn = clientXToSnappedMatrixMs(ev.clientX, th2, frameSnap, mrm);
+        if (sn == null) return;
+        const out = clampScheduleEventResizeToPersist(
+          ds,
+          frameSnap,
+          s.edge,
+          sn,
+          s.origStartHm,
+          s.origEndHm,
+        );
+        const d: ScheduleEventResizeDraft = { eventId: s.eventId, ...out };
+        scheduleEventResizeDraftRef.current = d;
+        setScheduleEventResizeDraft(d);
+      }
+
+      function end(ev: PointerEvent) {
+        if (ev.pointerId !== pid) return;
+        const s = scheduleEventResizeSessionRef.current;
+        if (!s) return;
+        teardownListeners();
+        try {
+          if (document.body.hasPointerCapture(pid)) {
+            document.body.releasePointerCapture(pid);
+          }
+        } catch {
+          /* ignore */
+        }
+
+        const d = scheduleEventResizeDraftRef.current;
+        if (
+          d &&
+          (d.persistStartHm !== s.origPersistStart ||
+            d.persistEndHm !== s.origPersistEnd)
+        ) {
+          scheduleEventUpdateMut.mutate({
+            event_id: s.eventId,
+            start_time: d.persistStartHm,
+            end_time: d.persistEndHm,
+          });
+        }
+        scheduleEventResizeSessionRef.current = null;
+        scheduleEventResizeActiveRef.current = false;
+        setScheduleEventResizeDraft(null);
+      }
+
+      function onLost(ev: PointerEvent) {
+        if (ev.pointerId !== pid) return;
+        end(ev);
+      }
+
+      document.body.addEventListener("pointermove", move);
+      document.body.addEventListener("pointerup", end);
+      document.body.addEventListener("pointercancel", end);
+      document.body.addEventListener("lostpointercapture", onLost);
+
+      scheduleEventResizeBodyCleanupRef.current = () => {
+        teardownListeners();
+        try {
+          if (document.body.hasPointerCapture(pid)) {
+            document.body.releasePointerCapture(pid);
+          }
+        } catch {
+          /* ignore */
+        }
+      };
+
+      try {
+        document.body.setPointerCapture(pid);
+      } catch {
+        /* ignore */
+      }
+    },
+    [dateStr, matrixRangeMs, scheduleEventUpdateMut, scheduleMatrixFrame],
+  );
 
   const deleteShiftWindowMut = useMutation({
     mutationFn: (id: number) => api.deleteShiftWindow(id),
@@ -1102,20 +1523,24 @@ export function ScheduleView() {
   const handleMatrixDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event;
-      clearMatrixDragOverlay();
-
       const resolution = resolveMatrixDragEnd({
         active,
         over,
         dateStr,
         dayShifts,
       });
-      if (resolution.kind === "noop") return;
+      if (resolution.kind === "noop") {
+        clearMatrixDragOverlay();
+        return;
+      }
+      // Apply cache updates before clearing overlay so the first paint already shows the pill
+      // (same tick as drag end; avoids a one-frame gap after the drag overlay hides).
       if (resolution.kind === "reassign") {
         reassignMut.mutate({
           shift_id: resolution.shift_id,
           employee_id: resolution.employee_id,
         });
+        clearMatrixDragOverlay();
         return;
       }
       createMut.mutate({
@@ -1125,13 +1550,38 @@ export function ScheduleView() {
         ...(resolution.syllabus_role_id != null
           ? { syllabus_role_id: resolution.syllabus_role_id }
           : {}),
+        optimisticRow: buildOptimisticShiftRowTemplate(dayShifts, dateStr, {
+          shift_window_id: resolution.shift_window_id,
+          employee_id: resolution.employee_id,
+          syllabus_num: resolution.syllabus_num,
+          syllabus_role_id: resolution.syllabus_role_id ?? undefined,
+        }),
       });
+      clearMatrixDragOverlay();
     },
     [clearMatrixDragOverlay, createMut, dateStr, dayShifts, reassignMut],
   );
 
+  const pickScheduleEventKind = useCallback(
+    (kind: ScheduleMatrixEventKind) => {
+      const d = matrixEventCreateDraft;
+      if (!d || !d.nameInput.trim() || scheduleEventCreateMut.isPending) return;
+      scheduleEventCreateMut.mutate({
+        shift_date: dateStr,
+        employee_id: d.employeeId,
+        start_time: d.persistStartHm,
+        end_time: d.persistEndHm,
+        name: d.nameInput.trim(),
+        notes: "",
+        event_kind: kind,
+      });
+    },
+    [matrixEventCreateDraft, dateStr, scheduleEventCreateMut],
+  );
+
   // --- Render ---
   return (
+    <>
     <div className="mx-auto flex max-w-[1600px] flex-col gap-4">
       {hours.length === 0 ? (
         <button
@@ -1292,6 +1742,74 @@ export function ScheduleView() {
                         </div>
                         {scheduleMatrixFrame && matrixRangeMs > 0 ? (
                           <div className="pointer-events-none relative z-[2] min-h-[28px] w-full">
+                            {dayScheduleEvents
+                              .filter((ev) => Number(ev.employee_id ?? 0) === eid)
+                              .map((ev, evIdx) => {
+                                const rawKind = String(ev.event_kind ?? "event");
+                                const eventKind: ScheduleMatrixEventKind =
+                                  rawKind === "constraint" ||
+                                  rawKind === "operational" ||
+                                  rawKind === "event"
+                                    ? rawKind
+                                    : "event";
+                                const resizingThis =
+                                  scheduleEventResizeDraft?.eventId ===
+                                  Number(ev.id);
+                                const startHmUse = resizingThis
+                                  ? scheduleEventResizeDraft.persistStartHm
+                                  : String(ev.start_time ?? "");
+                                const endHmUse = resizingThis
+                                  ? scheduleEventResizeDraft.persistEndHm
+                                  : String(ev.end_time ?? "");
+                                const iv = shiftWallIntervalMs(
+                                  dateStr,
+                                  startHmUse,
+                                  endHmUse,
+                                );
+                                const clipped = clipIntervalToFrame(
+                                  iv.startMs,
+                                  iv.endMs,
+                                  scheduleMatrixFrame.frameStartMs,
+                                  scheduleMatrixFrame.frameEndMs,
+                                );
+                                if (!clipped) return null;
+                                const [s, e] = clipped;
+                                const leftPct =
+                                  ((s - scheduleMatrixFrame.frameStartMs) /
+                                    matrixRangeMs) *
+                                  100;
+                                const widthPct = Math.max(
+                                  0.12,
+                                  ((e - s) / matrixRangeMs) * 100,
+                                );
+                                const sh = startHmUse.trim().slice(0, 5);
+                                const eh = endHmUse.trim().slice(0, 5);
+                                return (
+                                  <MatrixScheduleEventBar
+                                    key={`se-${ev.id}`}
+                                    name={String(ev.name ?? "")}
+                                    eventKind={eventKind}
+                                    leftPct={leftPct}
+                                    widthPct={widthPct}
+                                    zIndex={4 + evIdx}
+                                    pillInsetClassName={MATRIX_PILL_INSET_X}
+                                    showStartContinuation={sh === "00:00"}
+                                    showEndContinuation={eh === "23:59"}
+                                    onResizeEdgePointerDown={(edge, pe) =>
+                                      beginScheduleEventResize(
+                                        Number(ev.id),
+                                        edge,
+                                        ev.start_time,
+                                        ev.end_time,
+                                        pe,
+                                      )
+                                    }
+                                    onLongPressDelete={() =>
+                                      scheduleEventDeleteMut.mutate(Number(ev.id))
+                                    }
+                                  />
+                                );
+                              })}
                             {shiftClusters.map((cluster, idx) => {
                               const shift = cluster[0];
                               const iv = shiftWallIntervalMs(
@@ -1768,13 +2286,31 @@ export function ScheduleView() {
                 }}
               >
                 <div
+                  ref={matrixEventCreateDraft ? matrixRangeBandMeasureRef : undefined}
                   className={`absolute inset-y-0 box-border ${MATRIX_PILL_INSET_X}`}
                   style={{
                     insetInlineStart: `${matrixRangeBandUi.startPct}%`,
                     width: `${matrixRangeBandUi.widthPct}%`,
                   }}
                 >
-                  <div className="h-full w-full rounded-sm bg-primary/15 ring-1 ring-primary/35" />
+                  <div className="relative h-full w-full rounded-sm bg-primary/15 ring-1 ring-primary/35">
+                    {matrixRangeBandEdgeFlags?.showStartContinuation ? (
+                      <span
+                        className="pointer-events-none absolute inset-y-0 start-0 flex items-center ps-0.5 font-heading text-[8px] font-semibold leading-none text-primary"
+                        aria-hidden
+                      >
+                        ▶
+                      </span>
+                    ) : null}
+                    {matrixRangeBandEdgeFlags?.showEndContinuation ? (
+                      <span
+                        className="pointer-events-none absolute inset-y-0 end-0 flex items-center pe-0.5 font-heading text-[8px] font-semibold leading-none text-primary"
+                        aria-hidden
+                      >
+                        ◀
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             ) : null}
@@ -1821,5 +2357,25 @@ export function ScheduleView() {
         deleteShiftWindowMut={deleteShiftWindowMut}
       />
     </div>
+    {matrixEventCreateDraft && matrixEventPopupPos && typeof document !== "undefined"
+      ? createPortal(
+          <MatrixEventCreatePopup
+            rootRef={matrixEventCreatePopupRef}
+            top={matrixEventPopupPos.top}
+            left={matrixEventPopupPos.left}
+            timeLabel={`צור אירוע - ${formatMatrixEventPersistHmForPopup(matrixEventCreateDraft.persistStartHm, "start")}–${formatMatrixEventPersistHmForPopup(matrixEventCreateDraft.persistEndHm, "end")}`}
+            name={matrixEventCreateDraft.nameInput}
+            onNameChange={(v) =>
+              setMatrixEventCreateDraft((prev) =>
+                prev ? { ...prev, nameInput: v.slice(0, 18) } : null,
+              )
+            }
+            onPickKind={pickScheduleEventKind}
+            isSubmitting={scheduleEventCreateMut.isPending}
+          />,
+          document.body,
+        )
+      : null}
+    </>
   );
 }

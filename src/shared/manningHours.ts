@@ -19,6 +19,15 @@ export function minutesToHhmm(totalMinutes: number): string {
   return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
 }
 
+/** Wall-clock `HH:mm` on `dateStr` for a local-instant `ms` (same basis as `shiftWallIntervalMs`). */
+export function wallMsToHhmm(dateStr: string, ms: number): string {
+  const dayStart = dayBounds(dateStr).start.getTime();
+  let minutes = Math.round((ms - dayStart) / 60_000);
+  if (minutes < 0) minutes = 0;
+  if (minutes >= MINUTES_PER_DAY) minutes = MINUTES_PER_DAY - 1;
+  return minutesToHhmm(minutes);
+}
+
 /** Add minutes to an HH:mm[:ss] wall time (modulo one day on the clock). */
 export function hmAddMinutes(hm: string, deltaMinutes: number): string {
   return minutesToHhmm(timeToMin(hm) + deltaMinutes);

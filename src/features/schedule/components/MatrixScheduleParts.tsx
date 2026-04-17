@@ -1,5 +1,11 @@
 import { useDraggable, useDroppable } from "@dnd-kit/core";
-import { useCallback, useEffect, useRef } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  type RefObject,
+} from "react";
 import type { JsonObject } from "../../../shared/api";
 import type {
   MouseEvent as ReactMouseEvent,
@@ -378,5 +384,221 @@ export function EmployeeMatrixShiftPillChooser({
       upToDate={upToDate}
       onLongPressDelete={onLongPressDelete}
     />
+  );
+}
+
+export type ScheduleMatrixEventKind = "constraint" | "event" | "operational";
+
+const EVENT_KIND_SURFACE: Record<
+  ScheduleMatrixEventKind,
+  string
+> = {
+  constraint: "bg-red-500/40 ring-1 ring-red-600/35",
+  operational: "bg-emerald-300/45 ring-1 ring-emerald-700/25",
+  event: "bg-sky-300 ring-1 ring-sky-600/30",
+};
+
+/** Solid fills for popup dots (same hues as matrix bars; matches `RoleColorDot` in management). */
+const EVENT_KIND_DOT_HEX: Record<ScheduleMatrixEventKind, string> = {
+  constraint: "#ef4444",
+  event: "#7dd3fc",
+  operational: "#6ee7b7",
+};
+
+function EventKindDot({ kind }: { kind: ScheduleMatrixEventKind }) {
+  const c = EVENT_KIND_DOT_HEX[kind] ?? EVENT_KIND_DOT_HEX.event;
+  return (
+    <span
+      className="size-2.5 shrink-0 rounded-full border border-line shadow-sm ring-1 ring-black/10"
+      style={{ backgroundColor: c }}
+      aria-hidden
+    />
+  );
+}
+
+export function MatrixScheduleEventBar({
+  name,
+  eventKind,
+  leftPct,
+  widthPct,
+  zIndex,
+  pillInsetClassName,
+  showStartContinuation = false,
+  showEndContinuation = false,
+  onResizeEdgePointerDown,
+  onLongPressDelete,
+}: {
+  name: string;
+  eventKind: ScheduleMatrixEventKind;
+  leftPct: number;
+  widthPct: number;
+  zIndex: number;
+  pillInsetClassName: string;
+  /** `start_time` is calendar `00:00` (continuation before visible window). */
+  showStartContinuation?: boolean;
+  /** `end_time` is calendar `23:59` (continuation after visible window). */
+  showEndContinuation?: boolean;
+  /** Drag inline-start / inline-end to resize start or end time (matrix quarter snap in parent). */
+  onResizeEdgePointerDown?: (
+    edge: "start" | "end",
+    e: ReactPointerEvent<HTMLDivElement>,
+  ) => void;
+  onLongPressDelete: () => void;
+}) {
+  const lp = useMatrixPillLongPress({ onLongPressDelete });
+  const surface = EVENT_KIND_SURFACE[eventKind] ?? EVENT_KIND_SURFACE.event;
+  return (
+    <div
+      data-matrix-schedule-event
+      className={`pointer-events-auto absolute inset-y-0 box-border ${pillInsetClassName}`}
+      style={{
+        insetInlineStart: `${leftPct}%`,
+        width: `${widthPct}%`,
+        zIndex,
+      }}
+      title={name}
+    >
+      <div
+        className={`relative flex h-full w-full min-h-0 items-stretch overflow-hidden rounded-sm ${surface}`}
+      >
+        {onResizeEdgePointerDown ? (
+          <div
+            role="separator"
+            aria-label="הזזת תחילת האירוע"
+            className="absolute inset-y-0 start-0 z-[5] w-1.5 shrink-0 cursor-col-resize touch-none"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onResizeEdgePointerDown("start", e);
+            }}
+          />
+        ) : null}
+        <span
+          className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden px-1"
+          title={name}
+          aria-label={name}
+          onPointerDown={lp.onPointerDown}
+          onPointerMove={lp.onPointerMove}
+          onPointerUp={lp.onPointerUp}
+          onPointerCancel={lp.onPointerCancel}
+        >
+          {showStartContinuation ? (
+            <span
+              className="pointer-events-none absolute inset-y-0 start-0 flex items-center ps-0.5 font-heading text-[8px] font-semibold leading-none text-ink/80"
+              aria-hidden
+            >
+              ▶
+            </span>
+          ) : null}
+          {showEndContinuation ? (
+            <span
+              className="pointer-events-none absolute inset-y-0 end-0 flex items-center pe-0.5 font-heading text-[8px] font-semibold leading-none text-ink/80"
+              aria-hidden
+            >
+              ◀
+            </span>
+          ) : null}
+          <span className="min-w-0 max-w-full truncate text-center font-heading text-[9px] font-medium leading-tight text-ink">
+            {name}
+          </span>
+        </span>
+        {onResizeEdgePointerDown ? (
+          <div
+            role="separator"
+            aria-label="הזזת סיום האירוע"
+            className="absolute inset-y-0 end-0 z-[5] w-1.5 shrink-0 cursor-col-resize touch-none"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onResizeEdgePointerDown("end", e);
+            }}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export function MatrixEventCreatePopup({
+  rootRef,
+  top,
+  left,
+  timeLabel,
+  name,
+  onNameChange,
+  onPickKind,
+  isSubmitting,
+}: {
+  rootRef: RefObject<HTMLDivElement | null>;
+  top: number;
+  left: number;
+  timeLabel: string;
+  name: string;
+  onNameChange: (v: string) => void;
+  onPickKind: (k: ScheduleMatrixEventKind) => void;
+  isSubmitting: boolean;
+}) {
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  useLayoutEffect(() => {
+    nameInputRef.current?.focus();
+  }, []);
+
+  const nameOk = name.trim().length > 0;
+  const rowBtn =
+    "flex w-full flex-row items-center justify-start gap-2 rounded border border-line bg-background/90 px-2 py-1.5 text-xs font-heading font-medium text-ink hover:bg-background disabled:cursor-not-allowed disabled:opacity-40";
+  return (
+    <div
+      ref={rootRef}
+      className="fixed z-[120] w-[min(200px,calc(100vw-16px))] rounded-md border border-line bg-surface p-2 shadow-lg"
+      style={{ top, left }}
+      dir="rtl"
+    >
+      <div className="mb-2 border-b border-line pb-1.5 text-right font-heading text-xs tabular-nums text-muted">
+        {timeLabel}
+      </div>
+      <label className="mb-2 block">
+        <span className="sr-only">שם</span>
+        <input
+          ref={nameInputRef}
+          type="text"
+          maxLength={18}
+          value={name}
+          onChange={(e) => onNameChange(e.target.value)}
+          placeholder="שם"
+          title="מקסימום 18 תווים לשם האירוע (רווחים נספרים כתו)"
+          className="box-border !h-6 !max-h-6 !min-h-0 w-full appearance-none rounded border border-line bg-background !px-2 !py-0 text-right font-heading !text-xs !leading-6 text-ink outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/25 disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={isSubmitting}
+        />
+      </label>
+      <div className="flex flex-col gap-1">
+        <button
+          type="button"
+          disabled={!nameOk || isSubmitting}
+          className={rowBtn}
+          onClick={() => onPickKind("constraint")}
+        >
+          <EventKindDot kind="constraint" />
+          <span className="min-w-0 truncate">אילוץ</span>
+        </button>
+        <button
+          type="button"
+          disabled={!nameOk || isSubmitting}
+          className={rowBtn}
+          onClick={() => onPickKind("event")}
+        >
+          <EventKindDot kind="event" />
+          <span className="min-w-0 truncate">אירוע</span>
+        </button>
+        <button
+          type="button"
+          disabled={!nameOk || isSubmitting}
+          className={rowBtn}
+          onClick={() => onPickKind("operational")}
+        >
+          <EventKindDot kind="operational" />
+          <span className="min-w-0 truncate">משמרת</span>
+        </button>
+      </div>
+    </div>
   );
 }

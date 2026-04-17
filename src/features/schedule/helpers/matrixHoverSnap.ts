@@ -1,3 +1,5 @@
+import { wallMsToHhmm } from "../../../shared/manningHours";
+
 const QUARTER_MS = 15 * 60 * 1000;
 
 export function snapToNearestQuarterHour(ms: number): number {
@@ -72,6 +74,74 @@ export function normalizeRangeMs(a: number, b: number): [number, number] {
   return a <= b ? [a, b] : [b, a];
 }
 
+/** First / last quarter-snapped instants inside the matrix frame (same basis as `clientXToSnappedMatrixMs` at u=0 / u=1). */
+export function matrixFrameSnappedEdges(frame: MatrixFrameBounds): {
+  earliestMs: number;
+  latestMs: number;
+} {
+  const { frameStartMs, frameEndMs } = frame;
+  const earliestMs = clampMsToMatrixFrame(
+    snapToNearestQuarterHour(frameStartMs),
+    frameStartMs,
+    frameEndMs,
+  );
+  const latestMs = clampMsToMatrixFrame(
+    snapToNearestQuarterHour(frameEndMs),
+    frameStartMs,
+    frameEndMs,
+  );
+  return { earliestMs, latestMs };
+}
+
+/**
+ * Persisted wall `HH:mm` for schedule_events when dragging a matrix range.
+ * Touches matrix inline-start / inline-end → calendar `00:00` / `23:59`.
+ * If the end would otherwise be `00:00` (next-day boundary / slot-end label), coerce to `23:59`.
+ */
+export function matrixRangePersistTimes(
+  dateStr: string,
+  lo: number,
+  hi: number,
+  frame: MatrixFrameBounds,
+): { persistStartHm: string; persistEndHm: string } {
+  const { earliestMs, latestMs } = matrixFrameSnappedEdges(frame);
+  let persistStartHm = wallMsToHhmm(dateStr, lo);
+  let persistEndHm = wallMsToHhmm(dateStr, hi);
+  if (lo === earliestMs) persistStartHm = "00:00";
+  if (hi === latestMs) persistEndHm = "23:59";
+  if (persistEndHm === "00:00") persistEndHm = "23:59";
+  return { persistStartHm, persistEndHm };
+}
+
+export function matrixRangeDayEdgeFlags(
+  dateStr: string,
+  lo: number,
+  hi: number,
+  frame: MatrixFrameBounds,
+): { showStartContinuation: boolean; showEndContinuation: boolean } {
+  const { persistStartHm, persistEndHm } = matrixRangePersistTimes(
+    dateStr,
+    lo,
+    hi,
+    frame,
+  );
+  return {
+    showStartContinuation: persistStartHm === "00:00",
+    showEndContinuation: persistEndHm === "23:59",
+  };
+}
+
+/** Popup segment labels: day-edge copy vs `HH:mm`. */
+export function formatMatrixEventPersistHmForPopup(
+  hm: string,
+  which: "start" | "end",
+): string {
+  const t = hm.trim().slice(0, 5);
+  if (which === "start" && t === "00:00") return "תחילת היום";
+  if (which === "end" && t === "23:59") return "סוף היום";
+  return t.length === 5 ? t : hm.trim();
+}
+
 /** Tbody row index for an employee row under the pointer, or null if not over an employee data row. */
 export function employeeTbodyRowIndexFromPoint(
   clientX: number,
@@ -108,6 +178,7 @@ export function shouldSuppressMatrixHoverGuide(
   for (const node of document.elementsFromPoint(clientX, clientY)) {
     if (!(node instanceof Element)) continue;
     if (node.closest("[data-matrix-pill]") != null) return true;
+    if (node.closest("[data-matrix-schedule-event]") != null) return true;
     const row = node.closest("tr");
     if (!row || row.parentElement !== tbody) continue;
     const idx = Array.prototype.indexOf.call(tbody.rows, row);
