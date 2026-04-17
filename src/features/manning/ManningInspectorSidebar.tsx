@@ -1,6 +1,97 @@
 import { useEffect, useId, useState } from "react";
 import type { JsonObject } from "../../shared/api";
 
+function jsonString(v: JsonObject, key: string): string | undefined {
+  const x = v[key];
+  return typeof x === "string" && x.length > 0 ? x : undefined;
+}
+
+function jsonNumber(v: JsonObject, key: string): number | undefined {
+  const x = v[key];
+  if (typeof x === "number" && Number.isFinite(x)) return x;
+  if (typeof x === "string" && x.trim() !== "") {
+    const n = Number(x);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
+}
+
+function jsonStringArray(v: JsonObject, key: string): string[] {
+  const x = v[key];
+  if (!Array.isArray(x)) return [];
+  return x.filter((item): item is string => typeof item === "string");
+}
+
+function ViolationCard({ v }: { v: JsonObject }) {
+  const rule = typeof v.rule === "string" ? v.rule : "";
+  const message = typeof v.message === "string" ? v.message : "";
+
+  const isOverlap = rule === "segment_overlap";
+  const isMaxRow = rule === "max_in_row_bunch";
+  const isSyllabus = rule === "syllabus_role_level";
+
+  const shell =
+    isOverlap
+      ? "border-2 border-red-400 bg-red-100 shadow-sm"
+      : isMaxRow || isSyllabus
+        ? "border-2 border-amber-400 bg-amber-100 shadow-sm"
+        : "border border-line bg-background";
+
+  const bodyTone =
+    isOverlap ? "text-red-900" : isMaxRow || isSyllabus ? "text-amber-900" : "text-ink";
+
+  const emp = jsonString(v, "display_employee");
+  const times = jsonStringArray(v, "display_shift_times");
+  const hasStructuredHeader = Boolean(emp) && times.length > 0;
+
+  const bunchX = jsonNumber(v, "bunch_count");
+  const bunchY = jsonNumber(v, "bunch_cap");
+  const roleX = jsonNumber(v, "employee_role_level");
+  const roleY = jsonNumber(v, "required_role_level");
+  const roleNameEmp = jsonString(v, "employee_role_name");
+  const roleNameReq = jsonString(v, "required_role_name");
+
+  let body: string;
+  if (isOverlap) {
+    body = "התנגשות בין זמנים של משמרות";
+  } else if (isMaxRow && bunchX !== undefined && bunchY !== undefined) {
+    body = `יותר מדי משמרות ברצף, ישנן ${bunchX} כאשר מותרות עד ${bunchY}`;
+  } else if (isSyllabus && roleNameEmp && roleNameReq) {
+    body = `אי עמידה בדרג מינימלי, ${roleNameEmp} כאשר נדרש ${roleNameReq}`;
+  } else if (isSyllabus && roleX !== undefined && roleY !== undefined) {
+    body = `אי עמידה בדרג מינימלי, דרג ${roleX} כאשר נדרש ${roleY}`;
+  } else {
+    body = message || "אזהרה";
+  }
+
+  if (!hasStructuredHeader) {
+    return (
+      <article
+        className={`overflow-hidden rounded-lg px-2.5 py-1.5 text-right text-xs leading-snug ${shell} ${bodyTone}`}
+        dir="rtl"
+      >
+        {message || "—"}
+      </article>
+    );
+  }
+
+  return (
+    <article
+      className={`overflow-hidden rounded-lg text-right ${shell}`}
+      dir="rtl"
+    >
+      <div className="border-b border-black/10 bg-black/10 px-2.5 py-1.5 text-xs leading-snug text-ink">
+        <span className="font-medium">{emp}</span>
+        <span className="text-muted">, </span>
+        <span dir="ltr" className="tabular-nums">
+          {times.join(", ")}
+        </span>
+      </div>
+      <div className={`px-2.5 py-1.5 text-xs leading-snug ${bodyTone}`}>{body}</div>
+    </article>
+  );
+}
+
 function WarningsIcon({ className }: { className?: string }) {
   return (
     <svg
@@ -65,6 +156,8 @@ export function ManningInspectorSidebar({ warnings }: { warnings: JsonObject[] }
   /** Extensible when more inspector menus are added */
   const activeMenu = "warnings" as const;
   const panelId = useId();
+  const hasOverlapError = warnings.some((w) => w.rule === "segment_overlap");
+  const warningsPanelOpen = wideOpen && activeMenu === "warnings";
 
   useEffect(() => {
     if (!wideOpen) return;
@@ -76,23 +169,22 @@ export function ManningInspectorSidebar({ warnings }: { warnings: JsonObject[] }
   }, [wideOpen]);
 
   return (
-    <div className="flex min-h-0 shrink-0 border-s border-line bg-surface shadow-airy">
+    <div className="flex h-full min-h-0 shrink-0 border-s border-line bg-surface shadow-airy">
       {/* LTR row: icon rail fixed on the physical left; wide panel opens to its right so the rail does not jump when toggling (page root is dir=rtl). */}
-      <div
-        dir="ltr"
-        className="flex min-h-0 shrink-0 flex-row"
-      >
+      <div dir="ltr" className="flex h-full min-h-0 shrink-0 flex-row">
         <div className="flex w-12 shrink-0 flex-col items-center justify-between border-e border-line py-2">
           <div className="flex flex-col items-center gap-2">
             <button
               type="button"
               className={`relative flex size-9 items-center justify-center rounded-lg border text-ink transition-colors ${
-                activeMenu === "warnings"
-                  ? "border-primary bg-primary/15 shadow-sm"
+                warningsPanelOpen
+                  ? hasOverlapError
+                    ? "border-2 border-red-400 bg-red-100 shadow-sm"
+                    : "border-primary bg-primary/15 shadow-sm"
                   : "border-transparent hover:bg-background hover:border-line"
               }`}
               aria-label="אזהרות"
-              aria-pressed={activeMenu === "warnings"}
+              aria-pressed={warningsPanelOpen}
               onClick={() => setWideOpen(true)}
             >
               <WarningsIcon className="shrink-0" />
@@ -124,24 +216,28 @@ export function ManningInspectorSidebar({ warnings }: { warnings: JsonObject[] }
         {wideOpen ? (
           <aside
             id={panelId}
-            className="flex w-72 min-w-0 shrink-0 flex-col bg-surface"
+            className="flex h-full min-h-0 w-72 min-w-0 shrink-0 flex-col bg-surface"
           >
-            <div className="border-b border-line px-3 py-2 text-right" dir="rtl">
-              <h2 className="font-heading text-sm font-bold text-ink">אזהרות</h2>
+            <div className="shrink-0 border-b border-line px-3 py-1.5 text-right" dir="rtl">
+              <h2 className="font-heading text-xs font-bold text-ink">אזהרות</h2>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-3" dir="rtl">
-              {warnings.length > 0 ? (
-                <div className="max-h-28 overflow-y-auto rounded-card border border-lilac-2 bg-lilac-1 px-3 py-2 text-sm text-ink">
-                  {warnings.map((v, i) => (
-                    <div key={i} className="py-0.5">
-                      {String(v.message ?? "")}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm text-muted">אין אזהרות ליום זה</p>
-              )}
-            </div>
+            {warnings.length > 0 ? (
+              <div
+                className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-3"
+                dir="rtl"
+              >
+                {warnings.map((v, i) => (
+                  <ViolationCard
+                    key={`${String(v.rule)}-${String(v.shift_id ?? "")}-${i}`}
+                    v={v}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="p-3 text-right" dir="rtl">
+                <p className="text-xs text-muted">אין אזהרות ליום זה</p>
+              </div>
+            )}
           </aside>
         ) : null}
       </div>

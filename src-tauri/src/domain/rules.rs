@@ -15,16 +15,130 @@ pub struct Violation {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shift_id: Option<i64>,
+    /// Card header: employee name (same employee for all three rules today).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_employee: Option<String>,
+    /// Card header: flight `start_time–end_time` per involved shift, ordered for display.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_shift_times: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bunch_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bunch_cap: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub employee_role_level: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_role_level: Option<i64>,
+    /// Rule 3: employee's `roles.name`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub employee_role_name: Option<String>,
+    /// Rule 3: syllabus role's linked `roles.name` (required minimum role).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_role_name: Option<String>,
 }
 
 impl Violation {
     pub fn to_json(&self) -> Value {
-        json!({
-            "rule": self.rule,
-            "severity": self.severity,
-            "message": self.message,
-            "shift_id": self.shift_id,
+        serde_json::to_value(self).unwrap_or_else(|_| {
+            json!({
+                "rule": &self.rule,
+                "severity": &self.severity,
+                "message": &self.message,
+                "shift_id": self.shift_id,
+            })
         })
+    }
+}
+
+fn format_flight_range(start_time: &str, end_time: &str) -> String {
+    format!("{}–{}", start_time.trim(), end_time.trim())
+}
+
+fn violation_segment_overlap(sa: &DayShiftRow, sb: &DayShiftRow, detail: &str) -> Violation {
+    let sid = sa.id.min(sb.id);
+    let en = sa.emp_name.as_deref().unwrap_or("");
+    let msg = if sa.id < sb.id {
+        format!("'{en}' '{}' vs '{}' | {detail}", sa.type_name, sb.type_name)
+    } else {
+        format!("'{en}' '{}' vs '{}' | {detail}", sb.type_name, sa.type_name)
+    };
+    let (first, second) = if sa.id < sb.id { (sa, sb) } else { (sb, sa) };
+    Violation {
+        rule: "segment_overlap".into(),
+        severity: "error".into(),
+        message: msg,
+        shift_id: Some(sid),
+        display_employee: Some(
+            first
+                .emp_name
+                .clone()
+                .or_else(|| second.emp_name.clone())
+                .unwrap_or_default(),
+        ),
+        display_shift_times: Some(vec![
+            format_flight_range(&first.start_time, &first.end_time),
+            format_flight_range(&second.start_time, &second.end_time),
+        ]),
+        bunch_count: None,
+        bunch_cap: None,
+        employee_role_level: None,
+        required_role_level: None,
+        employee_role_name: None,
+        required_role_name: None,
+    }
+}
+
+fn violation_max_in_row_bunch(slice: &[DayShiftRow], s: usize, e: usize, n: i64, cap: i64) -> Violation {
+    let first = &slice[s];
+    let last = &slice[e - 1];
+    let en = first.emp_name.as_deref().unwrap_or("");
+    // Bunch span: first shift flight start → last shift flight end (timeline order).
+    let times = vec![format_flight_range(&first.start_time, &last.end_time)];
+    Violation {
+        rule: "max_in_row_bunch".into(),
+        severity: "warning".into(),
+        message: format!(
+            "'{en}' — יותר מדי משמרות רצופות בחבורה ({n} משמרות, מקסימום מותר {cap})"
+        ),
+        shift_id: Some(first.id),
+        display_employee: first.emp_name.clone(),
+        display_shift_times: Some(times),
+        bunch_count: Some(n),
+        bunch_cap: Some(cap),
+        employee_role_level: None,
+        required_role_level: None,
+        employee_role_name: None,
+        required_role_name: None,
+    }
+}
+
+fn violation_syllabus_role_level(
+    shift_id: i64,
+    en: String,
+    emp_lv: i64,
+    syl_lv: i64,
+    slot: &str,
+    srole: &str,
+    start_time: String,
+    end_time: String,
+    employee_role_name: String,
+    required_role_name: String,
+) -> Violation {
+    Violation {
+        rule: "syllabus_role_level".into(),
+        severity: "warning".into(),
+        message: format!(
+            "'{en}' — רמת תפקיד בסילבוס ({srole} ב'{slot}') גבוהה מרמת התפקיד של המפעיל"
+        ),
+        shift_id: Some(shift_id),
+        display_employee: Some(en),
+        display_shift_times: Some(vec![format_flight_range(&start_time, &end_time)]),
+        bunch_count: None,
+        bunch_cap: None,
+        employee_role_level: Some(emp_lv),
+        required_role_level: Some(syl_lv),
+        employee_role_name: Some(employee_role_name),
+        required_role_name: Some(required_role_name),
     }
 }
 
@@ -256,25 +370,7 @@ fn segment_overlap_violations_for_date(
                 let sa = &slice[a];
                 let sb = &slice[b];
                 if let Some(detail) = first_overlap_detail(sa, sb) {
-                    let sid = sa.id.min(sb.id);
-                    let en = sa.emp_name.as_deref().unwrap_or("");
-                    let msg = if sa.id < sb.id {
-                        format!(
-                            "'{en}' '{}' vs '{}' | {detail}",
-                            sa.type_name, sb.type_name
-                        )
-                    } else {
-                        format!(
-                            "'{en}' '{}' vs '{}' | {detail}",
-                            sb.type_name, sa.type_name
-                        )
-                    };
-                    out.push(Violation {
-                        rule: "segment_overlap".into(),
-                        severity: "error".into(),
-                        message: msg,
-                        shift_id: Some(sid),
-                    });
+                    out.push(violation_segment_overlap(sa, sb, &detail));
                 }
             }
         }
@@ -329,16 +425,7 @@ fn max_in_row_violations_for_date(
             }
             let cap = caps.into_iter().min().unwrap_or(1);
             if n as i64 > cap {
-                let first = &slice[s];
-                let en = first.emp_name.as_deref().unwrap_or("");
-                out.push(Violation {
-                    rule: "max_in_row_bunch".into(),
-                    severity: "error".into(),
-                    message: format!(
-                        "'{en}' — יותר מדי משמרות רצופות בחבורה ({n} משמרות, מקסימום מותר {cap})"
-                    ),
-                    shift_id: Some(first.id),
-                });
+                out.push(violation_max_in_row_bunch(slice, s, e, n as i64, cap));
             }
         }
         i = j;
@@ -348,41 +435,77 @@ fn max_in_row_violations_for_date(
 
 /// Rule 3 only: syllabus role level must not exceed employee role level.
 fn syllabus_role_level_violation(conn: &Connection, shift_id: i64) -> rusqlite::Result<Option<Violation>> {
-    let row: Option<(Option<i64>, Option<i64>, Option<i64>, Option<i64>)> = conn
+    let row: Option<(
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+    )> = conn
         .query_row(
-            "SELECT s.syllabus_role_id, sr.role_id, er.role_level, sr_r.role_level
+            "SELECT s.syllabus_role_id, sr.role_id, er.role_level, sr_r.role_level,
+                    e.name, w.name, COALESCE(sr.name, ''), s.start_time, s.end_time,
+                    COALESCE(er.name, ''), COALESCE(sr_r.name, '')
              FROM shifts s
              JOIN employees e ON s.employee_id = e.id
              JOIN roles er ON e.role_id = er.id
+             JOIN shift_windows w ON s.shift_window_id = w.id
              LEFT JOIN syllabus_roles sr ON s.syllabus_role_id = sr.id
              LEFT JOIN roles sr_r ON sr.role_id = sr_r.id
              WHERE s.id = ?",
             [shift_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
+                ))
+            },
         )
         .optional()?;
-    let Some((Some(_srid), Some(_role_id), Some(emp_lv), Some(syl_lv))) = row else {
+    let Some((
+        Some(_srid),
+        Some(_role_id),
+        Some(emp_lv),
+        Some(syl_lv),
+        en,
+        slot,
+        srole,
+        st,
+        et,
+        emp_role_name,
+        req_role_name,
+    )) = row
+    else {
         return Ok(None);
     };
     if syl_lv > emp_lv {
-        let (en, slot, srole): (String, String, String) = conn.query_row(
-            "SELECT e.name, w.name, COALESCE(sr.name, '')
-             FROM shifts s
-             JOIN employees e ON s.employee_id = e.id
-             JOIN shift_windows w ON s.shift_window_id = w.id
-             LEFT JOIN syllabus_roles sr ON s.syllabus_role_id = sr.id
-             WHERE s.id = ?",
-            [shift_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )?;
-        return Ok(Some(Violation {
-            rule: "syllabus_role_level".into(),
-            severity: "error".into(),
-            message: format!(
-                "'{en}' — רמת תפקיד בסילבוס ({srole} ב'{slot}') גבוהה מרמת התפקיד של המפעיל"
-            ),
-            shift_id: Some(shift_id),
-        }));
+        return Ok(Some(violation_syllabus_role_level(
+            shift_id,
+            en,
+            emp_lv,
+            syl_lv,
+            &slot,
+            &srole,
+            st,
+            et,
+            emp_role_name,
+            req_role_name,
+        )));
     }
     Ok(None)
 }
@@ -423,16 +546,7 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
         }
         let cap: i64 = mine[s..e].iter().map(|r| r.max_in_row).min().unwrap_or(1);
         if n as i64 > cap && mine[s..e].iter().any(|r| r.id == shift_id) {
-            let first = &mine[s];
-            violations.push(Violation {
-                rule: "max_in_row_bunch".into(),
-                severity: "error".into(),
-                message: format!(
-                    "'{}' — יותר מדי משמרות רצופות בחבורה ({n} משמרות, מקסימום מותר {cap})",
-                    first.emp_name.as_deref().unwrap_or("")
-                ),
-                shift_id: Some(first.id),
-            });
+            violations.push(violation_max_in_row_bunch(&mine, s, e, n as i64, cap));
         }
     }
 
@@ -444,19 +558,7 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
             continue;
         };
         if let Some(detail) = first_overlap_detail(me, other) {
-            let sid = me.id.min(other.id);
-            let en = me.emp_name.as_deref().unwrap_or("");
-            let msg = if me.id < other.id {
-                format!("'{en}' '{}' vs '{}' | {detail}", me.type_name, other.type_name)
-            } else {
-                format!("'{en}' '{}' vs '{}' | {detail}", other.type_name, me.type_name)
-            };
-            violations.push(Violation {
-                rule: "segment_overlap".into(),
-                severity: "error".into(),
-                message: msg,
-                shift_id: Some(sid),
-            });
+            violations.push(violation_segment_overlap(me, other, &detail));
         }
     }
 
