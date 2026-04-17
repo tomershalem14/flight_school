@@ -104,21 +104,20 @@ import {
 } from "./helpers/scheduleEventResize";
 import {
   buildOptimisticShiftRowTemplate,
+  buildSyntheticOptimisticShiftRowForCreate,
   type CreateShiftMutationVars,
   type ScheduleEventCreatePayload,
+  afterMatrixShiftMutationSuccess,
   invalidateViolationsDeferred,
   restoreList,
   rollbackScheduleEventCreate,
-  scheduleDelayedShiftsRefetch,
   scheduleEventCreateOnMutate,
   scheduleEventCreateOnSuccess,
   scheduleEventDeleteOnMutate,
   scheduleEventUpdateOnMutate,
   shiftCreateOnMutate,
-  shiftCreateOnSuccess,
   shiftDeleteOnMutate,
   shiftReassignOnMutate,
-  shiftReassignOnSuccess,
   shiftsListKey,
   scheduleEventsListKey,
 } from "./helpers/scheduleMatrixQueryCache";
@@ -1124,16 +1123,7 @@ export function ScheduleView() {
         shiftId: args.shift_id,
         employeeId: args.employee_id,
       }),
-    onSuccess: (data, variables) => {
-      shiftReassignOnSuccess({
-        qc,
-        weekStr,
-        oldShiftId: variables.shift_id,
-        data: data as JsonObject,
-      });
-      invalidateViolationsDeferred(qc);
-      scheduleDelayedShiftsRefetch(qc, weekStr);
-    },
+    onSuccess: () => afterMatrixShiftMutationSuccess(qc, weekStr),
     onError: (err, _args, context) => {
       restoreList(qc, shiftsListKey(weekStr), context?.previous);
       alert(errorMessageFromUnknown(err));
@@ -1160,15 +1150,7 @@ export function ScheduleView() {
         optimisticRow: args.optimisticRow,
         tempIdRef: shiftCreateOptimisticIdRef,
       }),
-    onSuccess: (data, _variables, context) => {
-      shiftCreateOnSuccess({
-        qc,
-        weekStr,
-        data: data as JsonObject,
-        tempId: context?.tempId,
-      });
-      invalidateViolationsDeferred(qc);
-    },
+    onSuccess: () => afterMatrixShiftMutationSuccess(qc, weekStr),
     onError: (err, _args, context) => {
       restoreList(qc, shiftsListKey(weekStr), context?.previous);
       alert(errorMessageFromUnknown(err));
@@ -1178,9 +1160,7 @@ export function ScheduleView() {
   const deleteMut = useMutation({
     mutationFn: (id: number) => api.deleteShift(id),
     onMutate: (id) => shiftDeleteOnMutate({ qc, weekStr, shiftId: id }),
-    onSuccess: () => {
-      invalidateViolationsDeferred(qc);
-    },
+    onSuccess: () => afterMatrixShiftMutationSuccess(qc, weekStr),
     onError: (err, _id, context) => {
       restoreList(qc, shiftsListKey(weekStr), context?.previous);
       alert(errorMessageFromUnknown(err));
@@ -1543,6 +1523,35 @@ export function ScheduleView() {
         clearMatrixDragOverlay();
         return;
       }
+      const eid = resolution.employee_id;
+      const emp =
+        sortedEmployees.find((x) => Number(x.id) === eid) ??
+        employees.find((x) => Number(x.id) === eid);
+      const empName = emp ? String(emp.name ?? "").trim() : "";
+      const ty = typesOrdered.find((t) => typeId(t) === resolution.shift_window_id);
+      const template = buildOptimisticShiftRowTemplate(dayShifts, dateStr, {
+        shift_window_id: resolution.shift_window_id,
+        employee_id: resolution.employee_id,
+        syllabus_num: resolution.syllabus_num,
+        syllabus_role_id: resolution.syllabus_role_id ?? undefined,
+      });
+      const optimisticRow =
+        template ??
+        (ty != null
+          ? buildSyntheticOptimisticShiftRowForCreate({
+              dateStr,
+              shift_window_id: resolution.shift_window_id,
+              employee_id: resolution.employee_id,
+              syllabus_num: resolution.syllabus_num,
+              syllabus_role_id: resolution.syllabus_role_id,
+              highlightStartMs: resolution.highlightStartMs,
+              highlightEndMs: resolution.highlightEndMs,
+              shiftWindow: ty,
+              durationByPreset,
+              presets,
+              empName,
+            })
+          : null);
       createMut.mutate({
         shift_window_id: resolution.shift_window_id,
         employee_id: resolution.employee_id,
@@ -1550,16 +1559,22 @@ export function ScheduleView() {
         ...(resolution.syllabus_role_id != null
           ? { syllabus_role_id: resolution.syllabus_role_id }
           : {}),
-        optimisticRow: buildOptimisticShiftRowTemplate(dayShifts, dateStr, {
-          shift_window_id: resolution.shift_window_id,
-          employee_id: resolution.employee_id,
-          syllabus_num: resolution.syllabus_num,
-          syllabus_role_id: resolution.syllabus_role_id ?? undefined,
-        }),
+        optimisticRow,
       });
       clearMatrixDragOverlay();
     },
-    [clearMatrixDragOverlay, createMut, dateStr, dayShifts, reassignMut],
+    [
+      clearMatrixDragOverlay,
+      createMut,
+      dateStr,
+      dayShifts,
+      durationByPreset,
+      employees,
+      presets,
+      reassignMut,
+      sortedEmployees,
+      typesOrdered,
+    ],
   );
 
   const pickScheduleEventKind = useCallback(

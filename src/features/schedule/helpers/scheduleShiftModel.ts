@@ -13,23 +13,37 @@ import {
 } from "../../../shared/timeFormat";
 import type { WindowSegmentDraft } from "./scheduleTypes";
 
+/** Prefer snake_case when that key exists on `s` (including explicit `null` from the server). */
+function pickSnakeOrCamel(s: JsonObject, snake: string, camel: string): unknown {
+  if (Object.prototype.hasOwnProperty.call(s, snake)) return s[snake];
+  if (Object.prototype.hasOwnProperty.call(s, camel)) return s[camel];
+  return s[snake] ?? s[camel];
+}
+
 export function normalizeShiftRow(s: JsonObject): JsonObject {
   return {
     ...s,
     shift_date: s.shift_date ?? s.shiftDate,
     employee_id: "employee_id" in s ? s.employee_id : s.employeeId,
-    start_time: s.start_time ?? s.startTime,
-    end_time: s.end_time ?? s.endTime,
+    start_time: pickSnakeOrCamel(s, "start_time", "startTime"),
+    end_time: pickSnakeOrCamel(s, "end_time", "endTime"),
     type_name: s.type_name ?? s.typeName,
     type_color: s.type_color ?? s.typeColor,
     shift_window_id: s.shift_window_id ?? s.shiftWindowId,
-    syllabus_preset_id: s.syllabus_preset_id ?? s.syllabusPresetId,
+    syllabus_preset_id: pickSnakeOrCamel(s, "syllabus_preset_id", "syllabusPresetId"),
     up_to_date: s.up_to_date ?? s.upToDate,
     syllabus_num: s.syllabus_num ?? s.syllabusNum,
     syllabus_role_id: s.syllabus_role_id ?? s.syllabusRoleId,
     syllabus_role_name: s.syllabus_role_name ?? s.syllabusRoleName,
     syllabus_role_sort_order:
       s.syllabus_role_sort_order ?? s.syllabusRoleSortOrder,
+    prep_start: pickSnakeOrCamel(s, "prep_start", "prepStart"),
+    prep_end: pickSnakeOrCamel(s, "prep_end", "prepEnd"),
+    rest_start: pickSnakeOrCamel(s, "rest_start", "restStart"),
+    rest_end: pickSnakeOrCamel(s, "rest_end", "restEnd"),
+    prep_minutes: pickSnakeOrCamel(s, "prep_minutes", "prepMinutes"),
+    rest_minutes: pickSnakeOrCamel(s, "rest_minutes", "restMinutes"),
+    duration_minutes: pickSnakeOrCamel(s, "duration_minutes", "durationMinutes"),
   };
 }
 

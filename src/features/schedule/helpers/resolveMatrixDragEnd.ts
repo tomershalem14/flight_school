@@ -15,6 +15,9 @@ export type MatrixDragEndResolution =
       employee_id: number;
       syllabus_num: number;
       syllabus_role_id?: number;
+      /** Clipped wall interval from the type-slot pill (same as drag payload). */
+      highlightStartMs: number;
+      highlightEndMs: number;
     };
 
 export function resolveMatrixDragEnd(args: {
@@ -85,5 +88,7 @@ export function resolveMatrixDragEnd(args: {
     employee_id: dropEmpId,
     syllabus_num: dragData.syllabusNum,
     syllabus_role_id: dragData.syllabusRoleId,
+    highlightStartMs: dragData.highlightStartMs,
+    highlightEndMs: dragData.highlightEndMs,
   };
 }

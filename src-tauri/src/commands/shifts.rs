@@ -37,21 +37,10 @@ pub fn get_shifts(state: State<'_, AppState>, week_start: String) -> Result<Vec<
     let week_end = parse_week_end(&week_start).map_err(|e| e.to_string())?;
     state
         .with_db(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT s.*, w.name as type_name, w.color as type_color,
-                        sp.duration_minutes, sp.prep_minutes, sp.rest_minutes,
-                        e.name as emp_name, r.name as role_name, r.color as role_color,
-                        srel.name as syllabus_role_name,
-                        srel.sort_order as syllabus_role_sort_order
-                 FROM shifts s
-                 JOIN shift_windows w ON s.shift_window_id = w.id
-                 JOIN syllabus_presets sp ON s.syllabus_preset_id = sp.id
-                 LEFT JOIN employees e ON s.employee_id = e.id
-                 LEFT JOIN roles r ON e.role_id = r.id
-                 LEFT JOIN syllabus_roles srel ON s.syllabus_role_id = srel.id
-                 WHERE s.shift_date BETWEEN ? AND ?
-                 ORDER BY s.shift_date, s.start_time",
-            )?;
+            let sql = format!(
+                "{JOINED_SHIFT_SELECT} WHERE s.shift_date BETWEEN ? AND ? ORDER BY s.shift_date, s.start_time"
+            );
+            let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(params![week_start, week_end], |row| {
                 sqlite_row_to_object(row)
             })?;
@@ -80,10 +69,8 @@ fn schedule_err_validation(msg: impl std::fmt::Display) -> AppError {
     AppError::msg(format!("[phase:validation] {}", msg))
 }
 
-/// Same joined shape as [`get_shifts`] for a single `s.id` (after insert / reassign).
-fn shift_row_json_by_id(conn: &rusqlite::Connection, id: i64) -> Result<Value, AppError> {
-    let mut stmt = conn.prepare(
-        "SELECT s.*, w.name as type_name, w.color as type_color,
+/// Joined `get_shifts` row shape (single source for SELECT body).
+const JOINED_SHIFT_SELECT: &str = r#"SELECT s.*, w.name as type_name, w.color as type_color,
                 sp.duration_minutes, sp.prep_minutes, sp.rest_minutes,
                 e.name as emp_name, r.name as role_name, r.color as role_color,
                 srel.name as syllabus_role_name,
@@ -93,12 +80,7 @@ fn shift_row_json_by_id(conn: &rusqlite::Connection, id: i64) -> Result<Value, A
          JOIN syllabus_presets sp ON s.syllabus_preset_id = sp.id
          LEFT JOIN employees e ON s.employee_id = e.id
          LEFT JOIN roles r ON e.role_id = r.id
-         LEFT JOIN syllabus_roles srel ON s.syllabus_role_id = srel.id
-         WHERE s.id = ?",
-    )?;
-    let row = stmt.query_row(params![id], |r| sqlite_row_to_object(r))?;
-    Ok(row)
-}
+         LEFT JOIN syllabus_roles srel ON s.syllabus_role_id = srel.id"#;
 
 fn ensure_employee_exists(conn: &rusqlite::Connection, employee_id: Option<i64>) -> Result<(), String> {
     let Some(eid) = employee_id else {
@@ -205,8 +187,7 @@ pub fn create_shift(state: State<'_, AppState>, payload: ShiftCreate) -> Result<
                 }
             }
             tx.commit().map_err(AppError::from)?;
-            let row = shift_row_json_by_id(conn, new_id)?;
-            Ok(json!({ "id": new_id, "violations": violations, "row": row }))
+            Ok(json!({ "id": new_id, "violations": violations }))
         })
         .map_err(|e| e.to_string())
 }
@@ -312,6 +293,8 @@ pub fn reassign_shift_employee(
 
             recalc_chained_prep_rest_for_employee_day(&*tx, old, &shift_date)
                 .map_err(schedule_err_validation)?;
+            recalc_chained_prep_rest_for_employee_day(&*tx, payload.employee_id, &shift_date)
+                .map_err(schedule_err_validation)?;
             recalc_largest_bunch_intersecting_slot_group(&*tx, &shift_date, wid, sn)
                 .map_err(schedule_err_validation)?;
 
@@ -320,8 +303,7 @@ pub fn reassign_shift_employee(
                 violations.push(v.to_json());
             }
             tx.commit().map_err(AppError::from)?;
-            let row = shift_row_json_by_id(conn, new_id)?;
-            Ok(json!({ "id": new_id, "violations": violations, "row": row }))
+            Ok(json!({ "id": new_id, "violations": violations }))
         })
         .map_err(|e| e.to_string())
 }
@@ -359,7 +341,7 @@ pub fn delete_shift(state: State<'_, AppState>, shift_id: i64) -> Result<Value, 
                 heal_slot_group_after_delete(&*tx, date, wid, sn).map_err(schedule_err_validation)?;
             }
             tx.commit().map_err(AppError::from)?;
-            Ok(json!({"ok": true}))
+            Ok(json!({ "ok": true }))
         })
         .map_err(|e| e.to_string())
 }

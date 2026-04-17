@@ -1,7 +1,10 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { MutableRefObject } from "react";
 import type { JsonObject } from "../../../shared/api";
-import { normalizeShiftRow } from "./scheduleShiftModel";
+import { shiftTypePillColors } from "../../../shared/shiftTypeColors";
+import { windowDayTimeline } from "../../../shared/manningHours";
+import { formatLocalHmFromMs } from "./matrixHoverSnap";
+import { normalizeShiftRow, presetSyllabusRolesSorted } from "./scheduleShiftModel";
 
 export function shiftsListKey(weekStr: string) {
   return ["shifts", weekStr] as const;
@@ -28,6 +31,12 @@ export function invalidateViolationsDeferred(qc: QueryClient) {
   queueMicrotask(() => {
     void qc.invalidateQueries({ queryKey: ["violations"] });
   });
+}
+
+/** Matrix shift create/reassign/delete success: full week `get_shifts` refetch + violations refresh. */
+export function afterMatrixShiftMutationSuccess(qc: QueryClient, weekStr: string): void {
+  void qc.invalidateQueries({ queryKey: shiftsListKey(weekStr) });
+  invalidateViolationsDeferred(qc);
 }
 
 export function nextNegativeTempId(ref: MutableRefObject<number>): number {
@@ -193,7 +202,7 @@ export function shiftReassignOnMutate(args: {
   weekStr: string;
   shiftId: number;
   employeeId: number;
-}): { previous: JsonObject[] | undefined; shiftId: number } {
+}): { previous: JsonObject[] | undefined } {
   const { qc, weekStr, shiftId, employeeId } = args;
   const key = shiftsListKey(weekStr);
   voidCancelListQuery(qc, key);
@@ -203,41 +212,7 @@ export function shiftReassignOnMutate(args: {
       Number(row.id) === shiftId ? { ...row, employee_id: employeeId } : row,
     ),
   );
-  return { previous, shiftId };
-}
-
-/**
- * Server may adjust prep/rest after reassign; UI shows old times until optional delayed refetch.
- * Call from `onSuccess` if you want DB-accurate prep/rest without immediate invalidate jitter.
- */
-export function scheduleDelayedShiftsRefetch(qc: QueryClient, weekStr: string, ms = 2000) {
-  window.setTimeout(() => {
-    void qc.invalidateQueries({ queryKey: shiftsListKey(weekStr) });
-  }, ms);
-}
-
-export function shiftReassignOnSuccess(args: {
-  qc: QueryClient;
-  weekStr: string;
-  oldShiftId: number;
-  data: JsonObject;
-}) {
-  const { qc, weekStr, oldShiftId, data } = args;
-  const key = shiftsListKey(weekStr);
-  const newId = Number(data.id);
-  const row = data.row as JsonObject | undefined;
-  if (row && Number.isFinite(newId)) {
-    const merged = normalizeShiftRow({ ...row, id: newId });
-    qc.setQueryData<JsonObject[]>(key, (old) =>
-      sortShiftsList((old ?? []).map((r) => (Number(r.id) === oldShiftId ? merged : r))),
-    );
-  } else if (Number.isFinite(newId)) {
-    qc.setQueryData<JsonObject[]>(key, (old) =>
-      sortShiftsList(
-        (old ?? []).map((r) => (Number(r.id) === oldShiftId ? { ...r, id: newId } : r)),
-      ),
-    );
-  }
+  return { previous };
 }
 
 export type CreateShiftMutationVars = {
@@ -245,7 +220,7 @@ export type CreateShiftMutationVars = {
   employee_id: number;
   syllabus_num: number;
   syllabus_role_id?: number;
-  /** Best-effort row shape for immediate pill paint; merged with server `row` on success. */
+  /** Best-effort row shape for immediate pill paint; week list refetches after success. */
   optimisticRow?: JsonObject | null;
 };
 
@@ -268,32 +243,78 @@ export function shiftCreateOnMutate(args: {
   return { previous, tempId };
 }
 
-export function shiftCreateOnSuccess(args: {
-  qc: QueryClient;
-  weekStr: string;
-  data: JsonObject;
-  tempId: number | undefined;
-}) {
-  const { qc, weekStr, data, tempId } = args;
-  const key = shiftsListKey(weekStr);
-  const newId = Number(data.id);
-  const row = data.row as JsonObject | undefined;
-  if (!Number.isFinite(newId) || !row) return;
-  const merged = normalizeShiftRow({ ...row, id: newId });
-  if (tempId != null) {
-    qc.setQueryData<JsonObject[]>(key, (old) =>
-      sortShiftsList((old ?? []).map((r) => (Number(r.id) === tempId ? merged : r))),
-    );
-  } else {
-    qc.setQueryData<JsonObject[]>(key, (old) =>
-      sortShiftsList([...(old ?? []), merged]),
-    );
+/**
+ * When no existing `dayShifts` row matches the slot, build a minimal row so optimistic
+ * cache updates still drive the window-row manned tint and employee pill on the same frame.
+ */
+export function buildSyntheticOptimisticShiftRowForCreate(args: {
+  dateStr: string;
+  shift_window_id: number;
+  employee_id: number;
+  syllabus_num: number;
+  syllabus_role_id?: number;
+  highlightStartMs: number;
+  highlightEndMs: number;
+  shiftWindow: JsonObject | undefined;
+  durationByPreset: Map<number, number>;
+  presets: JsonObject[];
+  empName: string;
+}): JsonObject | null {
+  const ty = args.shiftWindow;
+  if (!ty) return null;
+  const { base } = shiftTypePillColors(String(ty.color ?? "#7BA3B5"));
+  const { segments } = windowDayTimeline(args.dateStr, ty, args.durationByPreset, base);
+  const seg = segments.find((s) => s.syllabusNum === args.syllabus_num);
+  if (!seg) return null;
+
+  const preset = args.presets.find((p) => Number(p.id) === seg.presetId);
+  const durationMinutes = args.durationByPreset.get(seg.presetId) ?? 60;
+  const prepM = Number(preset?.prep_minutes ?? preset?.prepMinutes ?? 0) || 0;
+  const restM = Number(preset?.rest_minutes ?? preset?.restMinutes ?? 0) || 0;
+
+  const roles = presetSyllabusRolesSorted(preset);
+  let syllabusRoleId: number | undefined = args.syllabus_role_id;
+  if (syllabusRoleId == null && roles.length === 1) {
+    syllabusRoleId = Number(roles[0].id);
   }
+  const roleRow =
+    syllabusRoleId != null && Number.isFinite(syllabusRoleId)
+      ? roles.find((r) => Number(r.id) === syllabusRoleId)
+      : undefined;
+  const syllabus_role_name = roleRow ? String(roleRow.name ?? "").trim() : "";
+
+  const start_time = formatLocalHmFromMs(args.highlightStartMs);
+  const end_time = formatLocalHmFromMs(args.highlightEndMs);
+
+  const row: JsonObject = {
+    shift_date: args.dateStr,
+    shift_window_id: args.shift_window_id,
+    employee_id: args.employee_id,
+    syllabus_num: args.syllabus_num,
+    syllabus_preset_id: seg.presetId,
+    start_time,
+    end_time,
+    type_name: String(ty.name ?? ""),
+    type_color: String(ty.color ?? "#7BA3B5"),
+    duration_minutes: durationMinutes,
+    prep_minutes: prepM,
+    rest_minutes: restM,
+    emp_name: args.empName,
+    up_to_date: true,
+  };
+  if (syllabusRoleId != null && Number.isFinite(syllabusRoleId)) {
+    row.syllabus_role_id = syllabusRoleId;
+  }
+  if (syllabus_role_name) row.syllabus_role_name = syllabus_role_name;
+  if (roleRow) {
+    row.syllabus_role_sort_order = Number(roleRow.sort_order ?? roleRow.sortOrder ?? 0);
+  }
+  return row;
 }
 
 /**
  * Template for optimistic shift: same window/syllabus/(role) on `dateStr`, any employee.
- * Returns null if none (first fill of slot); caller may still get `row` from API on success.
+ * Returns null if none (first fill of slot).
  */
 export function buildOptimisticShiftRowTemplate(
   dayShifts: JsonObject[],
