@@ -2,6 +2,7 @@
 
 pub mod employee_order_presets;
 pub mod employees;
+pub mod global_rules;
 pub mod fixed_assignments;
 pub mod remote_reg;
 pub mod reports;

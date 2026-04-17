@@ -223,3 +223,23 @@ export async function uiKvGet(key: string): Promise<string | null> {
 export async function uiKvSet(key: string, value: string): Promise<JsonObject> {
   return invoke("ui_kv_set", { key, value });
 }
+
+export type GlobalRulesPayload = {
+  rest_between_shifts: number;
+  rest_between_outer: number;
+  /** Hours (server persists as minutes in SQLite). */
+  max_workday: number;
+  early_time: string;
+  late_time: string;
+  max_late_days: number;
+  max_early_days: number;
+  max_days_extreme: number;
+};
+
+export async function getGlobalRules(): Promise<JsonObject> {
+  return invoke("get_global_rules");
+}
+
+export async function setGlobalRules(payload: GlobalRulesPayload): Promise<JsonObject> {
+  return invoke("set_global_rules", { payload });
+}

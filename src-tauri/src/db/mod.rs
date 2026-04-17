@@ -256,6 +256,57 @@ fn apply_schema(conn: &mut Connection) -> AppResult<()> {
         conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (20)", [])?;
     }
 
+    let v21: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 21",
+        [],
+        |r| r.get(0),
+    )?;
+    if v21 == 0 {
+        const M21: &str = include_str!("../../migrations/021_global_rules.sql");
+        conn.execute_batch(M21)?;
+        conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (21)", [])?;
+    }
+
+    let v22: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 22",
+        [],
+        |r| r.get(0),
+    )?;
+    if v22 == 0 {
+        const M22: &str = include_str!("../../migrations/022_global_rules_rest_between_outer.sql");
+        if table_exists(conn, "global_rules")? {
+            let col: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('global_rules') WHERE name = 'rest_between_outer'",
+                [],
+                |r| r.get(0),
+            )?;
+            if col == 0 {
+                conn.execute_batch(M22)?;
+            }
+        }
+        conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (22)", [])?;
+    }
+
+    let v23: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 23",
+        [],
+        |r| r.get(0),
+    )?;
+    if v23 == 0 {
+        const M23: &str = include_str!("../../migrations/023_global_rules_max_days_extreme.sql");
+        if table_exists(conn, "global_rules")? {
+            let col: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('global_rules') WHERE name = 'max_days_extreme'",
+                [],
+                |r| r.get(0),
+            )?;
+            if col == 0 {
+                conn.execute_batch(M23)?;
+            }
+        }
+        conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (23)", [])?;
+    }
+
     Ok(())
 }
 

@@ -80,6 +80,8 @@ pub fn run() {
             commands::ui_kv::ui_kv_get,
             commands::ui_kv::ui_kv_set,
             commands::ui_kv::ui_kv_remove,
+            commands::global_rules::get_global_rules,
+            commands::global_rules::set_global_rules,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

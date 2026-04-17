@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import * as api from "../../shared/api";
 import type { JsonObject } from "../../shared/api";
@@ -15,7 +16,62 @@ const SYLLABUS_DATA_COL = `calc((100% - ${ACTIONS_COL_CSS}) / 8)`;
 /** Matches `size-8` + horizontal padding in star column (`px-2`). */
 const ORDER_TAB_STAR_W = "3rem";
 const ORDER_PRESET_NAME_COL = `calc(100% - ${ORDER_TAB_STAR_W} - ${ACTIONS_COL_CSS})`;
-type ManagementTab = "employees" | "roles" | "syllabi" | "employee_orders";
+type ManagementTab = "employees" | "roles" | "syllabi" | "employee_orders" | "rules";
+
+/** Placeholder copy for rules section dividers (replace per section when copy is ready). */
+const RULES_SECTION_NOTES = {
+  afterRest: "הגדרה של כמה זמן מנוחה מקבל מדריך בין טיסות ובין תחקירים לתדריכים, ההתייחסות היא למחמיר מביניהם.",
+  afterWorkday: "הגדרה של מה יום העבודה הארוך ביותר שניתן להגדיר למדריך בשעות מתחילת אירוע ראשון ועד סוף אירוע אחרון",
+  afterTimes: "הגדרה של מה נחשב מוקדם ומה נחשב מאוחר. בשימוש לוידוא שמדריך לא מגיע מוקדם אחרי שהוא נשאר מאוחר, ובנוסף לאכיפת החוקים השבועיים.",
+  footer: "הגדרה של מספר ימים בשבוע שמותר למדריך להגיע מוקדם, מאוחר או בשעות קצה בכלל.",
+} as const;
+
+const RULES_LABEL_CLASS =
+  "max-w-[13rem] min-w-0 self-center text-right text-sm font-semibold text-ink";
+
+type GlobalRulesDraft = {
+  rest_between_shifts: number;
+  rest_between_outer: number;
+  /** Hours (API / server use hours on the wire; DB stores minutes). */
+  max_workday: number;
+  early_time: string;
+  late_time: string;
+  max_late_days: number;
+  max_early_days: number;
+  max_days_extreme: number;
+};
+
+const DEFAULT_GLOBAL_RULES: GlobalRulesDraft = {
+  rest_between_shifts: 0,
+  rest_between_outer: 0,
+  max_workday: 12,
+  early_time: "06:00",
+  late_time: "22:00",
+  max_late_days: 0,
+  max_early_days: 0,
+  max_days_extreme: 0,
+};
+
+/** Full-width note + bar (sibling of field grids, not inside a narrow grid). */
+function RulesSectionDivider({ note }: { note: ReactNode }) {
+  return (
+    <div className="w-full min-w-0 space-y-2 pt-3" role="separator">
+      <p className="text-xs leading-relaxed text-muted">{note}</p>
+      <div className="h-[2px] w-full shrink-0 rounded-full bg-ink/25" aria-hidden />
+    </div>
+  );
+}
+
+/** Label + input rows, aligned to the inline-start edge (physical right under dir=rtl). */
+function RulesFieldsGrid({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex w-full min-w-0 justify-start">
+      <div className="grid w-max max-w-full grid-cols-1 justify-items-start gap-y-2 sm:grid-cols-[minmax(0,13rem)_minmax(12rem,22rem)] sm:gap-x-8 sm:gap-y-3">
+        {children}
+      </div>
+    </div>
+  );
+}
 
 type EmployeeKind = "admin" | "regular" | "extra" | "reserve";
 
@@ -194,6 +250,7 @@ export function ManagementView() {
     | { phase: "edit"; presetId: number; name: string; rows: JsonObject[] }
   >(null);
   const [empOrderCreateSaving, setEmpOrderCreateSaving] = useState(false);
+  const [rulesDraft, setRulesDraft] = useState<GlobalRulesDraft>(DEFAULT_GLOBAL_RULES);
 
   const { data: employeesRaw = [] } = useQuery({
     queryKey: ["employees", "management"],
@@ -227,6 +284,45 @@ export function ManagementView() {
     () => employeeOrdersRaw as JsonObject[],
     [employeeOrdersRaw],
   );
+
+  const globalRulesQuery = useQuery({
+    queryKey: ["global_rules"],
+    queryFn: () => api.getGlobalRules(),
+    enabled: tab === "rules",
+  });
+
+  useEffect(() => {
+    const g = globalRulesQuery.data;
+    if (!g || tab !== "rules") return;
+    setRulesDraft({
+      rest_between_shifts: Number(g.rest_between_shifts ?? 0),
+      rest_between_outer: Number(g.rest_between_outer ?? 0),
+      max_workday: Number(g.max_workday ?? 12),
+      early_time: String(g.early_time ?? "06:00").trim() || "06:00",
+      late_time: String(g.late_time ?? "22:00").trim() || "22:00",
+      max_late_days: Number(g.max_late_days ?? 0),
+      max_early_days: Number(g.max_early_days ?? 0),
+      max_days_extreme: Number(g.max_days_extreme ?? 0),
+    });
+  }, [globalRulesQuery.data, tab]);
+
+  const saveGlobalRulesMut = useMutation({
+    mutationFn: (payload: GlobalRulesDraft) =>
+      api.setGlobalRules({
+        rest_between_shifts: Math.trunc(payload.rest_between_shifts),
+        rest_between_outer: Math.trunc(payload.rest_between_outer),
+        max_workday: Number(payload.max_workday),
+        early_time: payload.early_time.trim(),
+        late_time: payload.late_time.trim(),
+        max_late_days: Math.trunc(payload.max_late_days),
+        max_early_days: Math.trunc(payload.max_early_days),
+        max_days_extreme: Math.trunc(payload.max_days_extreme),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["global_rules"] });
+    },
+  });
+
   const activeEmployeeOrderPresetId = useMemo(
     () => activePresetIdFromList(employeeOrders),
     [employeeOrders],
@@ -526,7 +622,7 @@ export function ManagementView() {
   return (
     <div
       id="app"
-      className="flex min-h-0 min-w-0 flex-1 flex-col bg-background"
+      className="flex min-h-0 min-w-0 w-full max-w-none flex-1 flex-col bg-background"
     >
       <header className="sticky top-0 z-30 flex gap-3 border-b border-line bg-surface/95 px-4 pb-0 shadow-airy backdrop-blur-sm">
         <div className="flex min-h-[4.25rem] min-w-0 flex-1 flex-col pt-3">
@@ -590,6 +686,19 @@ export function ManagementView() {
                 onClick={() => setTab("employee_orders")}
               >
                 סדר מפעילים
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === "rules"}
+                className={`border-b-2 pb-1.5 text-sm font-heading font-semibold leading-none transition-colors ${
+                  tab === "rules"
+                    ? "border-primary text-primary"
+                    : "border-line text-muted hover:border-primary/50 hover:text-primary"
+                }`}
+                onClick={() => setTab("rules")}
+              >
+                כללים
               </button>
             </div>
           </div>
@@ -655,8 +764,8 @@ export function ManagementView() {
         </div>
       </header>
 
-      <div className="min-h-0 min-w-0 flex-1 overflow-auto p-4">
-        <div className="flex w-full min-w-0 flex-col gap-4">
+      <div className="min-h-0 min-w-0 w-full max-w-none flex-1 overflow-auto p-4">
+        <div className="flex w-full min-w-0 max-w-none flex-col gap-4">
         {tab === "employees" && (
           <div className="flex flex-col gap-4">
             <div className="flex w-full max-w-none overflow-hidden rounded-pill border border-line bg-surface shadow-sm">
@@ -1286,6 +1395,196 @@ export function ManagementView() {
                 </tbody>
               </table>
             </div>
+          </div>
+        )}
+
+        {tab === "rules" && (
+          <div
+            className="w-full min-w-0 overflow-hidden rounded-card border border-line bg-surface p-6 text-start shadow-airy"
+            dir="rtl"
+          >
+            {globalRulesQuery.isPending ? (
+              <p className="text-sm text-muted">טוען…</p>
+            ) : globalRulesQuery.isError ? (
+              <p className="text-sm text-peach-4">
+                {errorMessageFromUnknown(globalRulesQuery.error)}
+              </p>
+            ) : (
+              <form
+                className="flex w-full min-w-0 flex-col gap-4"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  saveGlobalRulesMut.mutate(rulesDraft);
+                }}
+              >
+                <RulesFieldsGrid>
+                  <label className={RULES_LABEL_CLASS} htmlFor="rule-rest-between">
+                    מנוחה בין משמרות (דקות)
+                  </label>
+                  <input
+                    id="rule-rest-between"
+                    type="number"
+                    min={0}
+                    step={1}
+                    className="w-full max-w-md"
+                    value={
+                      Number.isFinite(rulesDraft.rest_between_shifts)
+                        ? rulesDraft.rest_between_shifts
+                        : 0
+                    }
+                    onChange={(e) =>
+                      setRulesDraft((d) => ({
+                        ...d,
+                        rest_between_shifts: Number(e.target.value) || 0,
+                      }))
+                    }
+                  />
+                  <label className={RULES_LABEL_CLASS} htmlFor="rule-rest-between-outer">
+                    מנוחה בין תחקיר לתדריך (דקות)
+                  </label>
+                  <input
+                    id="rule-rest-between-outer"
+                    type="number"
+                    min={0}
+                    step={1}
+                    className="w-full max-w-md"
+                    value={
+                      Number.isFinite(rulesDraft.rest_between_outer)
+                        ? rulesDraft.rest_between_outer
+                        : 0
+                    }
+                    onChange={(e) =>
+                      setRulesDraft((d) => ({
+                        ...d,
+                        rest_between_outer: Number(e.target.value) || 0,
+                      }))
+                    }
+                  />
+                </RulesFieldsGrid>
+                <RulesSectionDivider note={RULES_SECTION_NOTES.afterRest} />
+                <RulesFieldsGrid>
+                  <label className={RULES_LABEL_CLASS} htmlFor="rule-max-workday">
+                    יום עבודה מקסימלי (שעות)
+                  </label>
+                  <input
+                    id="rule-max-workday"
+                    type="number"
+                    min={0}
+                    step="any"
+                    className="w-full max-w-md"
+                    value={Number.isFinite(rulesDraft.max_workday) ? rulesDraft.max_workday : 0}
+                    onChange={(e) =>
+                      setRulesDraft((d) => ({
+                        ...d,
+                        max_workday: Number(e.target.value) || 0,
+                      }))
+                    }
+                  />
+                </RulesFieldsGrid>
+                <RulesSectionDivider note={RULES_SECTION_NOTES.afterWorkday} />
+                <RulesFieldsGrid>
+                  <label className={RULES_LABEL_CLASS} htmlFor="rule-early-time">
+                    שעה מוקדמת
+                  </label>
+                  <input
+                    id="rule-early-time"
+                    type="time"
+                    className="w-full max-w-md"
+                    value={(rulesDraft.early_time || "00:00").slice(0, 5)}
+                    onChange={(e) =>
+                      setRulesDraft((d) => ({ ...d, early_time: e.target.value }))
+                    }
+                  />
+                  <label className={RULES_LABEL_CLASS} htmlFor="rule-late-time">
+                    שעה מאוחרת
+                  </label>
+                  <input
+                    id="rule-late-time"
+                    type="time"
+                    className="w-full max-w-md"
+                    value={(rulesDraft.late_time || "00:00").slice(0, 5)}
+                    onChange={(e) =>
+                      setRulesDraft((d) => ({ ...d, late_time: e.target.value }))
+                    }
+                  />
+                </RulesFieldsGrid>
+                <RulesSectionDivider note={RULES_SECTION_NOTES.afterTimes} />
+                <RulesFieldsGrid>
+                  <label className={RULES_LABEL_CLASS} htmlFor="rule-max-late-days">
+                    מקסימום ימים מאוחרים
+                  </label>
+                  <input
+                    id="rule-max-late-days"
+                    type="number"
+                    min={0}
+                    step={1}
+                    className="w-full max-w-md"
+                    value={Number.isFinite(rulesDraft.max_late_days) ? rulesDraft.max_late_days : 0}
+                    onChange={(e) =>
+                      setRulesDraft((d) => ({
+                        ...d,
+                        max_late_days: Number(e.target.value) || 0,
+                      }))
+                    }
+                  />
+                  <label className={RULES_LABEL_CLASS} htmlFor="rule-max-early-days">
+                    מקסימום ימים מוקדמים
+                  </label>
+                  <input
+                    id="rule-max-early-days"
+                    type="number"
+                    min={0}
+                    step={1}
+                    className="w-full max-w-md"
+                    value={
+                      Number.isFinite(rulesDraft.max_early_days) ? rulesDraft.max_early_days : 0
+                    }
+                    onChange={(e) =>
+                      setRulesDraft((d) => ({
+                        ...d,
+                        max_early_days: Number(e.target.value) || 0,
+                      }))
+                    }
+                  />
+                  <label className={RULES_LABEL_CLASS} htmlFor="rule-max-days-extreme">
+                    מקסימום ימים בשעות קצה
+                  </label>
+                  <input
+                    id="rule-max-days-extreme"
+                    type="number"
+                    min={0}
+                    step={1}
+                    className="w-full max-w-md"
+                    value={
+                      Number.isFinite(rulesDraft.max_days_extreme)
+                        ? rulesDraft.max_days_extreme
+                        : 0
+                    }
+                    onChange={(e) =>
+                      setRulesDraft((d) => ({
+                        ...d,
+                        max_days_extreme: Number(e.target.value) || 0,
+                      }))
+                    }
+                  />
+                </RulesFieldsGrid>
+                <RulesSectionDivider note={RULES_SECTION_NOTES.footer} />
+                {saveGlobalRulesMut.isError ? (
+                  <p className="text-sm text-peach-4">
+                    {errorMessageFromUnknown(saveGlobalRulesMut.error)}
+                  </p>
+                ) : null}
+                <div className="flex w-full justify-start pt-1">
+                  <button
+                    type="submit"
+                    className="rounded-pill bg-primary px-4 py-2 text-sm font-heading font-bold text-white shadow-sm hover:opacity-90 disabled:opacity-50"
+                    disabled={saveGlobalRulesMut.isPending}
+                  >
+                    שמירה
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         )}
         </div>

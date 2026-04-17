@@ -1,0 +1,1 @@
+ALTER TABLE global_rules ADD COLUMN max_days_extreme INTEGER NOT NULL DEFAULT 0;
