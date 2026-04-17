@@ -1166,7 +1166,7 @@ export function ScheduleView() {
         >
           <div
             ref={matrixScrollRef}
-            className="w-full overflow-auto rounded-card border border-line bg-surface shadow-airy"
+            className="w-full select-none overflow-auto rounded-card border border-line bg-surface shadow-airy"
           >
             <div ref={matrixTableWrapRef} className="relative w-full min-w-full">
             <table
