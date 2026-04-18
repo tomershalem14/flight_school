@@ -38,20 +38,21 @@ export function coverageIsoFromDayAndHm(
   hm: string,
   isEnd = false,
 ): string {
-  const t = String(hm).trim();
-  const m = /^(\d{1,2}):(\d{2})$/.exec(t);
-  if (m) {
-    const h = parseInt(m[1], 10);
-    const min = parseInt(m[2], 10);
-    const hh = m[1].padStart(2, "0");
-    const mm = m[2].padStart(2, "0");
-    let dayStr = dateStr;
-    if (isEnd && h === 0 && min === 0) {
-      const ymdParts = dateStr.split("-").map(Number);
-      const base = new Date(ymdParts[0], ymdParts[1] - 1, ymdParts[2]);
-      dayStr = formatYmd(addDays(base, 1));
-    }
-    return `${dayStr}T${hh}:${mm}:00`;
+  const fallback = isEnd ? "21:00" : "06:00";
+  const normalized = formatTimeForInput(String(hm ?? "").trim()) || fallback;
+  const m = /^(\d{1,2}):(\d{2})$/.exec(normalized);
+  if (!m) {
+    return `${dateStr}T${fallback}:00`;
   }
-  return `${dateStr}T${t}`;
+  const h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  const hh = m[1].padStart(2, "0");
+  const mm = m[2].padStart(2, "0");
+  let dayStr = dateStr;
+  if (isEnd && h === 0 && min === 0) {
+    const ymdParts = dateStr.split("-").map(Number);
+    const base = new Date(ymdParts[0], ymdParts[1] - 1, ymdParts[2]);
+    dayStr = formatYmd(addDays(base, 1));
+  }
+  return `${dayStr}T${hh}:${mm}:00`;
 }

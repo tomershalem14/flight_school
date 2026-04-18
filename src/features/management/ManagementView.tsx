@@ -21,7 +21,7 @@ type ManagementTab = "employees" | "roles" | "syllabi" | "employee_orders" | "ru
 /** Placeholder copy for rules section dividers (replace per section when copy is ready). */
 const RULES_SECTION_NOTES = {
   afterRest: "הגדרה של כמה זמן מנוחה מקבל מדריך בין טיסות ובין תחקירים לתדריכים, ההתייחסות היא למחמיר מביניהם.",
-  afterWorkday: "הגדרה של מה יום העבודה הארוך ביותר שניתן להגדיר למדריך בשעות מתחילת אירוע ראשון ועד סוף אירוע אחרון",
+  afterWorkday: "הגדרה של מה יום העבודה הארוך ביותר שניתן להגדיר למדריך בשעות מתחילת אירוע ראשון ועד סוף אירוע אחרון.",
   afterTimes: "הגדרה של מה נחשב מוקדם ומה נחשב מאוחר. בשימוש לוידוא שמדריך לא מגיע מוקדם אחרי שהוא נשאר מאוחר, ובנוסף לאכיפת החוקים השבועיים.",
   footer: "הגדרה של מספר ימים בשבוע שמותר למדריך להגיע מוקדם, מאוחר או בשעות קצה בכלל.",
 } as const;
@@ -195,6 +195,8 @@ function syllabusMinutesLabel(n: number): string {
 }
 
 type SyllabusRoleDraftRow = {
+  /** Stable `syllabus_roles.id` from API; omitted for newly added rows. */
+  id?: number;
   name: string;
   role_id: number | "";
   special: string;
@@ -207,12 +209,15 @@ function normalizePresetDraftFromApi(p: JsonObject): JsonObject {
     syllabus_roles = raw.map((r) => {
       const ro = r as JsonObject;
       const rid = ro.role_id;
-      return {
+      const sid = ro.id;
+      const row: SyllabusRoleDraftRow = {
         name: String(ro.name ?? ""),
         role_id:
           rid != null && rid !== "" && !Number.isNaN(Number(rid)) ? Number(rid) : "",
         special: String(ro.special ?? ""),
       };
+      if (typeof sid === "number" && Number.isFinite(sid)) row.id = sid;
+      return row;
     });
   } else {
     syllabus_roles = [{ name: "", role_id: "", special: "" }];
@@ -494,11 +499,21 @@ export function ManagementView() {
       const maxInRow = Math.max(1, Number(presetDraft.max_in_row ?? 1));
       const segs = presetDraft.syllabus_roles as JsonObject[] | undefined;
       const syllabus_roles = Array.isArray(segs)
-        ? segs.map((r) => ({
-            name: String(r.name ?? ""),
-            role_id: r.role_id === "" || r.role_id == null ? null : Number(r.role_id),
-            special: String(r.special ?? ""),
-          }))
+        ? segs.map((r) => {
+            const ro = r as JsonObject;
+            const out: {
+              id?: number;
+              name: string;
+              role_id: number | null;
+              special: string;
+            } = {
+              name: String(ro.name ?? ""),
+              role_id: ro.role_id === "" || ro.role_id == null ? null : Number(ro.role_id),
+              special: String(ro.special ?? ""),
+            };
+            if (typeof ro.id === "number" && Number.isFinite(ro.id)) out.id = ro.id;
+            return out;
+          })
         : [{ name: "", role_id: null as number | null, special: "" }];
       const body: JsonObject = {
         name,
@@ -531,6 +546,7 @@ export function ManagementView() {
       qc.invalidateQueries({ queryKey: ["shift_windows"] });
       qc.invalidateQueries({ queryKey: ["shifts"] });
       qc.invalidateQueries({ queryKey: ["violations"] });
+      deletePresetMut.reset();
     },
   });
 
@@ -740,7 +756,7 @@ export function ManagementView() {
                     joint_prep: true,
                     joint_rest: false,
                     notes: "",
-                    syllabus_roles: [{ name: "", role_id: "", special: "" }],
+                    syllabus_roles: [{ name: "", role_id: "", special: "" } satisfies SyllabusRoleDraftRow],
                   })
                 }
               >
@@ -981,6 +997,13 @@ export function ManagementView() {
 
         {tab === "syllabi" && (
           <div className="flex flex-col gap-4">
+            {deletePresetMut.isError ? (
+              <p className="rounded-card border border-peach-3/50 bg-peach-1/40 px-3 py-2 text-sm text-ink">
+                {deletePresetMut.error instanceof Error
+                  ? deletePresetMut.error.message
+                  : String(deletePresetMut.error)}
+              </p>
+            ) : null}
             <div className="flex w-full max-w-none overflow-hidden rounded-pill border border-line bg-surface shadow-sm">
               <div className="relative min-w-0 flex-1">
                 <span className="pointer-events-none absolute inset-y-0 end-3 flex items-center text-muted">
@@ -2190,7 +2213,7 @@ export function ManagementView() {
                     ]
                   ).map((row, idx) => (
                     <div
-                      key={`preset-sr-${idx}`}
+                      key={row.id != null ? `preset-sr-${row.id}` : `preset-sr-new-${idx}`}
                       className="grid grid-cols-[1fr_1fr_1fr] items-end gap-2"
                     >
                       <input

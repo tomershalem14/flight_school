@@ -58,6 +58,81 @@ pub fn default_syllabus_preset_id(conn: &Connection) -> rusqlite::Result<i64> {
     )
 }
 
+/// Canonical fallback `syllabus_roles` row when retargeting shifts after a preset delete.
+pub fn default_syllabus_role_id(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT id FROM syllabus_roles WHERE system_locked = 1 LIMIT 1",
+        [],
+        |r| r.get(0),
+    )
+}
+
+/// After `syllabus_preset_id` was moved to `def_preset_id`, fix `syllabus_role_id` to roles on that
+/// preset, preferring the system-locked default role, without breaking `idx_shifts_slot_role_unique`.
+pub fn reassign_shift_roles_after_preset_retargent(
+    tx: &Transaction<'_>,
+    def_preset_id: i64,
+    shifts: &[(i64, String, i64, i64)],
+) -> Result<(), String> {
+    if shifts.is_empty() {
+        return Ok(());
+    }
+
+    let default_rid = default_syllabus_role_id(tx).map_err(|e| e.to_string())?;
+
+    let mut stmt = tx
+        .prepare(
+            "SELECT id FROM syllabus_roles WHERE syllabus_preset_id = ?1
+             ORDER BY system_locked DESC, sort_order, id",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut candidates: Vec<i64> = stmt
+        .query_map([def_preset_id], |r| r.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    drop(stmt);
+
+    if candidates.is_empty() {
+        return Err("אין תפקידי סילבוס לברירת המחדל".to_string());
+    }
+
+    if let Some(pos) = candidates.iter().position(|&id| id == default_rid) {
+        let r = candidates.remove(pos);
+        candidates.insert(0, r);
+    }
+
+    for &(shift_id, ref shift_date, wid, syllabus_num) in shifts {
+        let mut chosen: Option<i64> = None;
+        for &cand in &candidates {
+            let n: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM shifts
+                     WHERE shift_date = ?1 AND shift_window_id = ?2 AND syllabus_num = ?3
+                       AND syllabus_role_id = ?4 AND employee_id IS NOT NULL AND id != ?5",
+                    params![shift_date, wid, syllabus_num, cand, shift_id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if n == 0 {
+                chosen = Some(cand);
+                break;
+            }
+        }
+        let Some(new_rid) = chosen else {
+            return Err(
+                "לא ניתן למחוק את הסילבוס: משבצת מאוישת חוסמת שיוך מחדש לברירת המחדל".to_string(),
+            );
+        };
+        tx.execute(
+            "UPDATE shifts SET syllabus_role_id = ?1 WHERE id = ?2",
+            params![new_rid, shift_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Load duration_minutes for preset ids (missing id -> omitted).
 pub fn load_preset_durations(
     conn: &Connection,

@@ -2,8 +2,10 @@ import type { JsonObject } from "../../../shared/api";
 import { DEFAULT_SHIFT_TYPE_PASTEL_HEX } from "../../../shared/pastelPalette";
 import {
   parseSlotPresetIdsFromWindow,
+  presetDurationById,
   shiftCoversHour,
   syllabusNumForHourInWindow,
+  validSegmentStartTimes,
   windowDayTimeline,
 } from "../../../shared/manningHours";
 import {
@@ -223,14 +225,73 @@ export function typeId(ty: JsonObject): number {
   return Number(ty.id);
 }
 
-export function buildShiftWindowPayload(d: JsonObject, dateStr: string): JsonObject {
-  const startHm = String(d.coverage_start_time ?? "06:00");
-  const endHm = String(d.coverage_end_time ?? "21:00");
-  const segments = (d.segments as WindowSegmentDraft[]) ?? [];
+/**
+ * Keeps `draft.segments[1..]` on the slot grid after coverage or preset-duration inputs change.
+ * Matches the `<select>` coercion in `ShiftWindowDraftFormFields`: keep current time if valid, else first option.
+ */
+export function resyncWindowSegmentStartTimes(
+  draft: JsonObject,
+  dateStr: string,
+  durationByPresetId: Map<number, number>,
+): JsonObject {
+  const segments = (draft.segments as WindowSegmentDraft[]) ?? [];
+  if (segments.length === 0) return draft;
+
+  const covStart =
+    formatTimeForInput(String(draft.coverage_start_time ?? "").trim()) || "06:00";
+  const covEnd =
+    formatTimeForInput(String(draft.coverage_end_time ?? "").trim()) || "21:00";
+  const endNext = coverageEndIsNextDayMidnight(covEnd);
+
+  const segs: WindowSegmentDraft[] = segments.map((s) => ({ ...s }));
+  if (segs.length > 0) {
+    segs[0] = { ...segs[0], segment_start_time: covStart };
+  }
+
+  for (let i = 1; i < segs.length; i++) {
+    const opts = validSegmentStartTimes(
+      dateStr,
+      covStart,
+      covEnd,
+      endNext,
+      segs.slice(0, i),
+      i,
+      durationByPresetId,
+    );
+    const cur = formatTimeForInput(String(segs[i].segment_start_time ?? "").trim()) || "";
+    const pick = opts.includes(cur) ? cur : (opts[0] ?? cur);
+    segs[i] = {
+      ...segs[i],
+      segment_start_time: pick || segs[i].segment_start_time,
+    };
+  }
+
   return {
-    name: String(d.name ?? "").trim(),
-    color: String(d.color ?? DEFAULT_SHIFT_TYPE_PASTEL_HEX),
-    notes: d.notes ? String(d.notes).trim() || null : null,
+    ...draft,
+    coverage_start_time: covStart,
+    coverage_end_time: covEnd,
+    segments: segs,
+  };
+}
+
+export function buildShiftWindowPayload(
+  d: JsonObject,
+  dateStr: string,
+  presets?: JsonObject[],
+): JsonObject {
+  let working = d;
+  if (presets && presets.length > 0) {
+    working = resyncWindowSegmentStartTimes(d, dateStr, presetDurationById(presets));
+  }
+  const startHm =
+    formatTimeForInput(String(working.coverage_start_time ?? "").trim()) || "06:00";
+  const endHm =
+    formatTimeForInput(String(working.coverage_end_time ?? "").trim()) || "21:00";
+  const segments = (working.segments as WindowSegmentDraft[]) ?? [];
+  return {
+    name: String(working.name ?? "").trim(),
+    color: String(working.color ?? DEFAULT_SHIFT_TYPE_PASTEL_HEX),
+    notes: working.notes ? String(working.notes).trim() || null : null,
     coverage_start: coverageIsoFromDayAndHm(dateStr, startHm),
     coverage_end: coverageIsoFromDayAndHm(dateStr, endHm, true),
     segments: segments.map((s) => ({

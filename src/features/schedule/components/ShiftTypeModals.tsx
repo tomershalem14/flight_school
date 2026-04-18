@@ -3,7 +3,10 @@ import type { RefObject } from "react";
 import type { JsonObject } from "../../../shared/api";
 import { DEFAULT_SHIFT_TYPE_PASTEL_HEX } from "../../../shared/pastelPalette";
 import { PastelSwatchGridDropdown } from "../../../shared/PastelSwatchGridDropdown";
-import { coverageIsoFromDayAndHm } from "../../../shared/timeFormat";
+import {
+  coverageIsoFromDayAndHm,
+  formatTimeForInput,
+} from "../../../shared/timeFormat";
 import { buildShiftWindowPayload } from "../helpers/scheduleShiftModel";
 import { ShiftWindowDraftFormFields } from "./ShiftWindowDraftFormFields";
 
@@ -136,8 +139,10 @@ export function ShiftTypeEditorModal({
             }
             onClick={() => {
               const d = shiftTypeDraft;
-              const startHm = String(d.coverage_start_time ?? "06:00");
-              const endHm = String(d.coverage_end_time ?? "21:00");
+              const startHm =
+                formatTimeForInput(String(d.coverage_start_time ?? "").trim()) || "06:00";
+              const endHm =
+                formatTimeForInput(String(d.coverage_end_time ?? "").trim()) || "21:00";
               const covStart = coverageIsoFromDayAndHm(dateStr, startHm);
               const covEnd = coverageIsoFromDayAndHm(dateStr, endHm, true);
               if (new Date(covEnd).getTime() <= new Date(covStart).getTime()) {
@@ -147,7 +152,7 @@ export function ShiftTypeEditorModal({
                 return;
               }
               setShiftTypeTimeError(null);
-              const payload = buildShiftWindowPayload(d, dateStr);
+              const payload = buildShiftWindowPayload(d, dateStr, presets);
               const editId = Number(d.id);
               if (editId > 0) {
                 updateShiftWindowMut.mutate({ id: editId, payload });

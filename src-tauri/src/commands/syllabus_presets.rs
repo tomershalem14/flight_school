@@ -1,15 +1,21 @@
 use crate::db::AppState;
-use crate::domain::syllabus::{cascade_preset_delete_or_duration_change, default_syllabus_preset_id};
+use crate::domain::syllabus::{
+    cascade_preset_delete_or_duration_change, default_syllabus_preset_id,
+    reassign_shift_roles_after_preset_retargent,
+};
 use crate::error::AppError;
 use crate::json_util::sqlite_row_to_object;
 use rusqlite::params;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tauri::State;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct SyllabusRoleInput {
+    /// Stable row id for updates; omit or unknown id inserts a new role.
+    #[serde(default)]
+    pub id: Option<i64>,
     #[serde(default)]
     pub name: String,
     pub role_id: Option<i64>,
@@ -63,6 +69,197 @@ fn normalize_syllabus_roles(mut rows: Vec<SyllabusRoleInput>) -> Vec<SyllabusRol
         rows.push(SyllabusRoleInput::default());
     }
     rows
+}
+
+fn role_ids_for_preset_tx(
+    tx: &rusqlite::Transaction<'_>,
+    preset_id: i64,
+) -> rusqlite::Result<HashSet<i64>> {
+    let mut stmt = tx.prepare("SELECT id FROM syllabus_roles WHERE syllabus_preset_id = ?1")?;
+    let ids = stmt
+        .query_map([preset_id], |r| r.get::<_, i64>(0))?
+        .collect::<Result<HashSet<_>, _>>()?;
+    Ok(ids)
+}
+
+/// Ordered ids still present for the preset (by sort_order), filtered to `retained`.
+fn ordered_retained_role_ids(
+    tx: &rusqlite::Transaction<'_>,
+    preset_id: i64,
+    retained: &HashSet<i64>,
+) -> rusqlite::Result<Vec<i64>> {
+    let mut stmt = tx.prepare(
+        "SELECT id FROM syllabus_roles WHERE syllabus_preset_id = ?1 ORDER BY sort_order, id",
+    )?;
+    let mut out = Vec::new();
+    for r in stmt.query_map([preset_id], |r| r.get::<_, i64>(0))? {
+        let id = r?;
+        if retained.contains(&id) {
+            out.push(id);
+        }
+    }
+    Ok(out)
+}
+
+fn reassign_shifts_off_removed_roles(
+    tx: &rusqlite::Transaction<'_>,
+    preset_id: i64,
+    removed: &HashSet<i64>,
+    candidates: &[i64],
+) -> Result<(), AppError> {
+    if removed.is_empty() {
+        return Ok(());
+    }
+    if candidates.is_empty() {
+        return Err(AppError::msg(
+            "לא ניתן להסיר את כל תפקידי הסילבוס כשיש משמרות משויכות",
+        ));
+    }
+
+    for &dead_id in removed {
+        let mut stmt = tx.prepare(
+            "SELECT id, shift_date, shift_window_id, syllabus_num FROM shifts
+             WHERE syllabus_role_id = ?1 AND syllabus_preset_id = ?2",
+        )?;
+        let rows: Vec<(i64, String, i64, i64)> = stmt
+            .query_map(params![dead_id, preset_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(AppError::from)?;
+        drop(stmt);
+
+        for (shift_id, shift_date, wid, syllabus_num) in rows {
+            let mut chosen: Option<i64> = None;
+            for &cand in candidates {
+                let n: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM shifts
+                     WHERE shift_date = ?1 AND shift_window_id = ?2 AND syllabus_num = ?3
+                       AND syllabus_role_id = ?4 AND employee_id IS NOT NULL AND id != ?5",
+                    params![shift_date, wid, syllabus_num, cand, shift_id],
+                    |r| r.get(0),
+                )?;
+                if n == 0 {
+                    chosen = Some(cand);
+                    break;
+                }
+            }
+            let Some(new_rid) = chosen else {
+                return Err(AppError::msg(
+                    "לא ניתן לעדכן תפקידי סילבוס: משבצת מאוישת חוסמת שיוך מחדש (מחיקת תפקיד)",
+                ));
+            };
+            tx.execute(
+                "UPDATE shifts SET syllabus_role_id = ?1 WHERE id = ?2",
+                params![new_rid, shift_id],
+            )
+            .map_err(AppError::from)?;
+        }
+    }
+    Ok(())
+}
+
+/// Update/create roles by stable `id`; delete removed rows after reassigning shifts.
+fn upsert_syllabus_roles_for_preset(
+    tx: &rusqlite::Transaction<'_>,
+    preset_id: i64,
+    rows: &[SyllabusRoleInput],
+) -> Result<(), AppError> {
+    let initial_ids = role_ids_for_preset_tx(tx, preset_id).map_err(AppError::from)?;
+
+    let mut seen_payload_ids: HashSet<i64> = HashSet::new();
+    for row in rows {
+        if let Some(id) = row.id {
+            if !seen_payload_ids.insert(id) {
+                return Err(AppError::msg("מזהה תפקיד סילבוס כפול בבקשה"));
+            }
+        }
+    }
+
+    let mut retained: HashSet<i64> = HashSet::new();
+
+    for (order, row) in rows.iter().enumerate() {
+        let name = {
+            let n = normalize_preset_name(&row.name);
+            if n.is_empty() {
+                DEFAULT_SYLLABUS_ROLE_NAME.to_string()
+            } else {
+                n
+            }
+        };
+        let special = row.special.trim().to_string();
+        let sort_order = order as i64;
+
+        let mut did_update = false;
+        if let Some(rid) = row.id {
+            if initial_ids.contains(&rid) {
+                let ok: i64 = tx
+                    .query_row(
+                        "SELECT COUNT(*) FROM syllabus_roles WHERE id = ?1 AND syllabus_preset_id = ?2",
+                        params![rid, preset_id],
+                        |r| r.get(0),
+                    )
+                    .map_err(AppError::from)?;
+                if ok > 0 {
+                    tx.execute(
+                        "UPDATE syllabus_roles SET name = ?1, role_id = ?2, special = ?3, sort_order = ?4
+                         WHERE id = ?5 AND syllabus_preset_id = ?6",
+                        params![
+                            name,
+                            row.role_id,
+                            special,
+                            sort_order,
+                            rid,
+                            preset_id
+                        ],
+                    )
+                    .map_err(AppError::from)?;
+                    retained.insert(rid);
+                    did_update = true;
+                }
+            } else {
+                let other: i64 = tx
+                    .query_row(
+                        "SELECT COUNT(*) FROM syllabus_roles WHERE id = ?1 AND syllabus_preset_id != ?2",
+                        params![rid, preset_id],
+                        |r| r.get(0),
+                    )
+                    .map_err(AppError::from)?;
+                if other > 0 {
+                    return Err(AppError::msg("מזהה תפקיד שייך לסילבוס אחר"));
+                }
+            }
+        }
+
+        if !did_update {
+            tx.execute(
+                "INSERT INTO syllabus_roles (name, role_id, special, syllabus_preset_id, sort_order)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![name, row.role_id, special, preset_id, sort_order],
+            )
+            .map_err(AppError::from)?;
+            retained.insert(tx.last_insert_rowid());
+        }
+    }
+
+    let removed: HashSet<i64> = initial_ids.difference(&retained).copied().collect();
+    let candidates = ordered_retained_role_ids(tx, preset_id, &retained).map_err(AppError::from)?;
+    reassign_shifts_off_removed_roles(tx, preset_id, &removed, &candidates)?;
+
+    for rid in &removed {
+        let n = tx
+            .execute(
+                "DELETE FROM syllabus_roles WHERE id = ?1 AND syllabus_preset_id = ?2
+                 AND COALESCE(system_locked, 0) = 0",
+                params![rid, preset_id],
+            )
+            .map_err(AppError::from)?;
+        if n == 0 {
+            return Err(AppError::msg("עדכון תפקידי סילבוס נכשל"));
+        }
+    }
+
+    Ok(())
 }
 
 fn insert_syllabus_roles_for_preset(
@@ -317,11 +514,7 @@ pub fn update_syllabus_preset(
 
             if let Some(role_rows) = payload.syllabus_roles {
                 let roles = normalize_syllabus_roles(role_rows);
-                tx.execute(
-                    "DELETE FROM syllabus_roles WHERE syllabus_preset_id = ?1",
-                    [preset_id],
-                )?;
-                insert_syllabus_roles_for_preset(&tx, preset_id, &roles).map_err(AppError::from)?;
+                upsert_syllabus_roles_for_preset(&tx, preset_id, &roles)?;
             }
 
             let new_dur: i32 = tx.query_row(
@@ -360,11 +553,32 @@ pub fn delete_syllabus_preset(state: State<'_, AppState>, preset_id: i64) -> Res
                 .map_err(|e| AppError::msg(e))?;
 
             let def_id = default_syllabus_preset_id(&*tx).map_err(|e| AppError::msg(e.to_string()))?;
+
+            let shift_rows: Vec<(i64, String, i64, i64)> = {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT id, shift_date, shift_window_id, syllabus_num FROM shifts
+                         WHERE syllabus_preset_id = ?1",
+                    )
+                    .map_err(AppError::from)?;
+                let rows = stmt
+                    .query_map([preset_id], |r| {
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                    })
+                    .map_err(AppError::from)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(AppError::from)?;
+                rows
+            };
+
             tx.execute(
                 "UPDATE shifts SET syllabus_preset_id = ?1 WHERE syllabus_preset_id = ?2",
                 params![def_id, preset_id],
             )
             .map_err(AppError::from)?;
+
+            reassign_shift_roles_after_preset_retargent(&tx, def_id, &shift_rows)
+                .map_err(|e| AppError::msg(e))?;
 
             let n = tx.execute(
                 "DELETE FROM syllabus_presets WHERE id = ? AND system_locked = 0",

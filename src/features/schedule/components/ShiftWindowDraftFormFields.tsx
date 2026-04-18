@@ -4,6 +4,7 @@ import { presetDurationById, validSegmentStartTimes } from "../../../shared/mann
 import { formatTimeForInput } from "../../../shared/timeFormat";
 import {
   coverageEndIsNextDayMidnight,
+  resyncWindowSegmentStartTimes,
 } from "../helpers/scheduleShiftModel";
 import type { WindowSegmentDraft } from "../helpers/scheduleTypes";
 import { SyllabusPresetCombo } from "./SyllabusPresetCombo";
@@ -68,11 +69,17 @@ export function ShiftWindowDraftFormFields({
                     : s,
                 )
               : [];
-            setDraft({
-              ...draft,
-              coverage_start_time: v,
-              segments: nextSegs,
-            });
+            setDraft(
+              resyncWindowSegmentStartTimes(
+                {
+                  ...draft,
+                  coverage_start_time: v,
+                  segments: nextSegs,
+                },
+                dateStr,
+                durs,
+              ),
+            );
           }}
         />
       </div>
@@ -84,7 +91,13 @@ export function ShiftWindowDraftFormFields({
           value={covEnd}
           onChange={(e) => {
             setShiftTypeTimeError(null);
-            setDraft({ ...draft, coverage_end_time: e.target.value });
+            setDraft(
+              resyncWindowSegmentStartTimes(
+                { ...draft, coverage_end_time: e.target.value },
+                dateStr,
+                durs,
+              ),
+            );
           }}
         />
       </div>
@@ -132,7 +145,13 @@ export function ShiftWindowDraftFormFields({
                       const next = segments.map((s, j) =>
                         j === idx ? { ...s, syllabus_preset_id: id } : s,
                       );
-                      setDraft({ ...draft, segments: next });
+                      setDraft(
+                        resyncWindowSegmentStartTimes(
+                          { ...draft, segments: next },
+                          dateStr,
+                          durs,
+                        ),
+                      );
                     }}
                   />
                 </div>
@@ -153,7 +172,13 @@ export function ShiftWindowDraftFormFields({
                       const next = segments.map((s, j) =>
                         j === idx ? { ...s, segment_start_time: e.target.value } : s,
                       );
-                      setDraft({ ...draft, segments: next });
+                      setDraft(
+                        resyncWindowSegmentStartTimes(
+                          { ...draft, segments: next },
+                          dateStr,
+                          durs,
+                        ),
+                      );
                     }}
                   >
                     {timeOpts.map((t) => (
@@ -188,16 +213,22 @@ export function ShiftWindowDraftFormFields({
                 window.alert("אין זמן התחלה חוקי נוסף לפני סיום החלון.");
                 return;
               }
-              setDraft({
-                ...draft,
-                segments: [
-                  ...segments,
+              setDraft(
+                resyncWindowSegmentStartTimes(
                   {
-                    syllabus_preset_id: last.syllabus_preset_id,
-                    segment_start_time: nextTime,
+                    ...draft,
+                    segments: [
+                      ...segments,
+                      {
+                        syllabus_preset_id: last.syllabus_preset_id,
+                        segment_start_time: nextTime,
+                      },
+                    ],
                   },
-                ],
-              });
+                  dateStr,
+                  durs,
+                ),
+              );
             }}
           >
             + הוסף סילבוס
@@ -207,10 +238,13 @@ export function ShiftWindowDraftFormFields({
               type="button"
               className="rounded-pill border border-line px-3 py-1.5 text-sm text-muted hover:bg-peach-1/30"
               onClick={() =>
-                setDraft({
-                  ...draft,
-                  segments: segments.slice(0, -1),
-                })
+                setDraft(
+                  resyncWindowSegmentStartTimes(
+                    { ...draft, segments: segments.slice(0, -1) },
+                    dateStr,
+                    durs,
+                  ),
+                )
               }
             >
               הסר שורה אחרונה

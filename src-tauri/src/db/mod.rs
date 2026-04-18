@@ -307,6 +307,71 @@ fn apply_schema(conn: &mut Connection) -> AppResult<()> {
         conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (23)", [])?;
     }
 
+    let v24: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 24",
+        [],
+        |r| r.get(0),
+    )?;
+    if v24 == 0 {
+        migrate_syllabus_roles_system_locked_v24(conn)?;
+        conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (24)", [])?;
+    }
+
+    Ok(())
+}
+
+/// Default `syllabus_roles` row (`system_locked`) on the locked preset for preset-delete retargeting.
+fn migrate_syllabus_roles_system_locked_v24(conn: &mut Connection) -> AppResult<()> {
+    use rusqlite::params;
+
+    if !table_exists(conn, "syllabus_roles")? {
+        return Ok(());
+    }
+
+    let col: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('syllabus_roles') WHERE name = 'system_locked'",
+        [],
+        |r| r.get(0),
+    )?;
+    if col == 0 {
+        conn.execute(
+            "ALTER TABLE syllabus_roles ADD COLUMN system_locked INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+
+    conn.execute(
+        "UPDATE syllabus_roles SET system_locked = 1
+         WHERE id = (
+           SELECT sr.id FROM syllabus_roles sr
+           INNER JOIN syllabus_presets sp ON sr.syllabus_preset_id = sp.id
+           WHERE sp.system_locked = 1
+           ORDER BY sr.sort_order, sr.id LIMIT 1
+         )",
+        [],
+    )?;
+
+    let locked_roles: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM syllabus_roles WHERE system_locked = 1",
+        [],
+        |r| r.get(0),
+    )?;
+
+    if locked_roles == 0 && table_exists(conn, "syllabus_presets")? {
+        let pid_result: rusqlite::Result<i64> = conn.query_row(
+            "SELECT id FROM syllabus_presets WHERE system_locked = 1 LIMIT 1",
+            [],
+            |r| r.get(0),
+        );
+        if let Ok(preset_id) = pid_result {
+            conn.execute(
+                "INSERT INTO syllabus_roles (name, role_id, special, syllabus_preset_id, sort_order, system_locked)
+                 VALUES ('מדריך', NULL, '', ?1, 0, 1)",
+                params![preset_id],
+            )?;
+        }
+    }
+
     Ok(())
 }
 
