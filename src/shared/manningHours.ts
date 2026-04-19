@@ -156,7 +156,7 @@ export function effectiveMatrixFrame(
   frame: { frameStartMs: number; frameEndMs: number } | null,
 ): { frameStartMs: number; frameEndMs: number } | null {
   if (frame) return frame;
-  if (hours.length === 0) return null;
+  if (hours.length === 0) return defaultMatrixDisplayFrameMs(dateStr);
   const d0 = dayBounds(dateStr).start.getTime();
   const sm = timeToMin(hours[0]!);
   const em = timeToMin(hours[hours.length - 1]!) + 60;
@@ -499,21 +499,38 @@ function ceilMsToHourFromDayStart(absoluteMs: number, dayStartMs: number): numbe
   return dayStartMs + hoursCeiled * hourMs;
 }
 
+/** Local wall-time shell for the schedule matrix: [08:00, 18:00) on `dateStr`. */
+export function defaultMatrixDisplayFrameMs(
+  dateStr: string,
+): { frameStartMs: number; frameEndMs: number } {
+  const { start: dayStart } = dayBounds(dateStr);
+  const d0 = dayStart.getTime();
+  const HOUR = 3600_000;
+  return {
+    frameStartMs: d0 + 8 * HOUR,
+    frameEndMs: d0 + 18 * HOUR,
+  };
+}
+
 /**
  * Matrix time range for the schedule: [frameStartMs, frameEndMs).
  * Start: earliest across windows of `(coverage start on day) − prepLead`, floored to a full hour,
- * then clamped to **not before** 00:00 of `dateStr`.
+ * then clamped to **not before** 00:00 of `dateStr`, then expanded so the frame **never starts later
+ * than 08:00** (if windows would imply a later first hour, the matrix still opens at 08:00).
  * End: for each window, `(coverage end on day) + restTail` where `restTail` is the sum of rest minutes
  * for the ending bunch (see {@link matrixEndingBunchPresetIds} / {@link matrixEndRestMinutesSum});
  * then the **latest** such instant across windows, **ceiled** to the next hour (22:15 → 23:00),
- * then clamped to **at most** 00:00 the following day (exclusive cap).
+ * then clamped to **at most** 00:00 the following day (exclusive cap), then expanded so the frame
+ * **never ends before 18:00** (exclusive end at 18:00 keeps hour columns through 17:00–18:00).
+ * With no windows or no computable span, returns {@link defaultMatrixDisplayFrameMs} (empty 08:00–18:00 grid).
  */
 export function matrixFrameBoundsMs(
   dateStr: string,
   windows: JsonObject[],
   presets: JsonObject[],
-): { frameStartMs: number; frameEndMs: number } | null {
-  if (windows.length === 0) return null;
+): { frameStartMs: number; frameEndMs: number } {
+  const shell = defaultMatrixDisplayFrameMs(dateStr);
+  if (windows.length === 0) return shell;
 
   const { start: dayStart, endExcl: dayEndExcl } = dayBounds(dateStr);
   const dayStartMs = dayStart.getTime();
@@ -545,19 +562,27 @@ export function matrixFrameBoundsMs(
   }
 
   if (latestRestAwareEndMs === null || earliestPrepAwareMs === null) {
-    return null;
+    return shell;
   }
 
   const floored = new Date(earliestPrepAwareMs);
   floored.setMinutes(0, 0, 0);
   floored.setMilliseconds(0);
-  const frameStartMs = Math.max(floored.getTime(), dayStartMs);
+  let frameStartMs = Math.max(floored.getTime(), dayStartMs);
 
   let frameEndMs = ceilMsToHourFromDayStart(latestRestAwareEndMs, dayStartMs);
   frameEndMs = Math.min(frameEndMs, dayEndExclMs);
 
   if (frameStartMs >= frameEndMs) {
-    return null;
+    return shell;
+  }
+
+  frameStartMs = Math.min(frameStartMs, shell.frameStartMs);
+  frameEndMs = Math.max(frameEndMs, shell.frameEndMs);
+  frameStartMs = Math.max(frameStartMs, dayStartMs);
+  frameEndMs = Math.min(frameEndMs, dayEndExclMs);
+  if (frameStartMs >= frameEndMs) {
+    return shell;
   }
 
   return { frameStartMs, frameEndMs };
@@ -572,9 +597,6 @@ export function matrixPrepAwareHourSlotsForDay(
   presets: JsonObject[],
 ): string[] {
   const bounds = matrixFrameBoundsMs(dateStr, windows, presets);
-  if (!bounds) {
-    return unionHourSlotsForDayMaterialized(dateStr, windows, presets);
-  }
   const list = hourSlotsInWindow(new Date(bounds.frameStartMs), new Date(bounds.frameEndMs));
   list.sort((a, b) => timeToMin(a) - timeToMin(b));
   return list;

@@ -701,7 +701,7 @@ export function ManagementView() {
                 }`}
                 onClick={() => setTab("employee_orders")}
               >
-                סדר מפעילים
+               סידור מטריצה
               </button>
               <button
                 type="button"
