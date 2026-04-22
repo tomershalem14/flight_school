@@ -680,6 +680,222 @@ fn events_for_emp_date<'a>(
         .collect()
 }
 
+/// Rule 1.3: any prep / flight / rest segment, or any `schedule_events` row for that day,
+/// must fall entirely inside merged availability windows for that employee and date.
+#[derive(Clone, Debug)]
+struct AvailabilityRow {
+    employee_id: i64,
+    avail_date: String,
+    start_time: Option<String>,
+    end_time: Option<String>,
+}
+
+fn availability_row_is_whole_day(r: &AvailabilityRow) -> bool {
+    let st = r
+        .start_time
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let et = r
+        .end_time
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    matches!((st, et), (None, None))
+}
+
+fn load_availability_range(
+    conn: &Connection,
+    lo: &str,
+    hi: &str,
+) -> rusqlite::Result<Vec<AvailabilityRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT employee_id, avail_date, start_time, end_time
+         FROM availability
+         WHERE avail_date >= ?1 AND avail_date <= ?2
+         ORDER BY avail_date, employee_id, start_time IS NULL DESC, start_time, id",
+    )?;
+    let rows = stmt
+        .query_map(params![lo, hi], |r| {
+            Ok(AvailabilityRow {
+                employee_id: r.get(0)?,
+                avail_date: r.get(1)?,
+                start_time: r.get(2)?,
+                end_time: r.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn merge_minute_intervals(mut segs: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
+    if segs.is_empty() {
+        return vec![];
+    }
+    segs.sort_by_key(|x| x.0);
+    let mut out: Vec<(i32, i32)> = Vec::new();
+    let mut cs = segs[0].0;
+    let mut ce = segs[0].1;
+    for (s, e) in segs.into_iter().skip(1) {
+        if s <= ce {
+            ce = ce.max(e);
+        } else {
+            out.push((cs, ce));
+            cs = s;
+            ce = e;
+        }
+    }
+    out.push((cs, ce));
+    out
+}
+
+/// Merged half-open minute ranges `[lo, hi)` within calendar day `0..1440` for enabled matrix time.
+fn build_enabled_union_minutes(
+    emp_id: i64,
+    date: &str,
+    avail_all: &[AvailabilityRow],
+) -> Vec<(i32, i32)> {
+    let rows: Vec<&AvailabilityRow> = avail_all
+        .iter()
+        .filter(|r| r.employee_id == emp_id && r.avail_date == date)
+        .collect();
+    if rows.is_empty() {
+        return vec![];
+    }
+    if rows.iter().any(|r| availability_row_is_whole_day(r)) {
+        return vec![(0, 24 * 60)];
+    }
+    let mut raw: Vec<(i32, i32)> = Vec::new();
+    for r in rows {
+        if availability_row_is_whole_day(r) {
+            continue;
+        }
+        let Some(st) = r
+            .start_time
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let Some(et) = r
+            .end_time
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let sm = time_to_minutes(st);
+        let em0 = time_to_minutes(et);
+        if sm == em0 {
+            continue;
+        }
+        let mut em = em0;
+        if em <= sm {
+            em += 24 * 60;
+        }
+        if sm < 24 * 60 {
+            let hi = em.min(24 * 60).max(sm);
+            if sm < hi {
+                raw.push((sm, hi));
+            }
+        }
+        if em > 24 * 60 {
+            let hi2 = (em - 24 * 60).min(24 * 60);
+            if 0 < hi2 {
+                raw.push((0, hi2));
+            }
+        }
+    }
+    merge_minute_intervals(raw)
+}
+
+fn segment_positive_duration_hhmm(start: &str, end: &str) -> bool {
+    let s = start.trim();
+    let e = end.trim();
+    if s.is_empty() || e.is_empty() {
+        return false;
+    }
+    let sm = time_to_minutes(s);
+    let em0 = time_to_minutes(e);
+    if sm == em0 {
+        return false;
+    }
+    let mut em = em0;
+    if em <= sm {
+        em += 24 * 60;
+    }
+    em > sm
+}
+
+/// Split wall `[start,end)` into same-calendar-day minute intervals in `0..1440`.
+fn clip_wall_segment_to_day_minutes(start: &str, end: &str) -> Vec<(i32, i32)> {
+    let s = start.trim();
+    let e = end.trim();
+    if s.is_empty() || e.is_empty() {
+        return vec![];
+    }
+    let sm = time_to_minutes(s);
+    let em0 = time_to_minutes(e);
+    if sm == em0 {
+        return vec![];
+    }
+    let mut em = em0;
+    if em <= sm {
+        em += 24 * 60;
+    }
+    let mut out = Vec::new();
+    if sm < 24 * 60 {
+        let hi = em.min(24 * 60).max(sm);
+        if sm < hi {
+            out.push((sm, hi));
+        }
+    }
+    if em > 24 * 60 {
+        let hi2 = (em - 24 * 60).min(24 * 60);
+        if 0 < hi2 {
+            out.push((0, hi2));
+        }
+    }
+    out
+}
+
+fn interval_fully_covered_by_union(lo: i32, hi: i32, union: &[(i32, i32)]) -> bool {
+    if lo >= hi {
+        return true;
+    }
+    if union.is_empty() {
+        return false;
+    }
+    let mut p = lo;
+    for &(a, b) in union {
+        if b <= p {
+            continue;
+        }
+        if a > p {
+            return false;
+        }
+        p = p.max(b);
+        if p >= hi {
+            return true;
+        }
+    }
+    p >= hi
+}
+
+fn wall_segment_outside_availability_union(start: &str, end: &str, union: &[(i32, i32)]) -> bool {
+    if !segment_positive_duration_hhmm(start, end) {
+        return false;
+    }
+    for (lo, hi) in clip_wall_segment_to_day_minutes(start, end) {
+        if !interval_fully_covered_by_union(lo, hi, union) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Rule 1.1: shift–calendar overlap uses `event`, `constraint`, and `operational` rows.
 fn schedule_event_kind_blocks_shift_segments(kind: &str) -> bool {
     matches!(
@@ -744,6 +960,7 @@ fn global_rules_violations_for_query_date(
     let rules = load_global_rules_snapshot(conn)?;
     let dated = load_shifts_range(conn, &load_lo, &load_hi)?;
     let events = load_schedule_events_range(conn, &load_lo, &load_hi)?;
+    let availability = load_availability_range(conn, &load_lo, &load_hi)?;
 
     let mut violations: Vec<Violation> = Vec::new();
     let employees = collect_employees_on_date(query_date, &dated, &events);
@@ -785,6 +1002,62 @@ fn global_rules_violations_for_query_date(
                     Some(s.id),
                     emp_name.clone(),
                     Some(times),
+                ));
+            }
+        }
+
+        // Rule 1.3: shift or schedule_event wall time outside merged availability (matrix enabled union).
+        let enabled_u = build_enabled_union_minutes(emp_id, query_date, &availability);
+        let mut shift_outside_avail: std::collections::HashSet<i64> =
+            std::collections::HashSet::new();
+        for s in &shifts_q {
+            let mut bad = false;
+            for (a0, a1, _) in s.overlap_segments() {
+                if wall_segment_outside_availability_union(a0, a1, &enabled_u) {
+                    bad = true;
+                    break;
+                }
+            }
+            if bad && shift_outside_avail.insert(s.id) {
+                violations.push(global_rules_violation(
+                    "global_shift_outside_availability",
+                    "error",
+                    "טיסה מחוץ לזמינות".into(),
+                    Some(s.id),
+                    emp_name.clone(),
+                    Some(vec![format_flight_range(&s.start_time, &s.end_time)]),
+                ));
+            }
+        }
+        let mut event_outside_avail: std::collections::HashSet<i64> =
+            std::collections::HashSet::new();
+        for ev in ev_q.iter().copied() {
+            if wall_segment_outside_availability_union(
+                ev.start_time.trim(),
+                ev.end_time.trim(),
+                &enabled_u,
+            ) && event_outside_avail.insert(ev.id)
+            {
+                let ev_emp_display = match emp_name_opt.as_ref() {
+                    Some(n) if !n.trim().is_empty() => Some(n.trim().to_string()),
+                    _ => Some(employee_name_for_week_rule(conn, emp_id, &dated)?),
+                };
+                let ev_title = ev.name.trim();
+                let ev_title_disp = if ev_title.is_empty() {
+                    "—"
+                } else {
+                    ev_title
+                };
+                violations.push(global_rules_violation(
+                    "global_event_outside_availability",
+                    "error",
+                    "אירוע מחוץ לזמינות".into(),
+                    None,
+                    ev_emp_display,
+                    Some(vec![
+                        format_flight_range(&ev.start_time, &ev.end_time),
+                        ev_title_disp.to_string(),
+                    ]),
                 ));
             }
         }

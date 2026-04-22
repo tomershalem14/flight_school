@@ -231,7 +231,7 @@ export function MatrixEmployeeHourDropZone({
     <div
       ref={setNodeRef}
       role="presentation"
-      className={`min-h-[28px] min-w-0 flex-1 border-s border-line ${className ?? ""}`}
+      className={`min-h-[28px] h-full min-w-0 flex-1 self-stretch border-s border-line ${className ?? ""}`}
       onClick={handleEmptyClick}
     />
   );

@@ -28,7 +28,13 @@ function ViolationCard({ v }: { v: JsonObject }) {
 
   const isSegmentOverlap = rule === "segment_overlap";
   const isGlobalEventOverlap = rule === "global_event_overlap";
-  const isRedOverlap = isSegmentOverlap || isGlobalEventOverlap;
+  const isShiftOutsideAvail = rule === "global_shift_outside_availability";
+  const isEventOutsideAvail = rule === "global_event_outside_availability";
+  const isRedOverlap =
+    isSegmentOverlap ||
+    isGlobalEventOverlap ||
+    isShiftOutsideAvail ||
+    isEventOutsideAvail;
   const isMaxRow = rule === "max_in_row_bunch";
   const isSyllabus = rule === "syllabus_role_level";
   const isGlobalWeekRule =
@@ -59,6 +65,8 @@ function ViolationCard({ v }: { v: JsonObject }) {
     body = "התנגשות בין זמנים של משמרות";
   } else if (isGlobalEventOverlap) {
     body = message || "התנגשות בזמנים בין אירוע לטיסה";
+  } else if (isShiftOutsideAvail || isEventOutsideAvail) {
+    body = message || "מחוץ לזמינות";
   } else if (isMaxRow && bunchX !== undefined && bunchY !== undefined) {
     body = `יותר מדי משמרות ברצף, ישנן ${bunchX} כאשר מותרות עד ${bunchY}`;
   } else if (isSyllabus && roleNameEmp && roleNameReq) {
@@ -166,7 +174,11 @@ export function ManningInspectorSidebar({ warnings }: { warnings: JsonObject[] }
   const activeMenu = "warnings" as const;
   const panelId = useId();
   const hasOverlapError = warnings.some(
-    (w) => w.rule === "segment_overlap" || w.rule === "global_event_overlap",
+    (w) =>
+      w.rule === "segment_overlap" ||
+      w.rule === "global_event_overlap" ||
+      w.rule === "global_shift_outside_availability" ||
+      w.rule === "global_event_outside_availability",
   );
   const warningsPanelOpen = wideOpen && activeMenu === "warnings";
 

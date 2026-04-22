@@ -93,7 +93,7 @@ export function scheduleEventCreateOnMutate(args: {
   weekStr: string;
   payload: ScheduleEventCreatePayload;
   tempIdRef: MutableRefObject<number>;
-  sortedEmployees: JsonObject[];
+  matrixEmployees: JsonObject[];
   employees: JsonObject[];
   clearCreateUi: () => void;
 }): { previous: JsonObject[] | undefined; tempId: number } {
@@ -102,7 +102,7 @@ export function scheduleEventCreateOnMutate(args: {
     weekStr,
     payload,
     tempIdRef,
-    sortedEmployees,
+    matrixEmployees,
     employees,
     clearCreateUi,
   } = args;
@@ -112,7 +112,7 @@ export function scheduleEventCreateOnMutate(args: {
   const tempId = nextNegativeTempId(tempIdRef);
   const eid = Number(payload.employee_id);
   const emp =
-    sortedEmployees.find((x) => Number(x.id) === eid) ??
+    matrixEmployees.find((x) => Number(x.id) === eid) ??
     employees.find((x) => Number(x.id) === eid);
   const emp_name = emp ? String(emp.name ?? "") : "";
   const row: JsonObject = {

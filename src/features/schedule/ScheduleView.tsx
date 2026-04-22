@@ -86,6 +86,13 @@ import {
   ShiftTypeEditorModal,
 } from "./components/ShiftTypeModals";
 import {
+  buildEnabledHoursByEmployeeId,
+  buildEnabledWallIntervalsByEmployeeId,
+  buildMatrixEmployeeRows,
+  clipRangeToLongestEnabledSubinterval,
+  msWithinEnabledUnion,
+} from "./helpers/matrixEmployeeAvailability";
+import {
   clientXToSnappedMatrixMs,
   employeeTbodyRowIndexFromPoint,
   formatLocalHmFromMs,
@@ -292,6 +299,54 @@ export function ScheduleView() {
       activeEmployeeOrderPresetId != null ? items : null,
     );
   }, [employees, activeEmployeeOrderPresetId, activeEmployeeOrderPreset]);
+
+  const { data: availabilityRaw = [] } = useQuery({
+    queryKey: ["availability", weekStr],
+    queryFn: () => api.listAvailabilityForWeek(weekStr),
+  });
+  const availabilityRows = useMemo(
+    () => availabilityRaw as JsonObject[],
+    [availabilityRaw],
+  );
+
+  const matrixEmployees = useMemo(
+    () =>
+      buildMatrixEmployeeRows(
+        sortedEmployees,
+        employees,
+        availabilityRows,
+        dateStr,
+      ),
+    [sortedEmployees, employees, availabilityRows, dateStr],
+  );
+
+  const enabledHoursByEmployeeId = useMemo(
+    () =>
+      buildEnabledHoursByEmployeeId(
+        matrixEmployees,
+        availabilityRows,
+        dateStr,
+        hours,
+      ),
+    [matrixEmployees, availabilityRows, dateStr, hours],
+  );
+
+  const enabledWallIntervalsByEmployeeId = useMemo(() => {
+    const f = scheduleMatrixFrame;
+    if (!f || f.frameEndMs <= f.frameStartMs) {
+      return new Map<number, Array<[number, number]>>();
+    }
+    return buildEnabledWallIntervalsByEmployeeId(
+      matrixEmployees,
+      availabilityRows,
+      dateStr,
+      f.frameStartMs,
+      f.frameEndMs,
+    );
+  }, [matrixEmployees, availabilityRows, dateStr, scheduleMatrixFrame]);
+
+  const enabledWallIntervalsRef = useRef(enabledWallIntervalsByEmployeeId);
+  enabledWallIntervalsRef.current = enabledWallIntervalsByEmployeeId;
 
   // --- Local UI state ---
   const [deleteTypeConfirm, setDeleteTypeConfirm] = useState<{
@@ -697,7 +752,7 @@ export function ScheduleView() {
       setMatrixHoverGuide(null);
       return;
     }
-    if (shouldSuppressMatrixHoverGuide(p.x, p.y, table, sortedEmployees.length)) {
+    if (shouldSuppressMatrixHoverGuide(p.x, p.y, table, matrixEmployees.length)) {
       setMatrixHoverGuide(null);
       return;
     }
@@ -722,7 +777,7 @@ export function ScheduleView() {
     let lineTop = headerBottom;
     let lineHeight = 0;
     const tbody = table.tBodies[0];
-    const empCount = sortedEmployees.length;
+    const empCount = matrixEmployees.length;
     if (tbody && empCount > 0) {
       const rows = tbody.rows;
       const lastEmpIdx = empCount - 1;
@@ -745,7 +800,7 @@ export function ScheduleView() {
       lineTop,
       lineHeight,
     });
-  }, [scheduleMatrixFrame, matrixRangeMs, sortedEmployees.length]);
+  }, [scheduleMatrixFrame, matrixRangeMs, matrixEmployees]);
 
   /** Range gesture entry from the matrix scroll container (`pointerdown` capture). */
   const tryStartMatrixRangeFromPointerDown = useCallback((e: PointerEvent): boolean => {
@@ -767,22 +822,25 @@ export function ScheduleView() {
       if (!isPointerOverMatrixTimeGrid(e.clientX, e.clientY, th, table)) {
         return false;
       }
-      if (shouldSuppressMatrixHoverGuide(e.clientX, e.clientY, table, sortedEmployees.length)) {
+      if (shouldSuppressMatrixHoverGuide(e.clientX, e.clientY, table, matrixEmployees.length)) {
         return false;
       }
       const rowIdx = employeeTbodyRowIndexFromPoint(
         e.clientX,
         e.clientY,
         table,
-        sortedEmployees.length,
+        matrixEmployees.length,
       );
       if (rowIdx == null) {
         return false;
       }
-      const emp = sortedEmployees[rowIdx];
+      const emp = matrixEmployees[rowIdx];
       if (!emp) return false;
       const snapped = clientXToSnappedMatrixMs(e.clientX, th, frame, matrixRangeMs);
       if (snapped == null) return false;
+      const merged =
+        enabledWallIntervalsRef.current.get(Number(emp.id)) ?? [];
+      if (!msWithinEnabledUnion(snapped, merged)) return false;
       matrixRangeGestureLayoutRef.current = { wrap, th, tbl: table };
       matrixRangePendingRef.current = {
         pointerId: e.pointerId,
@@ -836,7 +894,7 @@ export function ScheduleView() {
 
       return true;
     },
-    [scheduleMatrixFrame, matrixRangeMs, sortedEmployees],
+    [scheduleMatrixFrame, matrixRangeMs, matrixEmployees],
   );
 
   useEffect(() => {
@@ -908,35 +966,42 @@ export function ScheduleView() {
           const tbl = L?.tbl ?? matrixTableRef.current;
           const frame = scheduleMatrixFrame;
           if (wrap && th && tbl && frame && matrixRangeMs > 0) {
-            const [lo, hi] = normalizeRangeMs(drag.anchorMs, drag.currentMs);
-            const layout = computeMatrixRangeBandLayout(
-              wrap,
-              th,
-              tbl,
-              drag.rowIndex,
-              lo,
-              hi,
-              frame,
-              matrixRangeMs,
-            );
-            setMatrixRangeCommittedBand({
-              pointerId: -1,
-              employeeId: drag.employeeId,
-              rowIndex: drag.rowIndex,
-              anchorMs: lo,
-              currentMs: hi,
-              ...layout,
-            });
-            const persist = matrixRangePersistTimes(dateStr, lo, hi, frame);
-            setMatrixEventCreateDraft({
-              employeeId: drag.employeeId,
-              rowIndex: drag.rowIndex,
-              loMs: lo,
-              hiMs: hi,
-              persistStartHm: persist.persistStartHm,
-              persistEndHm: persist.persistEndHm,
-              nameInput: "",
-            });
+            const [lo0, hi0] = normalizeRangeMs(drag.anchorMs, drag.currentMs);
+            const merged =
+              enabledWallIntervalsRef.current.get(drag.employeeId) ?? [];
+            const clipped = clipRangeToLongestEnabledSubinterval(lo0, hi0, merged);
+            if (clipped) {
+              const lo = clipped.loMs;
+              const hi = clipped.hiMs;
+              const layout = computeMatrixRangeBandLayout(
+                wrap,
+                th,
+                tbl,
+                drag.rowIndex,
+                lo,
+                hi,
+                frame,
+                matrixRangeMs,
+              );
+              setMatrixRangeCommittedBand({
+                pointerId: -1,
+                employeeId: drag.employeeId,
+                rowIndex: drag.rowIndex,
+                anchorMs: lo,
+                currentMs: hi,
+                ...layout,
+              });
+              const persist = matrixRangePersistTimes(dateStr, lo, hi, frame);
+              setMatrixEventCreateDraft({
+                employeeId: drag.employeeId,
+                rowIndex: drag.rowIndex,
+                loMs: lo,
+                hiMs: hi,
+                persistStartHm: persist.persistStartHm,
+                persistEndHm: persist.persistEndHm,
+                nameInput: "",
+              });
+            }
           }
         }
         matrixRangeDragRef.current = null;
@@ -1175,7 +1240,7 @@ export function ScheduleView() {
         weekStr,
         payload: payload as ScheduleEventCreatePayload,
         tempIdRef: scheduleEventCreateOptimisticIdRef,
-        sortedEmployees,
+        matrixEmployees,
         employees,
         clearCreateUi: () => {
           setMatrixEventCreateDraft(null);
@@ -1524,7 +1589,7 @@ export function ScheduleView() {
       }
       const eid = resolution.employee_id;
       const emp =
-        sortedEmployees.find((x) => Number(x.id) === eid) ??
+        matrixEmployees.find((x) => Number(x.id) === eid) ??
         employees.find((x) => Number(x.id) === eid);
       const empName = emp ? String(emp.name ?? "").trim() : "";
       const ty = typesOrdered.find((t) => typeId(t) === resolution.shift_window_id);
@@ -1571,7 +1636,7 @@ export function ScheduleView() {
       employees,
       presets,
       reassignMut,
-      sortedEmployees,
+      matrixEmployees,
       typesOrdered,
     ],
   );
@@ -1676,7 +1741,7 @@ export function ScheduleView() {
               </tr>
             </thead>
             <tbody>
-              {sortedEmployees.map((emp) => {
+              {matrixEmployees.map((emp) => {
                 const eid = Number(emp.id);
                 const name = String(emp.name ?? "");
                 const rowShifts = dayShifts.filter((s) => {
@@ -1718,11 +1783,19 @@ export function ScheduleView() {
                 const zPrepStridePerCluster = Math.max(12, maxClusterSize + 4);
                 const zShiftClusterStart =
                   zPrepStart + shiftClusters.length * zPrepStridePerCluster + 2;
+                const enabledSet = enabledHoursByEmployeeId.get(eid) ?? new Set<string>();
+                const rowFullyDisabled = enabledSet.size === 0;
                 return (
                   <tr key={eid} className="border-b border-line hover:bg-peach-1/30">
-                    <td className="sticky right-0 z-10 w-[7.75rem] max-w-[7.75rem] min-w-0 border-s border-line bg-surface px-1.5 py-0.5 align-middle">
+                    <td
+                      className={`sticky right-0 z-10 w-[7.75rem] max-w-[7.75rem] min-w-0 border-s border-line px-1.5 py-1 align-middle ${
+                        rowFullyDisabled ? "bg-muted/35" : "bg-surface"
+                      }`}
+                    >
                       <span
-                        className="block truncate font-heading text-sm font-bold text-ink"
+                        className={`block truncate font-heading text-sm font-bold ${
+                          rowFullyDisabled ? "text-muted" : "text-ink"
+                        }`}
                         title={name}
                       >
                         {name}
@@ -1730,10 +1803,10 @@ export function ScheduleView() {
                     </td>
                     <td
                       colSpan={hours.length}
-                      className="relative border-s border-line px-0 py-0.5 align-middle"
+                      className="relative border-s border-line px-0 py-0 align-middle"
                     >
                       <div className="relative min-h-[28px] w-full">
-                        <div className="absolute inset-0 z-0 flex">
+                        <div className="absolute inset-0 z-0 flex min-h-[28px] items-stretch">
                           {hours.map((hour) => {
                             const hasShift = rowShifts.some((s) =>
                               shiftCoversHour(
@@ -1742,19 +1815,28 @@ export function ScheduleView() {
                                 hour,
                               ),
                             );
+                            const hourEnabled =
+                              enabledHoursByEmployeeId.get(eid)?.has(hour) ?? false;
                             const hl = activeDragHighlightMs;
                             let droppableDisabled: boolean;
                             if (matrixDragKind === null || !hl) {
-                              droppableDisabled = hasShift;
+                              droppableDisabled = hasShift || !hourEnabled;
                             } else if (matrixDragKind === "typeSlot") {
                               const ch = matrixTypeSlotCoveredHours ?? [];
                               droppableDisabled =
+                                !hourEnabled ||
                                 !ch.includes(hour) ||
                                 (matrixTypeSlotOverlapEmps?.has(eid) ?? false);
                             } else {
                               droppableDisabled =
-                                matrixEmpShiftOverlapEmps?.has(eid) ?? false;
+                                !hourEnabled ||
+                                (matrixEmpShiftOverlapEmps?.has(eid) ?? false);
                             }
+                            const cellBg = !hourEnabled
+                              ? "bg-muted/35"
+                              : hasShift
+                                ? ""
+                                : "bg-background/40";
                             return (
                               <MatrixEmployeeHourDropZone
                                 key={`${eid}-dz-${hour}`}
@@ -1762,7 +1844,7 @@ export function ScheduleView() {
                                 hour={hour}
                                 hasEmployeeShiftInHour={hasShift}
                                 droppableDisabled={droppableDisabled}
-                                className={hasShift ? "" : "bg-background/40"}
+                                className={cellBg}
                               />
                             );
                           })}
