@@ -7,6 +7,7 @@ import { activePresetIdFromList, itemHidden } from "../../shared/employeeOrderSo
 import { errorMessageFromUnknown } from "../../shared/errorMessage";
 import { DEFAULT_SHIFT_TYPE_PASTEL_HEX } from "../../shared/pastelPalette";
 import { PastelSwatchGridDropdown } from "../../shared/PastelSwatchGridDropdown";
+import { TimeInput24 } from "../../shared/TimeInput24";
 
 const PAGE_SIZE = 10;
 /** Narrow column for two icon buttons (edit + deactivate). */
@@ -1509,26 +1510,22 @@ export function ManagementView() {
                   <label className={RULES_LABEL_CLASS} htmlFor="rule-early-time">
                     שעה מוקדמת
                   </label>
-                  <input
+                  <TimeInput24
                     id="rule-early-time"
-                    type="time"
                     className="w-full max-w-md"
+                    dir="ltr"
                     value={(rulesDraft.early_time || "00:00").slice(0, 5)}
-                    onChange={(e) =>
-                      setRulesDraft((d) => ({ ...d, early_time: e.target.value }))
-                    }
+                    onChange={(v) => setRulesDraft((d) => ({ ...d, early_time: v }))}
                   />
                   <label className={RULES_LABEL_CLASS} htmlFor="rule-late-time">
                     שעה מאוחרת
                   </label>
-                  <input
+                  <TimeInput24
                     id="rule-late-time"
-                    type="time"
                     className="w-full max-w-md"
+                    dir="ltr"
                     value={(rulesDraft.late_time || "00:00").slice(0, 5)}
-                    onChange={(e) =>
-                      setRulesDraft((d) => ({ ...d, late_time: e.target.value }))
-                    }
+                    onChange={(v) => setRulesDraft((d) => ({ ...d, late_time: v }))}
                   />
                 </RulesFieldsGrid>
                 <RulesSectionDivider note={RULES_SECTION_NOTES.afterTimes} />

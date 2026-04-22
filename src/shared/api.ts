@@ -167,6 +167,24 @@ export async function deleteAvailabilityForEmployeeDay(
   });
 }
 
+export async function createAvailabilityTimed(
+  employee_id: number,
+  avail_date: string,
+  start_time: string,
+  end_time: string,
+): Promise<JsonObject> {
+  return invoke("create_availability_timed", {
+    employeeId: employee_id,
+    availDate: avail_date,
+    startTime: start_time,
+    endTime: end_time,
+  });
+}
+
+export async function deleteAvailabilityById(id: number): Promise<JsonObject> {
+  return invoke("delete_availability_by_id", { id });
+}
+
 export async function getWeeklySettings(
   week_start: string,
 ): Promise<JsonObject | null> {

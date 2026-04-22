@@ -1,6 +1,7 @@
 import { useMemo, type RefObject } from "react";
 import type { JsonObject } from "../../../shared/api";
 import { presetDurationById, validSegmentStartTimes } from "../../../shared/manningHours";
+import { TimeInput24 } from "../../../shared/TimeInput24";
 import { formatTimeForInput } from "../../../shared/timeFormat";
 import {
   coverageEndIsNextDayMidnight,
@@ -55,13 +56,11 @@ export function ShiftWindowDraftFormFields({
       </div>
       <div className="form-row">
         <label className="text-sm font-semibold text-ink">התחלת חלון</label>
-        <input
-          type="time"
+        <TimeInput24
           dir="ltr"
           value={covStart}
-          onChange={(e) => {
+          onChange={(v) => {
             setShiftTypeTimeError(null);
-            const v = e.target.value;
             const nextSegs = segments.length
               ? segments.map((s, i) =>
                   i === 0
@@ -85,15 +84,14 @@ export function ShiftWindowDraftFormFields({
       </div>
       <div className="form-row">
         <label className="text-sm font-semibold text-ink">סיום חלון</label>
-        <input
-          type="time"
+        <TimeInput24
           dir="ltr"
           value={covEnd}
-          onChange={(e) => {
+          onChange={(v) => {
             setShiftTypeTimeError(null);
             setDraft(
               resyncWindowSegmentStartTimes(
-                { ...draft, coverage_end_time: e.target.value },
+                { ...draft, coverage_end_time: v },
                 dateStr,
                 durs,
               ),

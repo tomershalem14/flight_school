@@ -349,13 +349,15 @@ body {
 .form-row input[type="url"],
 .form-row input[type="password"],
 .form-row select,
-.form-row textarea {
+.form-row textarea,
+.form-row .time-input-24 {
   flex: 1;
   min-width: 0;
 }
 /* Native time/datetime controls reserve space for the picker icon; avoid clipping HH:MM */
 .form-row input[type="time"],
-.form-row input[type="datetime-local"] {
+.form-row input[type="datetime-local"],
+.form-row .time-input-24 {
   min-width: 10rem;
 }
 .hint { font-size: 0.78rem; color: var(--text-muted); }

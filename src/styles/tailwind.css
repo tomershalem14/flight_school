@@ -110,6 +110,35 @@
     @apply box-border flex !h-5 !min-h-0 !max-h-5 w-full min-w-0 items-center justify-center rounded-lg border border-dashed border-line/80 bg-background/40 !px-1 !py-0 text-center font-body !text-[10px] !leading-5 text-muted;
   }
 
+  /*
+   * Weekly availability — extra/reserve footer composer (same global input override as fb-slot-assign).
+   */
+  input.wk-avail-composer-name {
+    @apply box-border !h-5 !min-h-0 !max-h-5 w-full min-w-0 appearance-none rounded-md border border-line bg-surface !px-1 !py-0 text-start font-body !text-[10px] !leading-5 text-ink shadow-sm;
+  }
+  input.wk-avail-composer-name::placeholder {
+    @apply text-muted;
+  }
+  input.wk-avail-composer-name:focus-visible {
+    @apply border-primary outline-none ring-2 ring-primary/25;
+  }
+  input.wk-avail-composer-name:disabled {
+    @apply cursor-not-allowed opacity-60;
+  }
+  /* 24h HH:mm dual-segment control — same footprint as former single `input.wk-avail-composer-time`. */
+  .wk-avail-composer-time.time-input-24 {
+    @apply box-border !h-5 !min-h-0 !max-h-5 !w-auto min-w-0 max-w-[5.75rem] gap-px !px-0.5 !text-[10px] !leading-5;
+  }
+  .wk-avail-composer-time.time-input-24 input {
+    @apply !text-[10px] !leading-5;
+  }
+  .wk-avail-composer-time.time-input-24:focus-within {
+    @apply ring-1 ring-primary/25;
+  }
+  .wk-avail-composer-time.time-input-24:has(:disabled) {
+    @apply cursor-not-allowed opacity-60;
+  }
+
   /* Stale shifts + uncovered window tail — red stripes only; use same h-2.5 + ring-black/10 as solid pills */
   .schedule-striped-warn-pill {
     background: repeating-linear-gradient(

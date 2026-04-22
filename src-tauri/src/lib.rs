@@ -29,6 +29,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::availability::list_availability_for_week,
             commands::availability::create_availability_whole_day,
+            commands::availability::create_availability_timed,
+            commands::availability::delete_availability_by_id,
             commands::availability::delete_availability_for_employee_day,
             commands::weekly_settings::get_weekly_settings,
             commands::weekly_settings::save_weekly_settings,
