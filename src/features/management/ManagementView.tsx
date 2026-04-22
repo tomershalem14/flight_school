@@ -786,12 +786,13 @@ export function ManagementView() {
         {tab === "employees" && (
           <div className="flex flex-col gap-4">
             <div className="flex w-full max-w-none overflow-hidden rounded-pill border border-line bg-surface shadow-sm">
-              <div className="relative min-w-0 flex-1">
+              <div className="pill-input-sleeve">
                 <span className="pointer-events-none absolute inset-y-0 end-3 flex items-center text-muted">
                   ⌕
                 </span>
                 <input
                   id="mgmt-emp-search"
+                  className="input-toolbar-pill input-toolbar-pill--search"
                   type="search"
                   placeholder="חיפוש מפעילים…"
                   value={search}
@@ -1006,12 +1007,13 @@ export function ManagementView() {
               </p>
             ) : null}
             <div className="flex w-full max-w-none overflow-hidden rounded-pill border border-line bg-surface shadow-sm">
-              <div className="relative min-w-0 flex-1">
+              <div className="pill-input-sleeve">
                 <span className="pointer-events-none absolute inset-y-0 end-3 flex items-center text-muted">
                   ⌕
                 </span>
                 <input
                   type="search"
+                  className="input-toolbar-pill input-toolbar-pill--search"
                   placeholder="חיפוש סילבוסים…"
                   value={syllabusSearch}
                   onChange={(e) => setSyllabusSearch(e.target.value)}
@@ -1968,9 +1970,10 @@ export function ManagementView() {
                     שיוך
                   </label>
                   <div className="flex w-full max-w-none overflow-hidden rounded-pill border border-line bg-surface shadow-sm">
-                    <div className="relative min-w-0 flex-1">
+                    <div className="pill-input-sleeve">
                       <input
                         id="emp-modal-affiliation"
+                        className="input-toolbar-pill"
                         type="text"
                         autoComplete="off"
                         value={String(empModal.affiliation ?? "")}
@@ -2116,9 +2119,10 @@ export function ManagementView() {
                   תדריך (דק׳)
                 </label>
                 <div className="flex w-full max-w-none overflow-hidden rounded-pill border border-line bg-surface shadow-sm">
-                  <div className="relative min-w-0 flex-1">
+                  <div className="pill-input-sleeve">
                     <input
                       id="preset-modal-prep-mins"
+                      className="input-toolbar-pill tabular-nums"
                       type="number"
                       min={0}
                       value={String(presetDraft.prep_minutes ?? 0)}
@@ -2156,9 +2160,10 @@ export function ManagementView() {
                   תחקיר (דק׳)
                 </label>
                 <div className="flex w-full max-w-none overflow-hidden rounded-pill border border-line bg-surface shadow-sm">
-                  <div className="relative min-w-0 flex-1">
+                  <div className="pill-input-sleeve">
                     <input
                       id="preset-modal-rest-mins"
+                      className="input-toolbar-pill tabular-nums"
                       type="number"
                       min={0}
                       value={String(presetDraft.rest_minutes ?? 0)}

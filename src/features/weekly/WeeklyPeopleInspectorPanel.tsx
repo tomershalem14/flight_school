@@ -167,14 +167,14 @@ export function WeeklyPeopleInspectorPanel() {
           ימים בבית הספר:
         </label>
         <div className="flex w-full min-w-0 max-w-none overflow-hidden rounded-pill border border-line bg-surface shadow-sm">
-          <div className="relative min-w-0 flex-1">
+          <div className="pill-input-sleeve">
             <input
               id={daysFieldId}
               type="number"
               min={0}
               max={7}
               step={1}
-              className="h-full w-full min-w-0 border-0 bg-transparent py-2.5 ps-3 pe-2 text-center font-heading text-sm font-semibold tabular-nums text-ink outline-none ring-0 [-moz-appearance:textfield] focus-visible:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+              className="input-toolbar-pill input-toolbar-pill--center w-full min-w-0 text-ink outline-none ring-0 [-moz-appearance:textfield] focus-visible:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
               value={draftDays}
               onChange={(e) => setDraftDays(clampDays(Number(e.target.value)))}
             />

@@ -8,7 +8,7 @@ import {
   resyncWindowSegmentStartTimes,
 } from "../helpers/scheduleShiftModel";
 import type { WindowSegmentDraft } from "../helpers/scheduleTypes";
-import { SyllabusPresetCombo } from "./SyllabusPresetCombo";
+import { AutocompleteCombobox } from "../../../shared/AutocompleteCombobox";
 
 function FormErrorBanner({ children }: { children: string }) {
   return (
@@ -135,11 +135,22 @@ export function ShiftWindowDraftFormFields({
                 className="grid grid-cols-[3fr_1fr] items-end gap-2"
               >
                 <div className="min-w-0">
-                  <SyllabusPresetCombo
-                    presets={presets}
-                    valueId={Number(seg.syllabus_preset_id)}
+                  <AutocompleteCombobox<JsonObject>
+                    mode="selected-preview"
+                    selectedItem={
+                      presets.find((p) => Number(p.id) === Number(seg.syllabus_preset_id)) ??
+                      null
+                    }
+                    items={presets}
+                    itemToKey={(p) => String(p.id)}
+                    itemToLabel={(p) => String(p.name ?? "")}
+                    filterMode="substring-ci"
+                    emptyQueryBehavior="all"
+                    placement="auto"
+                    portal
                     scrollContainerRef={scrollContainerRef}
-                    onPick={(id) => {
+                    onSelect={(p) => {
+                      const id = Number(p.id);
                       const next = segments.map((s, j) =>
                         j === idx ? { ...s, syllabus_preset_id: id } : s,
                       );
@@ -151,6 +162,8 @@ export function ShiftWindowDraftFormFields({
                         ),
                       );
                     }}
+                    placeholder="בחר סילבוס…"
+                    inputClassName="w-full min-w-0"
                   />
                 </div>
                 <div className="min-w-0">

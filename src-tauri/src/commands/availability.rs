@@ -108,8 +108,10 @@ pub fn create_availability_timed(
                 [employee_id],
                 |r| r.get(0),
             )?;
-            if emp_type != "extra" && emp_type != "reserve" {
-                return Err(AppError::msg("זמינות לפי שעה זמינה רק למפעילי הצ\"ח / מילואים"));
+            if emp_type != "extra" && emp_type != "reserve" && emp_type != "admin" {
+                return Err(AppError::msg(
+                    "זמינות לפי שעה זמינה רק למפעילי הצ\"ח / מילואים / ניהול",
+                ));
             }
             let whole_day: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM availability WHERE employee_id = ?1 AND avail_date = ?2 \
@@ -152,7 +154,7 @@ pub fn delete_availability_by_id(state: State<'_, AppState>, id: i64) -> Result<
         .with_db_mut(|conn| -> AppResult<Value> {
             let n = conn.execute(
                 "DELETE FROM availability WHERE id = ?1 \
-                 AND employee_id IN (SELECT id FROM employees WHERE employee_type IN ('extra','reserve'))",
+                 AND employee_id IN (SELECT id FROM employees WHERE employee_type IN ('extra','reserve','admin'))",
                 [id],
             )?;
             if n == 0 {

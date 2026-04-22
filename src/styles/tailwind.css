@@ -2,6 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
+/* =============================================================================
+   Base — document, scrollbars, form baseline
+   Dense UIs (flight board cells, weekly composer) use component classes instead
+   of overriding globals (e.g. .fb-slot-assign, .input-toolbar-pill).
+   ============================================================================= */
+
 @layer base {
   :root,
   html {
@@ -18,16 +24,39 @@
     @apply bg-background min-h-screen;
   }
 
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: theme("colors.line") theme("colors.surface");
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: theme("colors.surface");
+  }
+
+  *::-webkit-scrollbar-thumb {
+    border-radius: 3px;
+    background: theme("colors.line");
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: theme("colors.muted");
+  }
+
   /*
-   * Single baseline for form fields (Brief: background #FBFBF9, ink text, line border, 16px radius).
-   * Excludes buttons, checkboxes, radios, file, range, color, hidden.
+   * Default field chrome (Brief palette). Slightly compact (text-sm, min-h-9)
+   * so toolbar / matrix overrides need less !important.
    */
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not(
       [type="hidden"]
     ):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="color"]),
   select,
   textarea {
-    @apply min-h-[2.5rem] w-full rounded-card border border-line bg-background px-3 py-2 text-base text-ink;
+    @apply min-h-9 w-full rounded-card border border-line bg-background px-3 py-1.5 text-sm text-ink;
     color-scheme: light only;
     font-family: inherit;
   }
@@ -54,92 +83,180 @@
   }
 }
 
+/* =============================================================================
+   Components — layout helpers, tables, toolbar inputs, feature micro-widgets
+   ============================================================================= */
+
 @layer components {
-  /*
-   * Employee management toolbar search: override global input base (many :not() attrs
-   * out-spec single utilities). ID wins; flat physical left, pill right inside bar.
-   */
-  #mgmt-emp-search {
-    @apply min-h-0 w-full appearance-none rounded-l-none rounded-r-pill border-0 bg-transparent py-2.5 pe-10 ps-4 text-sm text-ink shadow-none;
+  /* --- App shell (from former App.css) --- */
+  .main-content {
+    padding: 12px 16px 24px;
+    min-height: calc(100vh - 80px);
   }
-  #mgmt-emp-search::placeholder {
+
+  .view-panel {
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+
+  .view-panel h2 {
+    margin-bottom: 16px;
+  }
+
+  .header-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .subtitle {
+    @apply me-3 text-sm text-muted;
+  }
+
+  /* --- Form rows (modal / draft fields) --- */
+  .form-row {
+    @apply mb-3.5 flex items-center gap-3;
+  }
+
+  .form-row.mb-0 {
+    margin-bottom: 0;
+  }
+
+  .form-row > label {
+    @apply min-w-[90px] shrink-0 text-end text-sm text-muted;
+  }
+
+  .form-row > :not(label) {
+    @apply min-w-0 flex-1;
+  }
+
+  .form-row
+    > :is(input[type="time"], input[type="datetime-local"], .time-input-24) {
+    min-width: 10rem;
+  }
+
+  /*
+   * TimeInput24 — hour/minute segments are plain text; shell matches @layer base input tokens.
+   * Overrides global `input` chrome on the inner fields only (no nested boxes / rings).
+   */
+  .time-input-24 input.time-input-24__seg {
+    @apply !min-h-0 !w-auto min-w-[1.15rem] flex-1 shrink-0 rounded-none border-0 !border-0 bg-transparent !bg-transparent !px-0.5 !py-0 text-center text-inherit shadow-none !shadow-none outline-none ring-0 !ring-0;
+  }
+
+  .time-input-24 input.time-input-24__seg:focus-visible {
+    @apply border-0 !border-0 !shadow-none !ring-0 outline-none;
+  }
+
+  /* --- Reports & simple data tables --- */
+  .data-table {
+    @apply w-full border-collapse text-sm;
+  }
+
+  .data-table th {
+    @apply border-b-2 border-line bg-background px-3 py-2.5 text-start text-xs font-semibold uppercase tracking-wide text-muted;
+  }
+
+  .data-table td {
+    @apply border-b border-line px-3 py-2.5 align-middle text-ink;
+  }
+
+  .data-table tbody tr:hover td {
+    background-color: rgb(66 73 77 / 0.04);
+  }
+
+  /* Shared combobox / autocomplete suggestion list (AutocompleteCombobox) */
+  .autocomplete-panel {
+    @apply border border-line bg-surface shadow-airy;
+  }
+
+  .autocomplete-option:hover {
+    @apply bg-background;
+  }
+
+  /*
+   * Pill bar input column: column flex so the field can flex-1 to full row height (stretch
+   * alignment on the outer bar). Sleeves pair with input.input-toolbar-pill.
+   */
+  .pill-input-sleeve {
+    @apply relative flex min-h-0 min-w-0 flex-1 flex-col;
+  }
+
+  /*
+   * Toolbar / modal pill strip: physical left flush (meets sibling / bar edge), physical
+   * right pill. `!` beats @layer base `input:not(...){ rounded-card }` specificity.
+   * Use .input-toolbar-pill--search when an icon occupies the inline-end edge (⌕).
+   */
+  input.input-toolbar-pill {
+    @apply box-border min-w-0 w-full flex-1 appearance-none !rounded-l-none !rounded-r-pill border-0 bg-transparent py-2.5 ps-4 pe-3 text-sm leading-normal text-ink shadow-none !min-h-0;
+  }
+
+  input.input-toolbar-pill::placeholder {
     @apply text-muted;
   }
-  #mgmt-emp-search:focus-visible {
+
+  input.input-toolbar-pill:focus-visible {
     @apply border-transparent outline-none ring-2 ring-inset ring-primary/20;
   }
 
-  /* Employee modal: שיוך + מפקד pill row */
-  #emp-modal-affiliation {
-    @apply min-h-0 w-full appearance-none rounded-l-none rounded-r-pill border-0 bg-transparent py-2.5 ps-4 pe-3 text-sm text-ink shadow-none;
-  }
-  #emp-modal-affiliation::placeholder {
-    @apply text-muted;
-  }
-  #emp-modal-affiliation:focus-visible {
-    @apply border-transparent outline-none ring-2 ring-inset ring-primary/20;
+  input.input-toolbar-pill.input-toolbar-pill--search {
+    @apply pe-10;
   }
 
-  /* Syllabus preset modal: תדריך / תחקיר minutes + משותף pill row (same pattern as #emp-modal-affiliation) */
-  #preset-modal-prep-mins,
-  #preset-modal-rest-mins {
-    @apply min-h-0 w-full appearance-none rounded-l-none rounded-r-pill border-0 bg-transparent py-2.5 ps-4 pe-3 text-sm tabular-nums text-ink shadow-none;
-  }
-  #preset-modal-prep-mins:focus-visible,
-  #preset-modal-rest-mins:focus-visible {
-    @apply border-transparent outline-none ring-2 ring-inset ring-primary/20;
+  /* Weekly settings — ימים בבית הספר (same bar pattern as management search) */
+  input.input-toolbar-pill.input-toolbar-pill--center {
+    @apply py-2.5 ps-3 pe-2 text-center font-heading text-sm font-semibold tabular-nums;
   }
 
-  /*
-   * Flight board empty slot (ריק) + inline assign input: global @layer base gives all text
-   * inputs min-h-[2.5rem], px-3 py-2, text-base — this class wins in components layer.
-   */
+  /* --- Flight board slot assign --- */
   input.fb-slot-assign {
     @apply box-border !h-5 !min-h-0 !max-h-5 w-full min-w-0 appearance-none rounded-lg border border-line bg-surface !px-1 !py-0 text-center font-body !text-[10px] !leading-5 text-ink shadow-sm;
   }
+
   input.fb-slot-assign::placeholder {
     @apply text-center text-muted;
   }
+
   input.fb-slot-assign:focus-visible {
     @apply border-primary outline-none ring-2 ring-primary/25;
   }
+
   input.fb-slot-assign:disabled {
     @apply cursor-not-allowed opacity-60;
   }
+
   button.fb-slot-assign {
     @apply box-border flex !h-5 !min-h-0 !max-h-5 w-full min-w-0 items-center justify-center rounded-lg border border-dashed border-line/80 bg-background/40 !px-1 !py-0 text-center font-body !text-[10px] !leading-5 text-muted;
   }
 
-  /*
-   * Weekly availability — extra/reserve footer composer (same global input override as fb-slot-assign).
-   */
+  /* --- Weekly availability footer composer --- */
   input.wk-avail-composer-name {
-    @apply box-border !h-5 !min-h-0 !max-h-5 w-full min-w-0 appearance-none rounded-md border border-line bg-surface !px-1 !py-0 text-start font-body !text-[10px] !leading-5 text-ink shadow-sm;
+    @apply box-border !h-7 !min-h-0 !max-h-7 w-full min-w-0 appearance-none !rounded-md border border-line bg-surface !px-1.5 !py-0 text-start font-body !text-[10px] !leading-none text-ink shadow-sm;
   }
+
   input.wk-avail-composer-name::placeholder {
-    @apply text-muted;
+    @apply text-[10px] text-muted;
   }
+
   input.wk-avail-composer-name:focus-visible {
-    @apply border-primary outline-none ring-2 ring-primary/25;
+    @apply border-primary outline-none ring-1 ring-primary/25;
   }
+
   input.wk-avail-composer-name:disabled {
     @apply cursor-not-allowed opacity-60;
   }
-  /* 24h HH:mm dual-segment control — same footprint as former single `input.wk-avail-composer-time`. */
-  .wk-avail-composer-time.time-input-24 {
-    @apply box-border !h-5 !min-h-0 !max-h-5 !w-auto min-w-0 max-w-[5.75rem] gap-px !px-0.5 !text-[10px] !leading-5;
-  }
-  .wk-avail-composer-time.time-input-24 input {
-    @apply !text-[10px] !leading-5;
-  }
-  .wk-avail-composer-time.time-input-24:focus-within {
-    @apply ring-1 ring-primary/25;
-  }
-  .wk-avail-composer-time.time-input-24:has(:disabled) {
-    @apply cursor-not-allowed opacity-60;
+
+  /* Compact TimeInput24: strip base/min rules from `.time-input-24 input.time-input-24__seg` (px, min-w). */
+  .time-input-24.inline-flex.h-7 input.time-input-24__seg {
+    font-size: 0.625rem !important;
+    line-height: 1 !important;
+    min-width: 0 !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
   }
 
-  /* Stale shifts + uncovered window tail — red stripes only; use same h-2.5 + ring-black/10 as solid pills */
   .schedule-striped-warn-pill {
     background: repeating-linear-gradient(
       -45deg,
@@ -150,6 +267,10 @@
     );
   }
 }
+
+/* =============================================================================
+   Utilities — WebKit date/time field colors
+   ============================================================================= */
 
 @layer utilities {
   input[type="date"]::-webkit-datetime-edit-fields-wrapper,

@@ -7,11 +7,16 @@ export default {
     extend: {
       colors: {
         primary: "#7BA3B5",
+        /** Hover / pressed primary actions (legacy `--primary-dark`). */
+        primaryDark: "#5D8A9E",
         background: "#FBFBF9",
         surface: "#FFFFFF",
         ink: "#42494D",
         muted: "#939B9F",
         line: "#F0F2F4",
+        danger: "#EF4444",
+        success: "#22C55E",
+        warning: "#F59E0B",
         ...tailwindPastelColors(),
       },
       fontFamily: {

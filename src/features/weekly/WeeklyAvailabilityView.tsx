@@ -1,5 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import type { JsonObject } from "../../shared/api";
 import * as api from "../../shared/api";
 import {
@@ -7,6 +13,7 @@ import {
   parseEmployeeKind,
   sortEmployeesByActivePreset,
 } from "../../shared/employeeOrderSort";
+import { AutocompleteCombobox } from "../../shared/AutocompleteCombobox";
 import { errorMessageFromUnknown } from "../../shared/errorMessage";
 import {
   addDays,
@@ -97,6 +104,55 @@ function SmallCheckIcon({ className }: { className?: string }) {
   );
 }
 
+/** One day cell: regular (toggle) or extra/reserve timed row (click = delete that row). */
+function WeeklyAvailabilityCellButton({
+  name,
+  roleHex,
+  pending,
+  hasAvailability,
+  rightSlot,
+  onClick,
+}: {
+  name: string;
+  roleHex: string;
+  pending: boolean;
+  hasAvailability: boolean;
+  rightSlot: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={pending}
+      onClick={onClick}
+      className={`flex w-full min-w-0 min-h-[28px] max-w-full items-center gap-0.5 rounded-sm border px-0.5 py-0.5 text-start transition-colors ${
+        pending ? "cursor-wait opacity-80" : ""
+      } ${
+        hasAvailability
+          ? "border-green-300/80 bg-green-100/55 hover:bg-green-100/80"
+          : "border-red-200/90 bg-red-100/45 hover:bg-red-100/70"
+      }`}
+    >
+      <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+        <span
+          className="size-2 shrink-0 rounded-full ring-1 ring-black/10"
+          style={{ backgroundColor: roleHex }}
+          aria-hidden
+        />
+        <span
+          className="min-w-0 truncate font-heading text-xs font-bold text-ink sm:text-sm"
+          title={name}
+        >
+          {name}
+        </span>
+      </span>
+      <span className="ms-auto flex min-w-0 max-w-[42%] shrink-0 items-center justify-end gap-0.5 font-heading font-semibold text-ink/90">
+        {rightSlot}
+      </span>
+    </button>
+  );
+}
+
 function ExtraReserveComposerRow({
   draft,
   onChangeDraft,
@@ -110,23 +166,6 @@ function ExtraReserveComposerRow({
   disabled: boolean;
   onSubmit: () => void;
 }) {
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  const filtered = useMemo(() => {
-    const q = draft.query.trim();
-    if (!q) return [];
-    return extraReserveEmployees.filter((e) => String(e.name ?? "").includes(q));
-  }, [draft.query, extraReserveEmployees]);
-
-  const onBlurName = useCallback(() => {
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const root = rootRef.current;
-        if (root?.contains(document.activeElement)) return;
-      });
-    });
-  }, []);
-
   const commitPick = useCallback(
     (employeeId: number) => {
       const emp = extraReserveEmployees.find((e) => Number(e.id) === employeeId);
@@ -138,80 +177,75 @@ function ExtraReserveComposerRow({
     [extraReserveEmployees, onChangeDraft],
   );
 
+  const canSubmit = useMemo(() => {
+    if (draft.employeeId == null) return false;
+    const startHm = formatTimeForInput(draft.start);
+    const endHm = formatTimeForInput(draft.end);
+    return Boolean(startHm && endHm);
+  }, [draft.employeeId, draft.start, draft.end]);
+
+  /** Match flight board: suggest on empty query; hide list once a worker is picked (substring filter would else stay open). */
+  const comboItems = useMemo(
+    () => (draft.employeeId == null ? extraReserveEmployees : []),
+    [draft.employeeId, extraReserveEmployees],
+  );
+
   return (
-    <div ref={rootRef} dir="rtl" className="flex min-h-5 items-center gap-0.5">
-      <div className="relative min-w-0 flex-1">
-        <input
-          type="text"
-          dir="rtl"
-          autoComplete="off"
+    <div dir="rtl" className="flex min-h-7 items-center gap-0.5">
+      <div className="relative min-w-0 flex-1 order-1">
+        <AutocompleteCombobox<JsonObject>
+          mode="controlled"
+          textValue={draft.query}
+          onTextValueChange={(v) => onChangeDraft({ query: v, employeeId: null })}
+          items={comboItems}
+          itemToKey={(e) => String(e.id)}
+          itemToLabel={(e) => String(e.name ?? "")}
+          filterMode="substring"
+          emptyQueryBehavior="firstN"
+          emptyQueryFirstCount={25}
+          placement="above"
+          onSelect={(e) => commitPick(Number(e.id))}
           disabled={disabled}
-          value={draft.query}
-          onChange={(e) => {
-            onChangeDraft({ query: e.target.value, employeeId: null });
-          }}
-          onBlur={onBlurName}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              const first = filtered[0];
-              if (first) commitPick(Number(first.id));
-              return;
-            }
-          }}
-          className="wk-avail-composer-name max-w-full"
-          placeholder="מפעיל"
-          aria-autocomplete="list"
-          aria-expanded={filtered.length > 0}
+          placeholder="הוספת זמינות"
+          dir="rtl"
+          inputClassName="wk-avail-composer-name max-w-full"
         />
-        {filtered.length > 0 ? (
-          <ul
-            className="absolute start-0 bottom-full z-30 mb-0.5 max-h-36 min-w-full overflow-y-auto rounded-md border border-line bg-surface py-0.5 shadow-airy"
-            onMouseDown={(e) => e.preventDefault()}
-          >
-            {filtered.map((e) => (
-              <li key={String(e.id)}>
-                <button
-                  type="button"
-                  className="w-full px-2 py-1 text-start text-xs text-ink hover:bg-sky-1/50"
-                  onMouseDown={() => commitPick(Number(e.id))}
-                >
-                  {String(e.name ?? "")}
-                </button>
-              </li>
-            ))}
-          </ul>
-        ) : null}
       </div>
+      {/* DOM order = Tab order (name → start → end → V); flex order keeps visual name | end | - | start | V in RTL */}
       <TimeInput24
         dir="ltr"
         disabled={disabled}
-        value={formatTimeForInput(draft.end)}
-        onChange={(v) => onChangeDraft({ end: v })}
-        allowEmpty
-        className="wk-avail-composer-time"
-        aria-label="שעת סיום"
-      />
-      <span className="shrink-0 translate-y-px text-[9px] font-semibold leading-5 text-ink/70" aria-hidden>
-        -
-      </span>
-      <TimeInput24
-        dir="ltr"
-        disabled={disabled}
+        compact
+        className="order-4"
         value={formatTimeForInput(draft.start)}
         onChange={(v) => onChangeDraft({ start: v })}
         allowEmpty
-        className="wk-avail-composer-time"
         aria-label="שעת התחלה"
       />
+      <TimeInput24
+        dir="ltr"
+        disabled={disabled}
+        compact
+        className="order-2"
+        value={formatTimeForInput(draft.end)}
+        onChange={(v) => onChangeDraft({ end: v })}
+        allowEmpty
+        aria-label="שעת סיום"
+      />
+      <span
+        className="order-3 shrink-0 text-[10px] font-semibold leading-none text-ink/70"
+        aria-hidden
+      >
+        -
+      </span>
       <button
         type="button"
-        disabled={disabled}
+        disabled={disabled || !canSubmit}
         onClick={onSubmit}
-        className="flex size-5 shrink-0 items-center justify-center rounded border border-green-600/50 bg-green-100/70 text-green-900 transition hover:bg-green-100 disabled:cursor-not-allowed disabled:opacity-50"
+        className="order-5 flex size-7 shrink-0 items-center justify-center rounded border border-green-600/50 bg-green-100/70 text-green-900 transition hover:bg-green-100 disabled:cursor-not-allowed disabled:opacity-40"
         aria-label="הוסף זמינות"
       >
-        <SmallCheckIcon />
+        <SmallCheckIcon className="h-4 w-4 shrink-0" />
       </button>
     </div>
   );
@@ -273,7 +307,7 @@ export function WeeklyAvailabilityView() {
     () =>
       employees.filter((e) => {
         const k = parseEmployeeKind(e.employee_type);
-        return k === "extra" || k === "reserve";
+        return k === "extra" || k === "reserve" || k === "admin";
       }),
     [employees],
   );
@@ -298,6 +332,16 @@ export function WeeklyAvailabilityView() {
     return m;
   }, [employees]);
 
+  const employeeRoleHexById = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const e of employees) {
+      const id = Number(e.id);
+      if (!id) continue;
+      m.set(id, String(e.role_color ?? DEFAULT_ROLE_HEX).trim() || DEFAULT_ROLE_HEX);
+    }
+    return m;
+  }, [employees]);
+
   const { data: availabilityRaw = [] } = useQuery({
     queryKey: ["availability", weekStartStr],
     queryFn: () => api.listAvailabilityForWeek(weekStartStr),
@@ -315,7 +359,7 @@ export function WeeklyAvailabilityView() {
       const eid = Number(r.employee_id ?? 0);
       if (!ymd || !eid) continue;
       const kind = employeeKindById.get(eid);
-      if (kind !== "extra" && kind !== "reserve") continue;
+      if (kind !== "extra" && kind !== "reserve" && kind !== "admin") continue;
       if (!m.has(ymd)) m.set(ymd, []);
       m.get(ymd)!.push(r);
     }
@@ -602,107 +646,66 @@ export function WeeklyAvailabilityView() {
                       };
 
                       return (
-                        <button
+                        <WeeklyAvailabilityCellButton
                           key={eid}
-                          type="button"
-                          disabled={cellPending}
+                          name={name}
+                          roleHex={roleHex}
+                          pending={cellPending}
+                          hasAvailability={hasAny}
                           onClick={onRowClick}
-                          className={`flex w-full min-w-0 min-h-[28px] max-w-full items-center gap-0.5 rounded-sm border px-0.5 py-0.5 text-start transition-colors ${
-                            cellPending ? "cursor-wait opacity-80" : ""
-                          } ${
-                            hasAny
-                              ? "border-green-300/80 bg-green-100/55 hover:bg-green-100/80"
-                              : "border-red-200/90 bg-red-100/45 hover:bg-red-100/70"
-                          }`}
-                        >
-                          <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
-                            <span
-                              className="size-2 shrink-0 rounded-full ring-1 ring-black/10"
-                              style={{ backgroundColor: roleHex }}
-                              aria-hidden
-                            />
-                            <span
-                              className="min-w-0 truncate font-heading text-xs font-bold text-ink sm:text-sm"
-                              title={name}
-                            >
-                              {name}
-                            </span>
-                          </span>
-                          <span className="ms-auto flex min-w-0 max-w-[42%] shrink-0 items-center justify-end gap-0.5 font-heading font-semibold text-ink/90">
-                            {kind === "none" ? (
-                              <SmallXIcon className="shrink-0 text-red-700/80" aria-label="אין זמינות" />
-                            ) : null}
-                            {kind === "whole" ? (
-                              <span className="truncate text-end text-[10px] text-green-900 sm:text-[11px]">
-                                כל היום
-                              </span>
-                            ) : null}
-                            {kind === "timed" ? (
-                              <span
-                                className="truncate text-end tabular-nums text-[10px] text-green-900 sm:text-[11px]"
-                                dir="ltr"
-                                title={timedRangeLabel(rows)}
-                              >
-                                {timedRangeLabel(rows)}
-                              </span>
-                            ) : null}
-                          </span>
-                        </button>
+                          rightSlot={
+                            <>
+                              {kind === "none" ? (
+                                <SmallXIcon className="shrink-0 text-red-700/80" aria-label="אין זמינות" />
+                              ) : null}
+                              {kind === "whole" ? (
+                                <span className="truncate text-end text-[10px] text-green-900 sm:text-[11px]">
+                                  כל היום
+                                </span>
+                              ) : null}
+                              {kind === "timed" ? (
+                                <span
+                                  className="truncate text-end tabular-nums text-[10px] text-green-900 sm:text-[11px]"
+                                  dir="ltr"
+                                  title={timedRangeLabel(rows)}
+                                >
+                                  {timedRangeLabel(rows)}
+                                </span>
+                              ) : null}
+                            </>
+                          }
+                        />
                       );
                     })}
-                  </div>
-                </div>
-                <div className="shrink-0 border-t border-line bg-surface/40 px-0.5 pb-1 pt-0.5">
-                  <div className="flex flex-col gap-0.5">
                     {timedExtraRows.map((r) => {
                       const rid = Number(r.id);
                       const eid = Number(r.employee_id ?? 0);
                       const name = employeeNameById.get(eid) ?? "—";
-                      const roleHex =
-                        String(
-                          employees.find((e) => Number(e.id) === eid)?.role_color ??
-                            DEFAULT_ROLE_HEX,
-                        ).trim() || DEFAULT_ROLE_HEX;
+                      const roleHex = employeeRoleHexById.get(eid) ?? DEFAULT_ROLE_HEX;
                       const pending = isTimedRowPending(rid);
+                      const timeLabel = `${String(r.start_time)}–${String(r.end_time)}`;
 
                       return (
-                        <div
+                        <WeeklyAvailabilityCellButton
                           key={rid}
-                          className={`flex min-h-[28px] w-full min-w-0 items-center gap-0.5 rounded-sm border border-green-300/80 bg-green-100/55 px-0.5 py-0.5 ${
-                            pending ? "opacity-70" : ""
-                          }`}
-                        >
-                          <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+                          name={name}
+                          roleHex={roleHex}
+                          pending={pending}
+                          hasAvailability
+                          onClick={() => {
+                            if (createMut.isPending || deleteMut.isPending) return;
+                            void deleteTimedMut.mutateAsync(rid);
+                          }}
+                          rightSlot={
                             <span
-                              className="size-2 shrink-0 rounded-full ring-1 ring-black/10"
-                              style={{ backgroundColor: roleHex }}
-                              aria-hidden
-                            />
-                            <span
-                              className="min-w-0 truncate font-heading text-xs font-bold text-green-950 sm:text-sm"
-                              title={name}
+                              className="truncate text-end tabular-nums text-[10px] text-green-900 sm:text-[11px]"
+                              dir="ltr"
+                              title={timeLabel}
                             >
-                              {name}
+                              {timeLabel}
                             </span>
-                          </span>
-                          <span
-                            className="ms-auto shrink-0 tabular-nums font-heading text-[10px] font-semibold text-green-900 sm:text-[11px]"
-                            dir="ltr"
-                          >
-                            {String(r.start_time)}–{String(r.end_time)}
-                          </span>
-                          <button
-                            type="button"
-                            disabled={pending}
-                            onClick={() => {
-                              void deleteTimedMut.mutateAsync(rid);
-                            }}
-                            className="shrink-0 rounded p-0.5 text-green-900/80 transition hover:bg-green-200/60 disabled:cursor-not-allowed"
-                            aria-label="מחק זמינות"
-                          >
-                            <SmallXIcon className="size-3.5" />
-                          </button>
-                        </div>
+                          }
+                        />
                       );
                     })}
                     <ExtraReserveComposerRow

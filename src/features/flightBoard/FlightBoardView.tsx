@@ -6,6 +6,7 @@ import * as api from "../../shared/api";
 import { formatYmd } from "../../shared/dates";
 import { presetDurationById, shiftPrepRestHmPairs, windowDayTimeline } from "../../shared/manningHours";
 import type { JsonObject } from "../../shared/api";
+import { AutocompleteCombobox } from "../../shared/AutocompleteCombobox";
 import { errorMessageFromUnknown } from "../../shared/errorMessage";
 import {
   activePresetIdFromList,
@@ -179,22 +180,6 @@ function EmptySlotAssignCell({
   openPayload: Omit<SlotEditorTarget, "key">;
 }) {
   const isOpen = editor?.key === cellKey;
-  const inputRef = useRef<HTMLInputElement>(null);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const el = inputRef.current;
-    if (!el) return;
-    el.focus();
-    el.select();
-  }, [isOpen]);
-
-  const filtered = useMemo(() => {
-    const q = slotQuery.trim();
-    if (!q) return employees.slice(0, 25);
-    return employees.filter((e) => String(e.name ?? "").includes(q));
-  }, [employees, slotQuery]);
 
   const closeEditor = useCallback(() => {
     setEditor(null);
@@ -217,15 +202,9 @@ function EmptySlotAssignCell({
     [cellKey, closeEditor, createMut, editor],
   );
 
-  const onInputBlur = useCallback(() => {
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const root = rootRef.current;
-        if (root?.contains(document.activeElement)) return;
-        if (!editor || editor.key !== cellKey) return;
-        closeEditor();
-      });
-    });
+  const onCloseField = useCallback(() => {
+    if (!editor || editor.key !== cellKey) return;
+    closeEditor();
   }, [cellKey, closeEditor, editor]);
 
   if (!isOpen) {
@@ -251,51 +230,28 @@ function EmptySlotAssignCell({
   }
 
   return (
-    <div ref={rootRef} className="relative h-5 min-h-0 w-full min-w-0">
-      <input
-        ref={inputRef}
-        type="text"
-        dir="rtl"
-        autoComplete="off"
+    <div className="relative h-5 min-h-0 w-full min-w-0">
+      <AutocompleteCombobox<JsonObject>
+        mode="controlled"
+        textValue={slotQuery}
+        onTextValueChange={setSlotQuery}
+        items={employees}
+        itemToKey={(e) => String(e.id)}
+        itemToLabel={(e) => String(e.name ?? "")}
+        filterMode="substring"
+        emptyQueryBehavior="firstN"
+        emptyQueryFirstCount={25}
+        placement="below"
+        onSelect={(e) => commitPick(Number(e.id))}
+        onEscape={closeEditor}
+        onClose={onCloseField}
         disabled={createMut.isPending}
-        value={slotQuery}
-        onChange={(e) => setSlotQuery(e.target.value)}
-        onBlur={onInputBlur}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            const first = filtered[0];
-            if (first) commitPick(Number(first.id));
-            return;
-          }
-          if (e.key === "Escape") {
-            e.preventDefault();
-            closeEditor();
-          }
-        }}
-        className="fb-slot-assign"
         placeholder="שם מפעיל"
-        aria-autocomplete="list"
-        aria-expanded={filtered.length > 0}
+        dir="rtl"
+        inputClassName="fb-slot-assign"
+        autoFocus
+        selectTextOnAutoFocus
       />
-      {filtered.length > 0 ? (
-        <ul
-          className="absolute start-0 top-full z-30 mt-0.5 max-h-40 min-w-full overflow-y-auto rounded-md border border-line bg-surface py-0.5 shadow-airy"
-          onMouseDown={(e) => e.preventDefault()}
-        >
-          {filtered.map((e) => (
-            <li key={String(e.id)}>
-              <button
-                type="button"
-                className="w-full px-2 py-1 text-start text-xs text-ink hover:bg-sky-1/50"
-                onMouseDown={() => commitPick(Number(e.id))}
-              >
-                {String(e.name ?? "")}
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
     </div>
   );
 }

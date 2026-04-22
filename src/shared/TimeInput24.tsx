@@ -80,6 +80,8 @@ export type TimeInput24Props = Omit<
   onChange: (hm: string) => void;
   snapMinutesToStep?: number;
   allowEmpty?: boolean;
+  /** Tight inline control (e.g. weekly availability composer): short segments, no min-h-9 / px-3. */
+  compact?: boolean;
 };
 
 export function TimeInput24({
@@ -87,6 +89,7 @@ export function TimeInput24({
   onChange,
   snapMinutesToStep,
   allowEmpty = false,
+  compact = false,
   onBlur,
   onFocus,
   className,
@@ -191,17 +194,28 @@ export function TimeInput24({
     }
   };
 
-  const wrapperClass = [
-    "time-input-24 inline-flex max-w-full min-w-0 shrink-0 items-center gap-0.5 rounded-md border border-line bg-surface px-1 font-body text-sm text-ink shadow-sm tabular-nums",
-    "focus-within:border-primary focus-within:outline-none focus-within:ring-2 focus-within:ring-primary/25",
-    disabled ? "cursor-not-allowed opacity-60" : "",
-    className ?? "",
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const wrapperClass = compact
+    ? [
+        "time-input-24 inline-flex shrink-0 items-center gap-0 rounded-md border border-line bg-surface px-0 font-body tabular-nums text-ink shadow-sm scheme-light",
+        "h-7 min-h-0 max-h-7 max-w-[2.95rem] !text-[10px] !leading-none",
+        "focus-within:border-primary focus-within:outline-none focus-within:ring-1 focus-within:ring-primary/25",
+        disabled ? "cursor-not-allowed opacity-60" : "",
+        className ?? "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : [
+        "time-input-24 inline-flex max-w-full min-w-0 shrink-0 items-center gap-0.5 rounded-card border border-line bg-background px-3 font-body text-sm text-ink shadow-none tabular-nums scheme-light",
+        "min-h-9 focus-within:border-primary focus-within:outline-none focus-within:ring-2 focus-within:ring-primary/25",
+        disabled ? "cursor-not-allowed opacity-60" : "",
+        className ?? "",
+      ]
+        .filter(Boolean)
+        .join(" ");
 
-  const segClass =
-    "min-w-0 flex-1 border-0 bg-transparent p-0 text-center outline-none ring-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none";
+  const segClass = compact
+    ? "time-input-24__seg box-border h-7 max-h-7 !min-w-0 w-[0.92rem] max-w-[0.92rem] shrink-0 flex-none border-0 bg-transparent p-0 text-center !text-[10px] !leading-none tracking-tight [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+    : "time-input-24__seg min-h-0 min-w-0 flex-1 border-0 bg-transparent py-0 text-center [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none";
 
   const bumpHour = (delta: number) => {
     const h = parseInt(digitsOnly(hour, 2) || "0", 10) || 0;
@@ -284,8 +298,12 @@ export function TimeInput24({
         dir="ltr"
         disabled={disabled}
         aria-label={ariaLabel ? `${ariaLabel} — שעה` : "Hour (00–23)"}
-        placeholder="HH"
-        title="שעה בפורמט 24 שעות; חצים למעלה/למטה, לחיצה כפולה לבחירה"
+        placeholder={compact ? "" : "HH"}
+        title={
+          compact
+            ? undefined
+            : "שעה בפורמט 24 שעות; חצים למעלה/למטה, לחיצה כפולה לבחירה"
+        }
         className={segClass}
         value={hour}
         onPaste={handlePaste}
@@ -316,7 +334,14 @@ export function TimeInput24({
         }}
         onKeyDown={onHourKeyDown}
       />
-      <span className="shrink-0 select-none text-ink/60" aria-hidden>
+      <span
+        className={
+          compact
+            ? "mx-[-1px] shrink-0 select-none text-[10px] leading-none text-ink/60"
+            : "shrink-0 select-none text-ink/60"
+        }
+        aria-hidden
+      >
         :
       </span>
       <input
@@ -330,8 +355,8 @@ export function TimeInput24({
         dir="ltr"
         disabled={disabled}
         aria-label={ariaLabel ? `${ariaLabel} — דקות` : "Minutes (00–59)"}
-        placeholder="mm"
-        title="דקות; חצים למעלה/למטה"
+        placeholder={compact ? "" : "mm"}
+        title={compact ? undefined : "דקות; חצים למעלה/למטה"}
         className={segClass}
         value={minute}
         onPaste={handlePaste}

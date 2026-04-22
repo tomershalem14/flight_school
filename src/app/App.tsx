@@ -6,8 +6,6 @@ import { FlightBoardView } from "../features/flightBoard/FlightBoardView";
 import { ManagementView } from "../features/management/ManagementView";
 import { ReportsView } from "../features/reports/ReportsView";
 import { WeeklyLayout } from "../features/weekly/WeeklyLayout";
-import "./App.css";
-
 function MainApp() {
   const activeView = useAppStore((s) => s.activeView);
   const manningMode = useAppStore((s) => s.manningMode);
