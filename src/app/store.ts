@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { getSunday, formatYmd } from "../shared/dates";
 
-export type AppView = "manning" | "management" | "reports";
+export type AppView = "manning" | "weekly" | "management" | "reports";
 
 export type ManningMode = "matrix" | "board";
 
@@ -15,6 +15,9 @@ interface AppState {
   setCurrentDay: (d: Date) => void;
   reportWeekStart: Date;
   setReportWeekStart: (d: Date) => void;
+  /** Sunday 00:00 for the weekly availability view. */
+  weeklyWeekStart: Date;
+  setWeeklyWeekStart: (d: Date) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -26,6 +29,9 @@ export const useAppStore = create<AppState>((set) => ({
   setCurrentDay: (currentDay) => set({ currentDay }),
   reportWeekStart: getSunday(new Date()),
   setReportWeekStart: (reportWeekStart) => set({ reportWeekStart }),
+  weeklyWeekStart: getSunday(new Date()),
+  setWeeklyWeekStart: (weeklyWeekStart) =>
+    set({ weeklyWeekStart: getSunday(weeklyWeekStart) }),
 }));
 
 export function weekStartString(d: Date): string {

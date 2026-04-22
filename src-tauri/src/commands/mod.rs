@@ -1,5 +1,7 @@
 //! Tauri `invoke` handlers grouped by domain.
 
+pub mod availability;
+pub mod weekly_settings;
 pub mod employee_order_presets;
 pub mod employees;
 pub mod global_rules;

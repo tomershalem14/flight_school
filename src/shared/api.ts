@@ -143,6 +143,47 @@ export async function getScheduleEvents(week_start: string): Promise<JsonObject[
   return invoke("get_schedule_events", { weekStart: week_start });
 }
 
+export async function listAvailabilityForWeek(week_start: string): Promise<JsonObject[]> {
+  return invoke("list_availability_for_week", { weekStart: week_start });
+}
+
+export async function createAvailabilityWholeDay(
+  employee_id: number,
+  avail_date: string,
+): Promise<JsonObject> {
+  return invoke("create_availability_whole_day", {
+    employeeId: employee_id,
+    availDate: avail_date,
+  });
+}
+
+export async function deleteAvailabilityForEmployeeDay(
+  employee_id: number,
+  avail_date: string,
+): Promise<JsonObject> {
+  return invoke("delete_availability_for_employee_day", {
+    employeeId: employee_id,
+    availDate: avail_date,
+  });
+}
+
+export async function getWeeklySettings(
+  week_start: string,
+): Promise<JsonObject | null> {
+  return invoke("get_weekly_settings", { weekStart: week_start });
+}
+
+export async function saveWeeklySettings(
+  week_start: string,
+  payload: { daysInSchool: number; activeDaysMask: number },
+): Promise<JsonObject> {
+  return invoke("save_weekly_settings", {
+    weekStart: week_start,
+    daysInSchool: payload.daysInSchool,
+    activeDaysMask: payload.activeDaysMask,
+  });
+}
+
 export async function createScheduleEvent(payload: JsonObject): Promise<JsonObject> {
   return invoke("create_schedule_event", { payload });
 }

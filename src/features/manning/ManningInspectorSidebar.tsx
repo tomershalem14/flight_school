@@ -72,7 +72,7 @@ function ViolationCard({ v }: { v: JsonObject }) {
   if (!hasStructuredHeader) {
     return (
       <article
-        className={`overflow-hidden rounded-lg px-2.5 py-1.5 text-right text-xs leading-snug ${shell} ${bodyTone}`}
+        className={`shrink-0 overflow-hidden rounded-lg px-2.5 py-1.5 text-right text-xs leading-snug ${shell} ${bodyTone}`}
         dir="rtl"
       >
         {message || "—"}
@@ -82,7 +82,7 @@ function ViolationCard({ v }: { v: JsonObject }) {
 
   return (
     <article
-      className={`overflow-hidden rounded-lg text-right ${shell}`}
+      className={`shrink-0 overflow-hidden rounded-lg text-right ${shell}`}
       dir="rtl"
     >
       <div className="border-b border-black/10 bg-black/10 px-2.5 py-1.5 text-xs leading-snug text-ink">
@@ -227,14 +227,14 @@ export function ManningInspectorSidebar({ warnings }: { warnings: JsonObject[] }
         {wideOpen ? (
           <aside
             id={panelId}
-            className="flex h-full min-h-0 w-72 min-w-0 shrink-0 flex-col bg-surface"
+            className="flex h-full min-h-0 w-72 min-w-0 shrink-0 flex-col overflow-hidden bg-surface"
           >
             <div className="shrink-0 border-b border-line px-3 py-1.5 text-right" dir="rtl">
               <h2 className="font-heading text-xs font-bold text-ink">אזהרות</h2>
             </div>
             {warnings.length > 0 ? (
               <div
-                className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-3"
+                className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-contain p-3"
                 dir="rtl"
               >
                 {warnings.map((v, i) => (
@@ -245,8 +245,11 @@ export function ManningInspectorSidebar({ warnings }: { warnings: JsonObject[] }
                 ))}
               </div>
             ) : (
-              <div className="p-3 text-right" dir="rtl">
-                <p className="text-xs text-muted">אין אזהרות ליום זה</p>
+              <div
+                className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain p-3 text-right"
+                dir="rtl"
+              >
+                <p className="shrink-0 text-xs text-muted">אין אזהרות ליום זה</p>
               </div>
             )}
           </aside>

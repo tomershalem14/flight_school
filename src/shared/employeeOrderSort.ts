@@ -1,6 +1,6 @@
 import type { JsonObject } from "./api";
 
-function parseEmployeeKind(v: unknown): string {
+export function parseEmployeeKind(v: unknown): string {
   const s = String(v ?? "")
     .trim()
     .toLowerCase();

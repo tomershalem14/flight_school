@@ -317,6 +317,39 @@ fn apply_schema(conn: &mut Connection) -> AppResult<()> {
         conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (24)", [])?;
     }
 
+    let v25: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 25",
+        [],
+        |r| r.get(0),
+    )?;
+    if v25 == 0 {
+        const M25: &str = include_str!("../../migrations/025_availability.sql");
+        conn.execute_batch(M25)?;
+        conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (25)", [])?;
+    }
+
+    let v26: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 26",
+        [],
+        |r| r.get(0),
+    )?;
+    if v26 == 0 {
+        const M26: &str = include_str!("../../migrations/026_weekly_settings.sql");
+        conn.execute_batch(M26)?;
+        conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (26)", [])?;
+    }
+
+    let v27: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 27",
+        [],
+        |r| r.get(0),
+    )?;
+    if v27 == 0 {
+        const M27: &str = include_str!("../../migrations/027_weekly_settings_active_days.sql");
+        conn.execute_batch(M27)?;
+        conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (27)", [])?;
+    }
+
     Ok(())
 }
 

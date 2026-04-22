@@ -5,6 +5,7 @@ import { ScheduleView } from "../features/schedule/ScheduleView";
 import { FlightBoardView } from "../features/flightBoard/FlightBoardView";
 import { ManagementView } from "../features/management/ManagementView";
 import { ReportsView } from "../features/reports/ReportsView";
+import { WeeklyLayout } from "../features/weekly/WeeklyLayout";
 import "./App.css";
 
 function MainApp() {
@@ -18,6 +19,7 @@ function MainApp() {
           {manningMode === "matrix" ? <ScheduleView /> : <FlightBoardView />}
         </ManningLayout>
       )}
+      {activeView === "weekly" && <WeeklyLayout />}
       {activeView === "management" && <ManagementView />}
       {activeView === "reports" && (
         <main id="app" className="main-content min-h-0 flex-1 overflow-auto">

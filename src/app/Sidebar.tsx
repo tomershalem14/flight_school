@@ -2,6 +2,7 @@ import { useAppStore, type AppView } from "./store";
 
 const NAV: { id: AppView; label: string }[] = [
   { id: "manning", label: "לוח" },
+  { id: "weekly", label: "שבועית" },
   { id: "management", label: "ניהול" },
   { id: "reports", label: "דוחות" },
 ];

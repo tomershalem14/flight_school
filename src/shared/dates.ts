@@ -47,3 +47,39 @@ export const DAYS_HE = [
   "שישי",
   "שבת",
 ] as const;
+
+/** Gregorian civil year for a Sunday-starting week, using that week’s Saturday (Sun…Sat). */
+export function civilYearForSundayWeek(weekStartSunday: Date): number {
+  return addDays(weekStartSunday, 6).getFullYear();
+}
+
+/**
+ * Ordinal week index within that civil year: week 1 begins on the Sunday of the week
+ * that contains Jan 1 (i.e. `getSunday(new Date(Y, 0, 1))`). `Y` is derived from the week’s Saturday.
+ */
+export function weekOrdinalInCivilYear(weekStartSunday: Date): number {
+  const Y = civilYearForSundayWeek(weekStartSunday);
+  const firstSunday = getSunday(new Date(Y, 0, 1));
+  const diffDays = Math.round(
+    (weekStartSunday.getTime() - firstSunday.getTime()) / 86_400_000,
+  );
+  return 1 + Math.floor(diffDays / 7);
+}
+
+/** `19/4` style (no leading zeros). */
+export function formatDmSlashed(d: Date): string {
+  return `${d.getDate()}/${d.getMonth() + 1}`;
+}
+
+/** Sunday–Saturday as `d/m–d/m` (no year). */
+export function formatWeeklyAppBarRange(weekStartSunday: Date): string {
+  const sat = addDays(weekStartSunday, 6);
+  return `${formatDmSlashed(weekStartSunday)}–${formatDmSlashed(sat)}`;
+}
+
+/** App bar: `שבוע X, d/m–d/m`. */
+export function formatWeeklyAppBarTitle(weekStartSunday: Date): string {
+  const x = weekOrdinalInCivilYear(weekStartSunday);
+  const range = formatWeeklyAppBarRange(weekStartSunday);
+  return `שבוע ${x}, ${range}`;
+}
