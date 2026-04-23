@@ -1,5 +1,6 @@
 import type { JsonObject } from "../../../shared/api";
 import {
+  shiftPrepRestHmPairs,
   shiftWallIntervalMs,
   wallIntervalsOverlap,
   clipIntervalToFrame,
@@ -31,7 +32,30 @@ export function employeeHasShiftIntersectingInterval(
   return false;
 }
 
-/** True if `employeeId` has an observation whose linked shift wall interval overlaps the interval. */
+/** Prep / flight / rest wall intervals for the **observed** shift (observer busy time), same basis as rules engine. */
+function observationObservedShiftDutyIntervalsMs(
+  dateStr: string,
+  observedShift: JsonObject,
+): Array<{ startMs: number; endMs: number }> {
+  const { prep, rest } = shiftPrepRestHmPairs(observedShift);
+  const out: Array<{ startMs: number; endMs: number }> = [];
+  if (prep) {
+    out.push(shiftWallIntervalMs(dateStr, prep.startHm, prep.endHm));
+  }
+  out.push(
+    shiftWallIntervalMs(
+      dateStr,
+      String(observedShift.start_time ?? observedShift.startTime),
+      String(observedShift.end_time ?? observedShift.endTime),
+    ),
+  );
+  if (rest) {
+    out.push(shiftWallIntervalMs(dateStr, rest.startHm, rest.endHm));
+  }
+  return out;
+}
+
+/** True if `employeeId` has an observation whose linked shift prep/flight/rest overlaps the interval. */
 export function employeeHasObservationIntersectingInterval(
   dateStr: string,
   dayObservations: JsonObject[],
@@ -49,9 +73,10 @@ export function employeeHasObservationIntersectingInterval(
     const sid = Number(ob.shift_id ?? ob.shiftId);
     const s = shiftById.get(sid);
     if (!s) continue;
-    const iv = shiftWallIntervalMs(dateStr, String(s.start_time), String(s.end_time));
-    if (wallIntervalsOverlap(iv.startMs, iv.endMs, intervalStartMs, intervalEndMs)) {
-      return true;
+    for (const iv of observationObservedShiftDutyIntervalsMs(dateStr, s)) {
+      if (wallIntervalsOverlap(iv.startMs, iv.endMs, intervalStartMs, intervalEndMs)) {
+        return true;
+      }
     }
   }
   return false;

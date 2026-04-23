@@ -26,15 +26,15 @@ function ViolationCard({ v }: { v: JsonObject }) {
   const rule = typeof v.rule === "string" ? v.rule : "";
   const message = typeof v.message === "string" ? v.message : "";
 
-  const isSegmentOverlap = rule === "segment_overlap";
-  const isGlobalEventOverlap = rule === "global_event_overlap";
+  const isCalendarOverlap = rule === "calendar_overlap";
   const isShiftOutsideAvail = rule === "global_shift_outside_availability";
   const isEventOutsideAvail = rule === "global_event_outside_availability";
+  const isObsOutsideAvail = rule === "global_observation_outside_availability";
   const isRedOverlap =
-    isSegmentOverlap ||
-    isGlobalEventOverlap ||
+    isCalendarOverlap ||
     isShiftOutsideAvail ||
-    isEventOutsideAvail;
+    isEventOutsideAvail ||
+    isObsOutsideAvail;
   const isMaxRow = rule === "max_in_row_bunch";
   const isSyllabus = rule === "syllabus_role_level";
   const isGlobalWeekRule =
@@ -61,11 +61,9 @@ function ViolationCard({ v }: { v: JsonObject }) {
   const roleNameReq = jsonString(v, "required_role_name");
 
   let body: string;
-  if (isSegmentOverlap) {
-    body = "התנגשות בין זמנים של משמרות";
-  } else if (isGlobalEventOverlap) {
-    body = message || "התנגשות בזמנים בין אירוע לטיסה";
-  } else if (isShiftOutsideAvail || isEventOutsideAvail) {
+  if (isCalendarOverlap) {
+    body = message || "התנגשות בזמנים ביומן";
+  } else if (isShiftOutsideAvail || isEventOutsideAvail || isObsOutsideAvail) {
     body = message || "מחוץ לזמינות";
   } else if (isMaxRow && bunchX !== undefined && bunchY !== undefined) {
     body = `יותר מדי משמרות ברצף, ישנן ${bunchX} כאשר מותרות עד ${bunchY}`;
@@ -175,10 +173,10 @@ export function ManningInspectorSidebar({ warnings }: { warnings: JsonObject[] }
   const panelId = useId();
   const hasOverlapError = warnings.some(
     (w) =>
-      w.rule === "segment_overlap" ||
-      w.rule === "global_event_overlap" ||
+      w.rule === "calendar_overlap" ||
       w.rule === "global_shift_outside_availability" ||
-      w.rule === "global_event_outside_availability",
+      w.rule === "global_event_outside_availability" ||
+      w.rule === "global_observation_outside_availability",
   );
   const warningsPanelOpen = wideOpen && activeMenu === "warnings";
 

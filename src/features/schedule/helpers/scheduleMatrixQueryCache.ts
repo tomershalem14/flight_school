@@ -75,6 +75,7 @@ export function sortObservationsList(rows: JsonObject[]): JsonObject[] {
 
 export function afterMatrixObservationMutationSuccess(qc: QueryClient, weekStr: string): void {
   void qc.invalidateQueries({ queryKey: observationsListKey(weekStr) });
+  invalidateViolationsDeferred(qc);
 }
 
 export function rollbackScheduleEventCreate(

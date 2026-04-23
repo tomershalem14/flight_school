@@ -4,6 +4,7 @@ use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 /// End time at or after this minute-of-day counts as a “late” shift for workload coloring (18:00).
 const LATE_SHIFT_END_MIN: i32 = 18 * 60;
@@ -54,7 +55,7 @@ fn format_flight_range(start_time: &str, end_time: &str) -> String {
     format!("{}–{}", start_time.trim(), end_time.trim())
 }
 
-fn violation_segment_overlap(sa: &DayShiftRow, sb: &DayShiftRow, detail: &str) -> Violation {
+fn violation_calendar_overlap_shifts(sa: &DayShiftRow, sb: &DayShiftRow, detail: &str) -> Violation {
     let sid = sa.id.min(sb.id);
     let en = sa.emp_name.as_deref().unwrap_or("");
     let msg = if sa.id < sb.id {
@@ -64,7 +65,7 @@ fn violation_segment_overlap(sa: &DayShiftRow, sb: &DayShiftRow, detail: &str) -
     };
     let (first, second) = if sa.id < sb.id { (sa, sb) } else { (sb, sa) };
     Violation {
-        rule: "segment_overlap".into(),
+        rule: "calendar_overlap".into(),
         severity: "error".into(),
         message: msg,
         shift_id: Some(sid),
@@ -79,6 +80,28 @@ fn violation_segment_overlap(sa: &DayShiftRow, sb: &DayShiftRow, detail: &str) -
             format_flight_range(&first.start_time, &first.end_time),
             format_flight_range(&second.start_time, &second.end_time),
         ]),
+        bunch_count: None,
+        bunch_cap: None,
+        employee_role_level: None,
+        required_role_level: None,
+        employee_role_name: None,
+        required_role_name: None,
+    }
+}
+
+fn violation_calendar_overlap_mixed(
+    message: String,
+    shift_id: Option<i64>,
+    display_employee: Option<String>,
+    display_times: Vec<String>,
+) -> Violation {
+    Violation {
+        rule: "calendar_overlap".into(),
+        severity: "error".into(),
+        message,
+        shift_id,
+        display_employee,
+        display_shift_times: Some(display_times),
         bunch_count: None,
         bunch_cap: None,
         employee_role_level: None,
@@ -350,33 +373,239 @@ fn load_day_shifts_for_overlap(
     Ok(rows)
 }
 
-/// Rule 1: at most one violation per unordered shift pair; `shift_id` = `min(id_a, id_b)`.
-fn segment_overlap_violations_for_date(
+/// Rule 1 (unified calendar occupancy): overlaps among shift prep/flight/rest (joint prep/rest
+/// only for shift–shift), all `schedule_events`, and observation flight windows for the observer.
+/// One deduped row per conflicting pair of entities.
+fn calendar_overlap_built_for_date(
     conn: &Connection,
     shift_date: &str,
-) -> rusqlite::Result<Vec<Violation>> {
-    let rows = load_day_shifts_for_overlap(conn, shift_date)?;
-    let mut out = Vec::new();
-    let mut i = 0usize;
-    while i < rows.len() {
-        let emp = rows[i].employee_id;
-        let mut j = i + 1;
-        while j < rows.len() && rows[j].employee_id == emp {
-            j += 1;
+) -> rusqlite::Result<Vec<CalendarOverlapBuilt>> {
+    let shifts = load_day_shifts_for_overlap(conn, shift_date)?;
+    let events = load_schedule_events_range(conn, shift_date, shift_date)?;
+    let observations = load_observations_range(conn, shift_date, shift_date)?;
+
+    let mut emp_ids: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+    for s in &shifts {
+        emp_ids.insert(s.employee_id);
+    }
+    for e in &events {
+        if e.shift_date == shift_date {
+            emp_ids.insert(e.employee_id);
         }
-        let slice = &rows[i..j];
-        for a in 0..slice.len() {
-            for b in (a + 1)..slice.len() {
-                let sa = &slice[a];
-                let sb = &slice[b];
+    }
+    for o in &observations {
+        if o.shift_date == shift_date {
+            emp_ids.insert(o.employee_id);
+        }
+    }
+
+    let mut out: Vec<CalendarOverlapBuilt> = Vec::new();
+
+    for &emp in emp_ids.iter() {
+        let shifts_e: Vec<&DayShiftRow> = shifts
+            .iter()
+            .filter(|s| s.employee_id == emp)
+            .collect();
+        let events_e: Vec<&ScheduleEventRow> = events
+            .iter()
+            .filter(|e| e.shift_date == shift_date && e.employee_id == emp)
+            .collect();
+        let obs_e: Vec<&ObservationRow> = observations
+            .iter()
+            .filter(|o| o.shift_date == shift_date && o.employee_id == emp)
+            .collect();
+
+        let emp_name: Option<String> = shifts_e
+            .first()
+            .and_then(|s| s.emp_name.clone())
+            .filter(|n| !n.trim().is_empty())
+            .or_else(|| {
+                conn.query_row("SELECT name FROM employees WHERE id = ?", [emp], |r| {
+                    r.get::<_, String>(0)
+                })
+                .optional()
+                .ok()
+                .flatten()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+            });
+
+        // shift–shift (same employee): joint prep/rest exceptions apply.
+        for a in 0..shifts_e.len() {
+            for b in (a + 1)..shifts_e.len() {
+                let sa = shifts_e[a];
+                let sb = shifts_e[b];
                 if let Some(detail) = first_overlap_detail(sa, sb) {
-                    out.push(violation_segment_overlap(sa, sb, &detail));
+                    out.push(CalendarOverlapBuilt {
+                        violation: violation_calendar_overlap_shifts(sa, sb, &detail),
+                        manned_shift_ids: vec![sa.id, sb.id],
+                    });
                 }
             }
         }
-        i = j;
+
+        let mut seen_shift_event: HashSet<(i64, i64)> = HashSet::new();
+        for s in &shifts_e {
+            for ev in &events_e {
+                let ov = s.overlap_segments().iter().any(|(a0, a1, _)| {
+                    intervals_overlap_hhmm(a0, a1, ev.start_time.trim(), ev.end_time.trim())
+                });
+                if !ov || !seen_shift_event.insert((s.id, ev.id)) {
+                    continue;
+                }
+                let times = vec![
+                    format_flight_range(&s.start_time, &s.end_time),
+                    schedule_calendar_row_label(ev),
+                ];
+                out.push(CalendarOverlapBuilt {
+                    violation: violation_calendar_overlap_mixed(
+                        "התנגשות בזמנים בין משמרת לאירוע ביומן".into(),
+                        Some(s.id),
+                        emp_name.clone(),
+                        times,
+                    ),
+                    manned_shift_ids: vec![s.id],
+                });
+            }
+        }
+
+        let mut seen_shift_obs: HashSet<(i64, i64)> = HashSet::new();
+        for s in &shifts_e {
+            for ob in &obs_e {
+                if !observation_overlaps_shift_segments(ob, s) || !seen_shift_obs.insert((s.id, ob.id))
+                {
+                    continue;
+                }
+                let times = vec![
+                    format_flight_range(&s.start_time, &s.end_time),
+                    observation_duty_label(ob),
+                ];
+                let shift_primary = s.id.min(ob.shift_id);
+                out.push(CalendarOverlapBuilt {
+                    violation: violation_calendar_overlap_mixed(
+                        "התנגשות בזמנים בין משמרת לתצפית".into(),
+                        Some(shift_primary),
+                        emp_name.clone(),
+                        times,
+                    ),
+                    manned_shift_ids: vec![s.id, ob.shift_id],
+                });
+            }
+        }
+
+        let mut seen_event_event: HashSet<(i64, i64)> = HashSet::new();
+        for i in 0..events_e.len() {
+            for j in (i + 1)..events_e.len() {
+                let ea = events_e[i];
+                let eb = events_e[j];
+                if !intervals_overlap_hhmm(
+                    ea.start_time.trim(),
+                    ea.end_time.trim(),
+                    eb.start_time.trim(),
+                    eb.end_time.trim(),
+                ) {
+                    continue;
+                }
+                let k = if ea.id < eb.id {
+                    (ea.id, eb.id)
+                } else {
+                    (eb.id, ea.id)
+                };
+                if !seen_event_event.insert(k) {
+                    continue;
+                }
+                let times = vec![
+                    schedule_calendar_row_label(ea),
+                    schedule_calendar_row_label(eb),
+                ];
+                out.push(CalendarOverlapBuilt {
+                    violation: violation_calendar_overlap_mixed(
+                        "התנגשות בזמנים בין שני אירועים ביומן".into(),
+                        None,
+                        emp_name.clone(),
+                        times,
+                    ),
+                    manned_shift_ids: vec![],
+                });
+            }
+        }
+
+        let mut seen_event_obs: HashSet<(i64, i64)> = HashSet::new();
+        for ev in &events_e {
+            for ob in &obs_e {
+                if !observation_overlaps_event_wall(ob, ev) || !seen_event_obs.insert((ev.id, ob.id))
+                {
+                    continue;
+                }
+                let times = vec![
+                    schedule_calendar_row_label(ev),
+                    observation_duty_label(ob),
+                ];
+                out.push(CalendarOverlapBuilt {
+                    violation: violation_calendar_overlap_mixed(
+                        "התנגשות בזמנים בין אירוע לתצפית".into(),
+                        Some(ob.shift_id),
+                        emp_name.clone(),
+                        times,
+                    ),
+                    manned_shift_ids: vec![ob.shift_id],
+                });
+            }
+        }
+
+        let mut seen_obs_obs: HashSet<(i64, i64)> = HashSet::new();
+        for i in 0..obs_e.len() {
+            for j in (i + 1)..obs_e.len() {
+                let oa = obs_e[i];
+                let ob = obs_e[j];
+                if !observation_pair_segments_overlap(oa, ob) {
+                    continue;
+                }
+                let k = if oa.id < ob.id {
+                    (oa.id, ob.id)
+                } else {
+                    (ob.id, oa.id)
+                };
+                if !seen_obs_obs.insert(k) {
+                    continue;
+                }
+                let times = vec![
+                    observation_duty_label(oa),
+                    observation_duty_label(ob),
+                ];
+                let sid = oa.shift_id.min(ob.shift_id);
+                out.push(CalendarOverlapBuilt {
+                    violation: violation_calendar_overlap_mixed(
+                        "התנגשות בזמנים בין שתי תצפיות".into(),
+                        Some(sid),
+                        emp_name.clone(),
+                        times,
+                    ),
+                    manned_shift_ids: vec![oa.shift_id, ob.shift_id],
+                });
+            }
+        }
     }
+
     Ok(out)
+}
+
+fn observation_duty_label(o: &ObservationRow) -> String {
+    format!(
+        "תצפית {}–{}",
+        o.prep_start.trim(),
+        o.rest_end.trim()
+    )
+}
+
+fn calendar_overlap_violations_for_date(
+    conn: &Connection,
+    shift_date: &str,
+) -> rusqlite::Result<Vec<Violation>> {
+    Ok(calendar_overlap_built_for_date(conn, shift_date)?
+        .into_iter()
+        .map(|b| b.violation)
+        .collect())
 }
 
 fn bunch_follows_timeline(prev: &DayShiftRow, cur: &DayShiftRow) -> bool {
@@ -422,6 +651,95 @@ struct ScheduleEventRow {
     end_time: String,
     name: String,
     event_kind: String,
+}
+
+/// Observer row: busy on the **observed** shift’s prep / flight / rest wall (same geometry as that shift).
+#[derive(Clone, Debug)]
+struct ObservationRow {
+    id: i64,
+    employee_id: i64,
+    shift_id: i64,
+    shift_date: String,
+    start_time: String,
+    end_time: String,
+    prep_start: String,
+    prep_end: String,
+    rest_start: String,
+    rest_end: String,
+    syllabus_preset_id: i64,
+    joint_prep: bool,
+    joint_rest: bool,
+}
+
+impl ObservationRow {
+    fn overlap_segments(&self) -> [(&str, &str, &'static str); 3] {
+        [
+            (
+                self.prep_start.as_str(),
+                self.prep_end.as_str(),
+                "prep",
+            ),
+            (
+                self.start_time.as_str(),
+                self.end_time.as_str(),
+                "shift",
+            ),
+            (
+                self.rest_start.as_str(),
+                self.rest_end.as_str(),
+                "rest",
+            ),
+        ]
+    }
+}
+
+/// Observation–observation overlap: same segment rules as shift–shift (joint prep/rest via `oa` flags).
+fn observation_pair_segments_overlap(oa: &ObservationRow, ob: &ObservationRow) -> bool {
+    for (a0, a1, ka) in oa.overlap_segments() {
+        for (b0, b1, kb) in ob.overlap_segments() {
+            if segment_pair_counts_as_overlap(
+                a0,
+                a1,
+                ka,
+                b0,
+                b1,
+                kb,
+                oa.syllabus_preset_id,
+                ob.syllabus_preset_id,
+                oa.joint_prep,
+                oa.joint_rest,
+            ) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn observation_overlaps_shift_segments(ob: &ObservationRow, s: &DayShiftRow) -> bool {
+    for (o0, o1, _) in ob.overlap_segments() {
+        for (s0, s1, _) in s.overlap_segments() {
+            if intervals_overlap_hhmm(o0, o1, s0, s1) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn observation_overlaps_event_wall(ob: &ObservationRow, ev: &ScheduleEventRow) -> bool {
+    let e0 = ev.start_time.trim();
+    let e1 = ev.end_time.trim();
+    ob.overlap_segments()
+        .iter()
+        .any(|(o0, o1, _)| intervals_overlap_hhmm(o0, o1, e0, e1))
+}
+
+/// `calendar_overlap` row plus manned shift ids for `check_shift_violations` filtering.
+#[derive(Debug)]
+struct CalendarOverlapBuilt {
+    violation: Violation,
+    manned_shift_ids: Vec<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -567,6 +885,43 @@ fn load_schedule_events_range(conn: &Connection, lo: &str, hi: &str) -> rusqlite
     Ok(rows)
 }
 
+fn load_observations_range(
+    conn: &Connection,
+    lo: &str,
+    hi: &str,
+) -> rusqlite::Result<Vec<ObservationRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT o.id, o.employee_id, o.shift_id, s.shift_date, s.start_time, s.end_time,
+                s.prep_start, s.prep_end, s.rest_start, s.rest_end,
+                s.syllabus_preset_id, sp.joint_prep, sp.joint_rest
+         FROM observations o
+         JOIN shifts s ON s.id = o.shift_id
+         JOIN syllabus_presets sp ON s.syllabus_preset_id = sp.id
+         WHERE s.shift_date >= ?1 AND s.shift_date <= ?2
+         ORDER BY s.shift_date, o.employee_id, s.start_time, o.id",
+    )?;
+    let rows = stmt
+        .query_map(params![lo, hi], |r| {
+            Ok(ObservationRow {
+                id: r.get(0)?,
+                employee_id: r.get(1)?,
+                shift_id: r.get(2)?,
+                shift_date: r.get(3)?,
+                start_time: r.get(4)?,
+                end_time: r.get(5)?,
+                prep_start: r.get(6)?,
+                prep_end: r.get(7)?,
+                rest_start: r.get(8)?,
+                rest_end: r.get(9)?,
+                syllabus_preset_id: r.get(10)?,
+                joint_prep: r.get::<_, i32>(11)? != 0,
+                joint_rest: r.get::<_, i32>(12)? != 0,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 fn fmt_hours_one_dec(minutes: i64) -> String {
     let h = (minutes as f64 / 60.0 * 10.0).round() / 10.0;
     format!("{h}")
@@ -651,6 +1006,7 @@ fn collect_employees_on_date(
     query_date: &str,
     dated_shifts: &[DayShiftWithDate],
     events: &[ScheduleEventRow],
+    observations: &[ObservationRow],
 ) -> Vec<(i64, Option<String>)> {
     let mut out: Vec<(i64, Option<String>)> = Vec::new();
     for d in dated_shifts {
@@ -664,6 +1020,11 @@ fn collect_employees_on_date(
     for ev in events.iter().filter(|e| e.shift_date == query_date) {
         if !out.iter().any(|(id, _)| *id == ev.employee_id) {
             out.push((ev.employee_id, None));
+        }
+    }
+    for ob in observations.iter().filter(|o| o.shift_date == query_date) {
+        if !out.iter().any(|(id, _)| *id == ob.employee_id) {
+            out.push((ob.employee_id, None));
         }
     }
     out
@@ -896,14 +1257,6 @@ fn wall_segment_outside_availability_union(start: &str, end: &str, union: &[(i32
     false
 }
 
-/// Rule 1.1: shift–calendar overlap uses `event`, `constraint`, and `operational` rows.
-fn schedule_event_kind_blocks_shift_segments(kind: &str) -> bool {
-    matches!(
-        kind.trim(),
-        "event" | "constraint" | "operational"
-    )
-}
-
 fn schedule_calendar_row_label(ev: &ScheduleEventRow) -> String {
     let prefix = match ev.event_kind.as_str() {
         "constraint" => "אילוץ",
@@ -960,10 +1313,11 @@ fn global_rules_violations_for_query_date(
     let rules = load_global_rules_snapshot(conn)?;
     let dated = load_shifts_range(conn, &load_lo, &load_hi)?;
     let events = load_schedule_events_range(conn, &load_lo, &load_hi)?;
+    let observations = load_observations_range(conn, &load_lo, &load_hi)?;
     let availability = load_availability_range(conn, &load_lo, &load_hi)?;
 
     let mut violations: Vec<Violation> = Vec::new();
-    let employees = collect_employees_on_date(query_date, &dated, &events);
+    let employees = collect_employees_on_date(query_date, &dated, &events, &observations);
 
     for (emp_id, emp_name_opt) in employees {
         let emp_name = emp_name_opt.clone();
@@ -973,38 +1327,6 @@ fn global_rules_violations_for_query_date(
             .map(|d| d.row.clone())
             .collect();
         let ev_q: Vec<&ScheduleEventRow> = events_for_emp_date(&events, emp_id, query_date);
-
-        // Rule 1.1: calendar rows (event | constraint | operational) vs any shift segment;
-        // one violation per (shift, calendar row); message uses flight window only.
-        let mut seen_shift_event: std::collections::HashSet<(i64, i64)> =
-            std::collections::HashSet::new();
-        for s in &shifts_q {
-            for ev in ev_q
-                .iter()
-                .filter(|e| schedule_event_kind_blocks_shift_segments(&e.event_kind))
-            {
-                let overlaps = s.overlap_segments().iter().any(|(a0, a1, _)| {
-                    intervals_overlap_hhmm(a0, a1, ev.start_time.trim(), ev.end_time.trim())
-                });
-                if !overlaps {
-                    continue;
-                }
-                if !seen_shift_event.insert((s.id, ev.id)) {
-                    continue;
-                }
-                let flight_rng = format_flight_range(&s.start_time, &s.end_time);
-                let msg = "התנגשות בזמנים בין אירוע לטיסה".to_string();
-                let times = vec![flight_rng.clone(), schedule_calendar_row_label(ev)];
-                violations.push(global_rules_violation(
-                    "global_event_overlap",
-                    "error",
-                    msg,
-                    Some(s.id),
-                    emp_name.clone(),
-                    Some(times),
-                ));
-            }
-        }
 
         // Rule 1.3: shift or schedule_event wall time outside merged availability (matrix enabled union).
         let enabled_u = build_enabled_union_minutes(emp_id, query_date, &availability);
@@ -1058,6 +1380,36 @@ fn global_rules_violations_for_query_date(
                         format_flight_range(&ev.start_time, &ev.end_time),
                         ev_title_disp.to_string(),
                     ]),
+                ));
+            }
+        }
+
+        let mut obs_outside_avail: HashSet<i64> = HashSet::new();
+        for ob in observations.iter().filter(|o| {
+            o.shift_date == query_date && o.employee_id == emp_id
+        }) {
+            let mut bad = false;
+            for (seg0, seg1, _) in ob.overlap_segments() {
+                if wall_segment_outside_availability_union(seg0, seg1, &enabled_u) {
+                    bad = true;
+                    break;
+                }
+            }
+            if bad && obs_outside_avail.insert(ob.id) {
+                let ob_emp_display = match emp_name_opt.as_ref() {
+                    Some(n) if !n.trim().is_empty() => Some(n.trim().to_string()),
+                    _ => Some(employee_name_for_week_rule(conn, emp_id, &dated)?),
+                };
+                violations.push(global_rules_violation(
+                    "global_observation_outside_availability",
+                    "error",
+                    "תצפית מחוץ לזמינות".into(),
+                    Some(ob.shift_id),
+                    ob_emp_display,
+                    Some(vec![format_flight_range(
+                        &ob.prep_start,
+                        &ob.rest_end,
+                    )]),
                 ));
             }
         }
@@ -1472,15 +1824,9 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
         }
     }
 
-    for other in &mine {
-        if other.id == shift_id {
-            continue;
-        }
-        let Some(me) = mine.iter().find(|r| r.id == shift_id) else {
-            continue;
-        };
-        if let Some(detail) = first_overlap_detail(me, other) {
-            violations.push(violation_segment_overlap(me, other, &detail));
+    for built in calendar_overlap_built_for_date(conn, &shift_date)? {
+        if built.manned_shift_ids.iter().any(|id| *id == shift_id) {
+            violations.push(built.violation);
         }
     }
 
@@ -1508,7 +1854,7 @@ pub fn check_shift_violations(conn: &Connection, shift_id: i64) -> rusqlite::Res
 
 pub fn check_all_violations_for_date(conn: &Connection, shift_date: &str) -> rusqlite::Result<Vec<Value>> {
     let mut all = Vec::new();
-    for v in segment_overlap_violations_for_date(conn, shift_date)? {
+    for v in calendar_overlap_violations_for_date(conn, shift_date)? {
         all.push(v.to_json());
     }
     for v in max_in_row_violations_for_date(conn, shift_date)? {
@@ -1832,5 +2178,129 @@ mod tests {
             type_name: "t".into(),
             emp_name: None,
         }
+    }
+
+    #[test]
+    fn calendar_overlap_flags_two_overlapping_events() {
+        use rusqlite::Connection;
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT NOT NULL, role_id INTEGER NOT NULL);
+             INSERT INTO employees VALUES (1, 'E', 1);
+             CREATE TABLE roles (id INTEGER PRIMARY KEY, name TEXT NOT NULL, role_level INTEGER NOT NULL);
+             INSERT INTO roles VALUES (1, 'r', 1);
+             CREATE TABLE syllabus_presets (id INTEGER PRIMARY KEY, joint_prep INTEGER NOT NULL, joint_rest INTEGER NOT NULL, max_in_row INTEGER NOT NULL);
+             INSERT INTO syllabus_presets VALUES (1, 0, 0, 4);
+             CREATE TABLE shift_windows (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+             INSERT INTO shift_windows VALUES (1, 'W');
+             CREATE TABLE shifts (
+               id INTEGER PRIMARY KEY,
+               shift_date TEXT NOT NULL,
+               shift_window_id INTEGER NOT NULL,
+               syllabus_num INTEGER NOT NULL DEFAULT 0,
+               employee_id INTEGER,
+               syllabus_preset_id INTEGER NOT NULL,
+               start_time TEXT NOT NULL,
+               end_time TEXT NOT NULL,
+               prep_start TEXT NOT NULL,
+               prep_end TEXT NOT NULL,
+               rest_start TEXT NOT NULL,
+               rest_end TEXT NOT NULL
+             );
+             CREATE TABLE schedule_events (
+               id INTEGER PRIMARY KEY,
+               shift_date TEXT NOT NULL,
+               employee_id INTEGER NOT NULL,
+               start_time TEXT NOT NULL,
+               end_time TEXT NOT NULL,
+               name TEXT NOT NULL,
+               notes TEXT NOT NULL DEFAULT '',
+               event_kind TEXT NOT NULL
+             );
+             INSERT INTO schedule_events VALUES
+               (1, '2026-06-02', 1, '09:00', '10:00', 'A', '', 'event'),
+               (2, '2026-06-02', 1, '09:30', '10:30', 'B', '', 'event');
+             CREATE TABLE observations (
+               id INTEGER PRIMARY KEY,
+               shift_id INTEGER NOT NULL UNIQUE REFERENCES shifts(id),
+               employee_id INTEGER NOT NULL REFERENCES employees(id)
+             );",
+        )
+        .unwrap();
+
+        let vs = calendar_overlap_violations_for_date(&c, "2026-06-02").unwrap();
+        assert_eq!(vs.len(), 1);
+        assert_eq!(vs[0].rule, "calendar_overlap");
+    }
+
+    #[test]
+    fn calendar_overlap_observer_flight_overlaps_own_shift_prep() {
+        use rusqlite::Connection;
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT NOT NULL, role_id INTEGER NOT NULL);
+             INSERT INTO employees VALUES (1, 'Observer', 1), (2, 'PIC', 1);
+             CREATE TABLE roles (id INTEGER PRIMARY KEY, name TEXT NOT NULL, role_level INTEGER NOT NULL);
+             INSERT INTO roles VALUES (1, 'r', 1);
+             CREATE TABLE syllabus_presets (id INTEGER PRIMARY KEY, joint_prep INTEGER NOT NULL, joint_rest INTEGER NOT NULL, max_in_row INTEGER NOT NULL);
+             INSERT INTO syllabus_presets VALUES (1, 0, 0, 4);
+             CREATE TABLE shift_windows (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+             INSERT INTO shift_windows VALUES (1, 'W');
+             CREATE TABLE shifts (
+               id INTEGER PRIMARY KEY,
+               shift_date TEXT NOT NULL,
+               shift_window_id INTEGER NOT NULL,
+               syllabus_num INTEGER NOT NULL DEFAULT 0,
+               employee_id INTEGER,
+               syllabus_preset_id INTEGER NOT NULL,
+               start_time TEXT NOT NULL,
+               end_time TEXT NOT NULL,
+               prep_start TEXT NOT NULL,
+               prep_end TEXT NOT NULL,
+               rest_start TEXT NOT NULL,
+               rest_end TEXT NOT NULL,
+               FOREIGN KEY (employee_id) REFERENCES employees(id),
+               FOREIGN KEY (shift_window_id) REFERENCES shift_windows(id),
+               FOREIGN KEY (syllabus_preset_id) REFERENCES syllabus_presets(id)
+             );
+             INSERT INTO shifts VALUES
+               (1, '2026-06-03', 1, 0, 2, 1, '09:00', '11:00', '08:45', '09:00', '11:00', '11:15');
+             INSERT INTO shifts VALUES
+               (2, '2026-06-03', 1, 0, 1, 1, '10:00', '12:00', '09:45', '10:00', '12:00', '12:15');
+             CREATE TABLE schedule_events (
+               id INTEGER PRIMARY KEY,
+               shift_date TEXT NOT NULL,
+               employee_id INTEGER NOT NULL,
+               start_time TEXT NOT NULL,
+               end_time TEXT NOT NULL,
+               name TEXT NOT NULL,
+               notes TEXT NOT NULL DEFAULT '',
+               event_kind TEXT NOT NULL
+             );
+             CREATE TABLE observations (
+               id INTEGER PRIMARY KEY,
+               shift_id INTEGER NOT NULL UNIQUE REFERENCES shifts(id),
+               employee_id INTEGER NOT NULL REFERENCES employees(id)
+             );
+             INSERT INTO observations VALUES (1, 1, 1);",
+        )
+        .unwrap();
+
+        let vs = calendar_overlap_violations_for_date(&c, "2026-06-03").unwrap();
+        assert!(
+            vs.iter().any(|v| v.rule == "calendar_overlap"),
+            "expected observer flight vs own shift overlap"
+        );
+    }
+
+    #[test]
+    fn observation_flight_wall_outside_empty_enabled_union() {
+        assert!(wall_segment_outside_availability_union(
+            "10:00",
+            "11:00",
+            &[],
+        ));
     }
 }
