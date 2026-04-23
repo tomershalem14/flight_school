@@ -251,7 +251,7 @@ function ExtraReserveComposerRow({
   );
 }
 
-export function WeeklyAvailabilityView() {
+export function WeeklyAvailabilityColumnsPage() {
   const weeklyWeekStart = useAppStore((s) => s.weeklyWeekStart);
   const weekStartStr = formatYmd(weeklyWeekStart);
   const qc = useQueryClient();

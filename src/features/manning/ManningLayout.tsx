@@ -1,10 +1,8 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { useAppStore, weekStartString } from "../../app/store";
+import { useAppStore } from "../../app/store";
 import * as api from "../../shared/api";
 import { DAYS_HE, addDays, formatDdMmYy, formatYmd } from "../../shared/dates";
-import type { JsonObject } from "../../shared/api";
 import { ManningInspectorSidebar } from "./ManningInspectorSidebar";
 
 export function ManningLayout({ children }: { children: ReactNode }) {
@@ -12,27 +10,11 @@ export function ManningLayout({ children }: { children: ReactNode }) {
   const setCurrentDay = useAppStore((s) => s.setCurrentDay);
   const manningMode = useAppStore((s) => s.manningMode);
   const setManningMode = useAppStore((s) => s.setManningMode);
-  const qc = useQueryClient();
   const dateStr = formatYmd(currentDay);
-  const weekStr = weekStartString(currentDay);
 
   const { data: warnings = [] } = useQuery({
     queryKey: ["violations", dateStr],
     queryFn: () => api.getDayViolations(dateStr),
-  });
-
-  const waMut = useMutation({
-    mutationFn: () => api.sendWhatsapp(weekStr),
-    onSuccess: async (rows) => {
-      for (const row of rows) {
-        const u = String((row as JsonObject).wa_url ?? "");
-        if (u) {
-          await openUrl(u);
-          await new Promise((r) => setTimeout(r, 600));
-        }
-      }
-      qc.invalidateQueries({ queryKey: ["shifts"] });
-    },
   });
 
   const dayNameHe = DAYS_HE[currentDay.getDay()];
@@ -106,14 +88,6 @@ export function ManningLayout({ children }: { children: ReactNode }) {
               </button>
             ))}
           </div>
-
-          <button
-            type="button"
-            className="rounded-pill border border-mint-4 bg-mint-3 px-3 py-1.5 text-sm font-heading font-semibold text-ink shadow-sm hover:border-mint-5 hover:bg-mint-4"
-            onClick={() => waMut.mutate()}
-          >
-            שלח בוואטסאפ
-          </button>
         </div>
       </header>
 

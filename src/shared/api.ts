@@ -135,6 +135,28 @@ export async function deleteShift(shift_id: number): Promise<JsonObject> {
   return invoke("delete_shift", { shiftId: shift_id });
 }
 
+export async function getObservations(week_start: string): Promise<JsonObject[]> {
+  return invoke("get_observations", { weekStart: week_start });
+}
+
+export async function createObservation(payload: {
+  shift_id: number;
+  employee_id: number;
+}): Promise<JsonObject> {
+  return invoke("create_observation", { payload });
+}
+
+export async function reassignObservationEmployee(payload: {
+  observation_id: number;
+  employee_id: number;
+}): Promise<JsonObject> {
+  return invoke("reassign_observation_employee", { payload });
+}
+
+export async function deleteObservation(observation_id: number): Promise<JsonObject> {
+  return invoke("delete_observation", { observationId: observation_id });
+}
+
 export async function getDayViolations(date: string): Promise<JsonObject[]> {
   return invoke("get_day_violations", { date });
 }
@@ -227,10 +249,6 @@ export async function getEmployeeHistory(
   limit?: number,
 ): Promise<JsonObject[]> {
   return invoke("get_employee_history", { employeeId: employee_id, limit });
-}
-
-export async function sendWhatsapp(week_start: string): Promise<JsonObject[]> {
-  return invoke("send_whatsapp", { weekStart: week_start });
 }
 
 export async function getRemoteRegistrations(

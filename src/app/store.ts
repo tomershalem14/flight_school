@@ -5,11 +5,15 @@ export type AppView = "manning" | "weekly" | "management" | "reports";
 
 export type ManningMode = "matrix" | "board";
 
+export type WeeklySubView = "availability" | "resources";
+
 interface AppState {
   activeView: AppView;
   setActiveView: (v: AppView) => void;
   manningMode: ManningMode;
   setManningMode: (m: ManningMode) => void;
+  weeklySubView: WeeklySubView;
+  setWeeklySubView: (v: WeeklySubView) => void;
   /** Calendar day for manning views (week derived from Sunday). */
   currentDay: Date;
   setCurrentDay: (d: Date) => void;
@@ -25,6 +29,8 @@ export const useAppStore = create<AppState>((set) => ({
   setActiveView: (activeView) => set({ activeView }),
   manningMode: "matrix",
   setManningMode: (manningMode) => set({ manningMode }),
+  weeklySubView: "availability",
+  setWeeklySubView: (weeklySubView) => set({ weeklySubView }),
   currentDay: new Date(),
   setCurrentDay: (currentDay) => set({ currentDay }),
   reportWeekStart: getSunday(new Date()),

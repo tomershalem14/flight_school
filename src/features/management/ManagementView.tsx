@@ -9,7 +9,6 @@ import { DEFAULT_SHIFT_TYPE_PASTEL_HEX } from "../../shared/pastelPalette";
 import { PastelSwatchGridDropdown } from "../../shared/PastelSwatchGridDropdown";
 import { TimeInput24 } from "../../shared/TimeInput24";
 
-const PAGE_SIZE = 10;
 /** Narrow column for two icon buttons (edit + deactivate). */
 const ACTIONS_COL_CSS = "5.5rem";
 const DATA_COL_CSS = `calc((100% - ${ACTIONS_COL_CSS}) / 5)`;
@@ -243,12 +242,10 @@ export function ManagementView() {
   const [tab, setTab] = useState<ManagementTab>("employees");
   const [search, setSearch] = useState("");
   const [showInactive, setShowInactive] = useState(false);
-  const [page, setPage] = useState(1);
   const [empModal, setEmpModal] = useState<JsonObject | null>(null);
   const [roleDraft, setRoleDraft] = useState<JsonObject | null>(null);
   const [roleSwatchOpen, setRoleSwatchOpen] = useState(false);
   const [syllabusSearch, setSyllabusSearch] = useState("");
-  const [syllabusPage, setSyllabusPage] = useState(1);
   const [presetDraft, setPresetDraft] = useState<JsonObject | null>(null);
   const [empOrderModal, setEmpOrderModal] = useState<
     | null
@@ -340,22 +337,6 @@ export function ManagementView() {
     return syllabi.filter((p) => String(p.name ?? "").toLowerCase().includes(q));
   }, [syllabi, syllabusSearch]);
 
-  useEffect(() => {
-    setSyllabusPage(1);
-  }, [syllabusSearch, syllabi.length]);
-
-  const syllabusTotal = syllabusFiltered.length;
-  const syllabusPageCount = Math.max(1, Math.ceil(syllabusTotal / PAGE_SIZE));
-  const syllabusSafePage = Math.min(syllabusPage, syllabusPageCount);
-  const syllabusSlice = useMemo(() => {
-    const start = (syllabusSafePage - 1) * PAGE_SIZE;
-    return syllabusFiltered.slice(start, start + PAGE_SIZE);
-  }, [syllabusFiltered, syllabusSafePage]);
-
-  useEffect(() => {
-    if (syllabusPage !== syllabusSafePage) setSyllabusPage(syllabusSafePage);
-  }, [syllabusPage, syllabusSafePage]);
-
   const filtered = useMemo(() => {
     const activeOnly = showInactive
       ? employees
@@ -375,21 +356,8 @@ export function ManagementView() {
     });
   }, [employees, search, showInactive]);
 
-  useEffect(() => {
-    setPage(1);
-  }, [search, showInactive, employees.length]);
-
   const total = filtered.length;
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const safePage = Math.min(page, pageCount);
-  const pageSlice = useMemo(() => {
-    const start = (safePage - 1) * PAGE_SIZE;
-    return filtered.slice(start, start + PAGE_SIZE);
-  }, [filtered, safePage]);
-
-  useEffect(() => {
-    if (page !== safePage) setPage(safePage);
-  }, [page, safePage]);
+  const syllabusTotal = syllabusFiltered.length;
 
   useEffect(() => {
     if (!roleDraft) setRoleSwatchOpen(false);
@@ -630,12 +598,6 @@ export function ManagementView() {
     });
   };
 
-  const rangeStart = total === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1;
-  const rangeEnd = Math.min(safePage * PAGE_SIZE, total);
-  const syllabusRangeStart =
-    syllabusTotal === 0 ? 0 : (syllabusSafePage - 1) * PAGE_SIZE + 1;
-  const syllabusRangeEnd = Math.min(syllabusSafePage * PAGE_SIZE, syllabusTotal);
-
   return (
     <div
       id="app"
@@ -850,7 +812,7 @@ export function ManagementView() {
                     </tr>
                   </thead>
                   <tbody>
-                    {pageSlice.map((e) => {
+                    {filtered.map((e) => {
                       const eid = Number(e.id);
                       const name = String(e.name ?? "");
                       const aff = String(e.affiliation ?? "").trim();
@@ -968,30 +930,10 @@ export function ManagementView() {
                   </tbody>
                 </table>
               </div>
-              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-4 py-3 text-xs text-muted">
+              <div className="border-t border-line px-4 py-3 text-xs text-muted">
                 <span className="uppercase tracking-wide">
-                  מציג {rangeStart}–{rangeEnd} מתוך {total} מפעילים
+                  {total} מפעילים
                 </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="flex size-8 items-center justify-center rounded-full border border-line bg-background text-ink hover:bg-background/80 disabled:opacity-40"
-                    disabled={safePage <= 1}
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    aria-label="עמוד קודם"
-                  >
-                    ‹
-                  </button>
-                  <button
-                    type="button"
-                    className="flex size-8 items-center justify-center rounded-full border border-line bg-background text-ink hover:bg-background/80 disabled:opacity-40"
-                    disabled={safePage >= pageCount}
-                    onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-                    aria-label="עמוד הבא"
-                  >
-                    ›
-                  </button>
-                </div>
               </div>
             </div>
           </div>
@@ -1067,7 +1009,7 @@ export function ManagementView() {
                     </tr>
                   </thead>
                   <tbody>
-                    {syllabusSlice.map((p) => {
+                    {syllabusFiltered.map((p) => {
                       const pid = Number(p.id);
                       const locked = rowIsSystemPreset(p);
                       return (
@@ -1159,32 +1101,10 @@ export function ManagementView() {
                   </tbody>
                 </table>
               </div>
-              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-4 py-3 text-xs text-muted">
+              <div className="border-t border-line px-4 py-3 text-xs text-muted">
                 <span className="uppercase tracking-wide">
-                  מציג {syllabusRangeStart}–{syllabusRangeEnd} מתוך {syllabusTotal} סילבוסים
+                  {syllabusTotal} סילבוסים
                 </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="flex size-8 items-center justify-center rounded-full border border-line bg-background text-ink hover:bg-background/80 disabled:opacity-40"
-                    disabled={syllabusSafePage <= 1}
-                    onClick={() => setSyllabusPage((pg) => Math.max(1, pg - 1))}
-                    aria-label="עמוד קודם"
-                  >
-                    ‹
-                  </button>
-                  <button
-                    type="button"
-                    className="flex size-8 items-center justify-center rounded-full border border-line bg-background text-ink hover:bg-background/80 disabled:opacity-40"
-                    disabled={syllabusSafePage >= syllabusPageCount}
-                    onClick={() =>
-                      setSyllabusPage((pg) => Math.min(syllabusPageCount, pg + 1))
-                    }
-                    aria-label="עמוד הבא"
-                  >
-                    ›
-                  </button>
-                </div>
               </div>
             </div>
           </div>

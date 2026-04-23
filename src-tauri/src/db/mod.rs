@@ -350,6 +350,17 @@ fn apply_schema(conn: &mut Connection) -> AppResult<()> {
         conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (27)", [])?;
     }
 
+    let v28: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 28",
+        [],
+        |r| r.get(0),
+    )?;
+    if v28 == 0 {
+        const M28: &str = include_str!("../../migrations/028_observations.sql");
+        conn.execute_batch(M28)?;
+        conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (28)", [])?;
+    }
+
     Ok(())
 }
 

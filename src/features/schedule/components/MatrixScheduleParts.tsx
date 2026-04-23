@@ -18,6 +18,7 @@ import {
 } from "../../../shared/manningHours";
 import { shiftIsUpToDate } from "../helpers/scheduleShiftModel";
 import { useMatrixPillLongPress } from "../helpers/useMatrixPillLongPress";
+import type { MatrixObservationRowDragData, MatrixObservationSlotDragData } from "../helpers/scheduleTypes";
 
 export function MatrixEmployeeShiftPill({
   typeColor,
@@ -197,6 +198,163 @@ export function MatrixDraggableTypeSlotPill({
       aria-label={title}
       {...listeners}
       {...attributes}
+    />
+  );
+}
+
+export function MatrixObservationWindowOutlinePill({ title }: { title: string }) {
+  return (
+    <span
+      className="block h-2.5 w-full max-w-full cursor-default rounded-pill border-2 border-ink bg-transparent shadow-sm"
+      style={{ boxSizing: "border-box" }}
+      title={title}
+      aria-label={title}
+    />
+  );
+}
+
+/** Window row: manned slot with no observation yet (tinted, draggable to assign observer). */
+export function MatrixDraggableObservationSlotPill({
+  shiftId,
+  shiftWindowId,
+  syllabusNum,
+  syllabusRoleId,
+  coveredHours,
+  displayHour,
+  fill,
+  title,
+  highlightStartMs,
+  highlightEndMs,
+}: {
+  shiftId: number;
+  shiftWindowId: number;
+  syllabusNum: number;
+  syllabusRoleId?: number;
+  coveredHours: string[];
+  displayHour: string;
+  fill: string;
+  title: string;
+  highlightStartMs: number;
+  highlightEndMs: number;
+}) {
+  const data: MatrixObservationSlotDragData = {
+    kind: "obsSlot",
+    shiftId,
+    shiftWindowId,
+    syllabusNum,
+    syllabusRoleId,
+    coveredHours,
+    displayHour,
+    color: fill,
+    highlightStartMs,
+    highlightEndMs,
+  };
+  const dragId =
+    syllabusRoleId != null
+      ? `obs-slot-${shiftId}-${syllabusNum}-${syllabusRoleId}`
+      : `obs-slot-${shiftId}-${syllabusNum}`;
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: dragId,
+    data,
+  });
+  return (
+    <span
+      ref={setNodeRef}
+      data-matrix-pill
+      className="block h-2.5 w-full max-w-full cursor-grab touch-none rounded-pill shadow-sm ring-1 ring-black/10 active:cursor-grabbing"
+      style={{
+        backgroundColor: fill,
+        opacity: isDragging ? 0.4 : 1,
+      }}
+      title={title}
+      aria-label={title}
+      {...listeners}
+      {...attributes}
+    />
+  );
+}
+
+export function MatrixDraggableObservationPill({
+  observationId,
+  shiftId,
+  employeeId,
+  typeColorMuted,
+  title,
+  highlightStartMs,
+  highlightEndMs,
+  onLongPressDelete,
+}: {
+  observationId: number;
+  shiftId: number;
+  employeeId: number;
+  typeColorMuted: string;
+  title: string;
+  highlightStartMs: number;
+  highlightEndMs: number;
+  onLongPressDelete: () => void;
+}) {
+  const isDraggingRef = useRef(false);
+  const data: MatrixObservationRowDragData = {
+    kind: "obsRow",
+    observationId,
+    shiftId,
+    employeeId,
+    color: typeColorMuted,
+    highlightStartMs,
+    highlightEndMs,
+  };
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: `obs-emp-${observationId}`,
+    data,
+  });
+
+  const onPointerDownFirst = useCallback(
+    (e: ReactPointerEvent<Element>) => {
+      listeners?.onPointerDown?.(e);
+    },
+    [listeners],
+  );
+
+  const lp = useMatrixPillLongPress({
+    onLongPressDelete,
+    onPointerDownFirst,
+    shouldAbortScheduledDelete: () => isDraggingRef.current,
+  });
+
+  useEffect(() => {
+    isDraggingRef.current = isDragging;
+    if (isDragging) lp.clearLongPress();
+  }, [isDragging, lp.clearLongPress]);
+
+  return (
+    <span
+      ref={setNodeRef}
+      data-matrix-pill
+      className="box-border block h-2.5 w-full max-w-full cursor-grab touch-none rounded-pill shadow-sm ring-2 ring-ink active:cursor-grabbing"
+      style={{
+        backgroundColor: typeColorMuted,
+        opacity: isDragging ? 0.4 : 1,
+        boxSizing: "border-box",
+      }}
+      title={title}
+      aria-label={title}
+      {...attributes}
+      {...(listeners ?? {})}
+      onPointerDown={(e) => {
+        lp.onPointerDown(e);
+      }}
+      onPointerMove={(e) => {
+        listeners?.onPointerMove?.(e);
+        lp.onPointerMove(e);
+      }}
+      onPointerUp={(e) => {
+        listeners?.onPointerUp?.(e);
+        lp.onPointerUp();
+      }}
+      onPointerCancel={(e) => {
+        listeners?.onPointerCancel?.(e);
+        lp.onPointerCancel();
+      }}
     />
   );
 }

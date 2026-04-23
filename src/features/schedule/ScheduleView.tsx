@@ -54,7 +54,7 @@ import {
 } from "./helpers/scheduleConstants";
 import { matrixPillDragSize } from "./helpers/matrixPillDragSize";
 import {
-  employeeHasShiftIntersectingInterval,
+  employeeHasShiftOrObservationIntersectingInterval,
   matrixDragBandPercents,
 } from "./helpers/scheduleMatrixGeometry";
 import { resolveMatrixDragEnd } from "./helpers/resolveMatrixDragEnd";
@@ -70,14 +70,19 @@ import {
 import type {
   ActiveDragHighlightMs,
   MatrixEmployeeShiftDragData,
+  MatrixObservationRowDragData,
+  MatrixObservationSlotDragData,
   MatrixTypeSlotDragData,
 } from "./helpers/scheduleTypes";
 import {
   EmployeeMatrixShiftPillChooser,
+  MatrixDraggableObservationPill,
+  MatrixDraggableObservationSlotPill,
   MatrixDraggableTypeSlotPill,
   MatrixEmployeeHourDropZone,
   MatrixEmployeePrepRestBands,
   MatrixEventCreatePopup,
+  MatrixObservationWindowOutlinePill,
   MatrixScheduleEventBar,
   type ScheduleMatrixEventKind,
 } from "./components/MatrixScheduleParts";
@@ -113,8 +118,12 @@ import {
   buildSyntheticOptimisticShiftRowForCreate,
   type CreateShiftMutationVars,
   type ScheduleEventCreatePayload,
+  afterMatrixObservationMutationSuccess,
   afterMatrixShiftMutationSuccess,
   invalidateViolationsDeferred,
+  observationCreateOnMutate,
+  observationDeleteOnMutate,
+  observationReassignOnMutate,
   restoreList,
   rollbackScheduleEventCreate,
   scheduleEventCreateOnMutate,
@@ -125,6 +134,7 @@ import {
   shiftDeleteOnMutate,
   shiftReassignOnMutate,
   shiftsListKey,
+  observationsListKey,
   scheduleEventsListKey,
 } from "./helpers/scheduleMatrixQueryCache";
 
@@ -260,6 +270,26 @@ export function ScheduleView() {
     [shifts, dateStr],
   );
 
+  const { data: observationsRaw = [] } = useQuery({
+    queryKey: ["observations", weekStr],
+    queryFn: () => api.getObservations(weekStr),
+  });
+  const dayShiftIdSet = useMemo(
+    () => new Set(dayShifts.map((s) => Number(s.id))),
+    [dayShifts],
+  );
+  const dayObservationsList = useMemo(() => {
+    const list = (observationsRaw as JsonObject[]) ?? [];
+    return list.filter((ob) => dayShiftIdSet.has(Number(ob.shift_id ?? ob.shiftId)));
+  }, [observationsRaw, dayShiftIdSet]);
+  const observationByShiftId = useMemo(() => {
+    const m = new Map<number, JsonObject>();
+    for (const ob of dayObservationsList) {
+      m.set(Number(ob.shift_id ?? ob.shiftId), ob);
+    }
+    return m;
+  }, [dayObservationsList]);
+
   const { data: scheduleEventsRaw = [] } = useQuery({
     queryKey: ["schedule_events", weekStr],
     queryFn: () => api.getScheduleEvents(weekStr),
@@ -390,7 +420,7 @@ export function ScheduleView() {
     height: number;
   } | null>(null);
   const [matrixDragKind, setMatrixDragKind] = useState<
-    "typeSlot" | "empShift" | null
+    "typeSlot" | "empShift" | "obsSlot" | "obsRow" | null
   >(null);
   const [matrixTypeSlotCoveredHours, setMatrixTypeSlotCoveredHours] = useState<
     string[] | null
@@ -398,6 +428,8 @@ export function ScheduleView() {
   const [matrixEmpDragShiftId, setMatrixEmpDragShiftId] = useState<number | null>(
     null,
   );
+  const [matrixObsDragId, setMatrixObsDragId] = useState<number | null>(null);
+  const [dragOverlayRingBlack, setDragOverlayRingBlack] = useState(false);
   const shiftTypeModalBodyRef = useRef<HTMLDivElement>(null);
   const matrixScrollRef = useRef<HTMLDivElement>(null);
   /** Scrolls with table; band is `absolute` relative to this — not the overflow viewport. */
@@ -441,6 +473,7 @@ export function ScheduleView() {
   /** Negative ids for optimistic schedule_events rows until `create` returns the real id. */
   const scheduleEventCreateOptimisticIdRef = useRef(0);
   const shiftCreateOptimisticIdRef = useRef(0);
+  const observationCreateOptimisticIdRef = useRef(0);
 
   useEffect(() => {
     scheduleEventResizeDraftRef.current = scheduleEventResizeDraft;
@@ -480,35 +513,14 @@ export function ScheduleView() {
     for (const emp of employees) {
       const eid = Number(emp.id);
       if (
-        employeeHasShiftIntersectingInterval(
+        employeeHasShiftOrObservationIntersectingInterval(
           dateStr,
           dayShifts,
+          dayObservationsList,
           eid,
           activeDragHighlightMs.startMs,
           activeDragHighlightMs.endMs,
-          undefined,
           { ignoreStaleShifts: true },
-        )
-      )
-        out.add(eid);
-    }
-    return out;
-  }, [matrixDragKind, activeDragHighlightMs, dateStr, dayShifts, employees]);
-
-  const matrixEmpShiftOverlapEmps = useMemo(() => {
-    if (matrixDragKind !== "empShift" || !activeDragHighlightMs) return null;
-    const ex = matrixEmpDragShiftId ?? undefined;
-    const out = new Set<number>();
-    for (const emp of employees) {
-      const eid = Number(emp.id);
-      if (
-        employeeHasShiftIntersectingInterval(
-          dateStr,
-          dayShifts,
-          eid,
-          activeDragHighlightMs.startMs,
-          activeDragHighlightMs.endMs,
-          ex,
         )
       )
         out.add(eid);
@@ -519,8 +531,95 @@ export function ScheduleView() {
     activeDragHighlightMs,
     dateStr,
     dayShifts,
+    dayObservationsList,
+    employees,
+  ]);
+
+  const matrixEmpShiftOverlapEmps = useMemo(() => {
+    if (matrixDragKind !== "empShift" || !activeDragHighlightMs) return null;
+    const ex = matrixEmpDragShiftId ?? undefined;
+    const out = new Set<number>();
+    for (const emp of employees) {
+      const eid = Number(emp.id);
+      if (
+        employeeHasShiftOrObservationIntersectingInterval(
+          dateStr,
+          dayShifts,
+          dayObservationsList,
+          eid,
+          activeDragHighlightMs.startMs,
+          activeDragHighlightMs.endMs,
+          { excludeShiftId: ex },
+        )
+      )
+        out.add(eid);
+    }
+    return out;
+  }, [
+    matrixDragKind,
+    activeDragHighlightMs,
+    dateStr,
+    dayShifts,
+    dayObservationsList,
     employees,
     matrixEmpDragShiftId,
+  ]);
+
+  const matrixObsSlotOverlapEmps = useMemo(() => {
+    if (matrixDragKind !== "obsSlot" || !activeDragHighlightMs) return null;
+    const out = new Set<number>();
+    for (const emp of employees) {
+      const eid = Number(emp.id);
+      if (
+        employeeHasShiftOrObservationIntersectingInterval(
+          dateStr,
+          dayShifts,
+          dayObservationsList,
+          eid,
+          activeDragHighlightMs.startMs,
+          activeDragHighlightMs.endMs,
+        )
+      )
+        out.add(eid);
+    }
+    return out;
+  }, [
+    matrixDragKind,
+    activeDragHighlightMs,
+    dateStr,
+    dayShifts,
+    dayObservationsList,
+    employees,
+  ]);
+
+  const matrixObsRowOverlapEmps = useMemo(() => {
+    if (matrixDragKind !== "obsRow" || !activeDragHighlightMs) return null;
+    const ex = matrixObsDragId ?? undefined;
+    const out = new Set<number>();
+    for (const emp of employees) {
+      const eid = Number(emp.id);
+      if (
+        employeeHasShiftOrObservationIntersectingInterval(
+          dateStr,
+          dayShifts,
+          dayObservationsList,
+          eid,
+          activeDragHighlightMs.startMs,
+          activeDragHighlightMs.endMs,
+          { excludeObservationId: ex },
+        )
+      )
+        out.add(eid);
+    }
+    return out;
+  }, [
+    matrixDragKind,
+    activeDragHighlightMs,
+    dateStr,
+    dayShifts,
+    dayObservationsList,
+    employees,
+    matrixObsDragId,
   ]);
 
   // --- Matrix drag: unified highlight band layout ---
@@ -1167,6 +1266,8 @@ export function ScheduleView() {
     setMatrixDragKind(null);
     setMatrixTypeSlotCoveredHours(null);
     setMatrixEmpDragShiftId(null);
+    setMatrixObsDragId(null);
+    setDragOverlayRingBlack(false);
   }, []);
 
   const sensors = useSensors(
@@ -1227,6 +1328,52 @@ export function ScheduleView() {
     onSuccess: () => afterMatrixShiftMutationSuccess(qc, weekStr),
     onError: (err, _id, context) => {
       restoreList(qc, shiftsListKey(weekStr), context?.previous);
+      alert(errorMessageFromUnknown(err));
+    },
+  });
+
+  const createObservationMut = useMutation({
+    mutationFn: (args: { shift_id: number; employee_id: number }) =>
+      api.createObservation(args),
+    onMutate: (args) =>
+      observationCreateOnMutate({
+        qc,
+        weekStr,
+        shiftId: args.shift_id,
+        employeeId: args.employee_id,
+        tempIdRef: observationCreateOptimisticIdRef,
+      }),
+    onSuccess: () => afterMatrixObservationMutationSuccess(qc, weekStr),
+    onError: (err, _args, context) => {
+      restoreList(qc, observationsListKey(weekStr), context?.previous);
+      alert(errorMessageFromUnknown(err));
+    },
+  });
+
+  const reassignObservationMut = useMutation({
+    mutationFn: (args: { observation_id: number; employee_id: number }) =>
+      api.reassignObservationEmployee(args),
+    onMutate: (args) =>
+      observationReassignOnMutate({
+        qc,
+        weekStr,
+        observationId: args.observation_id,
+        employeeId: args.employee_id,
+      }),
+    onSuccess: () => afterMatrixObservationMutationSuccess(qc, weekStr),
+    onError: (err, _args, context) => {
+      restoreList(qc, observationsListKey(weekStr), context?.previous);
+      alert(errorMessageFromUnknown(err));
+    },
+  });
+
+  const deleteObservationMut = useMutation({
+    mutationFn: (id: number) => api.deleteObservation(id),
+    onMutate: (id) =>
+      observationDeleteOnMutate({ qc, weekStr, observationId: id }),
+    onSuccess: () => afterMatrixObservationMutationSuccess(qc, weekStr),
+    onError: (err, _id, context) => {
+      restoreList(qc, observationsListKey(weekStr), context?.previous);
       alert(errorMessageFromUnknown(err));
     },
   });
@@ -1533,12 +1680,16 @@ export function ScheduleView() {
     const d = event.active.data.current as
       | MatrixTypeSlotDragData
       | MatrixEmployeeShiftDragData
+      | MatrixObservationSlotDragData
+      | MatrixObservationRowDragData
       | undefined;
     if (!d) return;
     if (d.kind === "typeSlot") {
       setMatrixDragKind("typeSlot");
       setMatrixTypeSlotCoveredHours(d.coveredHours);
       setMatrixEmpDragShiftId(null);
+      setMatrixObsDragId(null);
+      setDragOverlayRingBlack(false);
       setActiveDragHighlightMs({
         startMs: d.highlightStartMs,
         endMs: d.highlightEndMs,
@@ -1551,6 +1702,36 @@ export function ScheduleView() {
       setMatrixDragKind("empShift");
       setMatrixTypeSlotCoveredHours(null);
       setMatrixEmpDragShiftId(d.shiftId);
+      setMatrixObsDragId(null);
+      setDragOverlayRingBlack(false);
+      setActiveDragHighlightMs({
+        startMs: d.highlightStartMs,
+        endMs: d.highlightEndMs,
+      });
+      setDragOverlayColor(d.color);
+      setDragOverlaySize(matrixPillDragSize(event));
+      return;
+    }
+    if (d.kind === "obsSlot") {
+      setMatrixDragKind("obsSlot");
+      setMatrixTypeSlotCoveredHours(d.coveredHours);
+      setMatrixEmpDragShiftId(null);
+      setMatrixObsDragId(null);
+      setDragOverlayRingBlack(true);
+      setActiveDragHighlightMs({
+        startMs: d.highlightStartMs,
+        endMs: d.highlightEndMs,
+      });
+      setDragOverlayColor(d.color);
+      setDragOverlaySize(matrixPillDragSize(event));
+      return;
+    }
+    if (d.kind === "obsRow") {
+      setMatrixDragKind("obsRow");
+      setMatrixTypeSlotCoveredHours(null);
+      setMatrixEmpDragShiftId(null);
+      setMatrixObsDragId(d.observationId);
+      setDragOverlayRingBlack(true);
       setActiveDragHighlightMs({
         startMs: d.highlightStartMs,
         endMs: d.highlightEndMs,
@@ -1572,6 +1753,7 @@ export function ScheduleView() {
         over,
         dateStr,
         dayShifts,
+        dayObservations: dayObservationsList,
       });
       if (resolution.kind === "noop") {
         clearMatrixDragOverlay();
@@ -1587,51 +1769,74 @@ export function ScheduleView() {
         clearMatrixDragOverlay();
         return;
       }
-      const eid = resolution.employee_id;
-      const emp =
-        matrixEmployees.find((x) => Number(x.id) === eid) ??
-        employees.find((x) => Number(x.id) === eid);
-      const empName = emp ? String(emp.name ?? "").trim() : "";
-      const ty = typesOrdered.find((t) => typeId(t) === resolution.shift_window_id);
-      const template = buildOptimisticShiftRowTemplate(dayShifts, dateStr, {
-        shift_window_id: resolution.shift_window_id,
-        employee_id: resolution.employee_id,
-        syllabus_num: resolution.syllabus_num,
-        syllabus_role_id: resolution.syllabus_role_id ?? undefined,
-      });
-      const optimisticRow =
-        template ??
-        (ty != null
-          ? buildSyntheticOptimisticShiftRowForCreate({
-              dateStr,
-              shift_window_id: resolution.shift_window_id,
-              employee_id: resolution.employee_id,
-              syllabus_num: resolution.syllabus_num,
-              syllabus_role_id: resolution.syllabus_role_id,
-              highlightStartMs: resolution.highlightStartMs,
-              highlightEndMs: resolution.highlightEndMs,
-              shiftWindow: ty,
-              durationByPreset,
-              presets,
-              empName,
-            })
-          : null);
-      createMut.mutate({
-        shift_window_id: resolution.shift_window_id,
-        employee_id: resolution.employee_id,
-        syllabus_num: resolution.syllabus_num,
-        ...(resolution.syllabus_role_id != null
-          ? { syllabus_role_id: resolution.syllabus_role_id }
-          : {}),
-        optimisticRow,
-      });
+      if (resolution.kind === "reassignObservation") {
+        reassignObservationMut.mutate({
+          observation_id: resolution.observation_id,
+          employee_id: resolution.employee_id,
+        });
+        clearMatrixDragOverlay();
+        return;
+      }
+      if (resolution.kind === "createObservation") {
+        createObservationMut.mutate({
+          shift_id: resolution.shift_id,
+          employee_id: resolution.employee_id,
+        });
+        clearMatrixDragOverlay();
+        return;
+      }
+      if (resolution.kind === "create") {
+        const eid = resolution.employee_id;
+        const emp =
+          matrixEmployees.find((x) => Number(x.id) === eid) ??
+          employees.find((x) => Number(x.id) === eid);
+        const empName = emp ? String(emp.name ?? "").trim() : "";
+        const ty = typesOrdered.find((t) => typeId(t) === resolution.shift_window_id);
+        const template = buildOptimisticShiftRowTemplate(dayShifts, dateStr, {
+          shift_window_id: resolution.shift_window_id,
+          employee_id: resolution.employee_id,
+          syllabus_num: resolution.syllabus_num,
+          syllabus_role_id: resolution.syllabus_role_id ?? undefined,
+        });
+        const optimisticRow =
+          template ??
+          (ty != null
+            ? buildSyntheticOptimisticShiftRowForCreate({
+                dateStr,
+                shift_window_id: resolution.shift_window_id,
+                employee_id: resolution.employee_id,
+                syllabus_num: resolution.syllabus_num,
+                syllabus_role_id: resolution.syllabus_role_id,
+                highlightStartMs: resolution.highlightStartMs,
+                highlightEndMs: resolution.highlightEndMs,
+                shiftWindow: ty,
+                durationByPreset,
+                presets,
+                empName,
+              })
+            : null);
+        createMut.mutate({
+          shift_window_id: resolution.shift_window_id,
+          employee_id: resolution.employee_id,
+          syllabus_num: resolution.syllabus_num,
+          ...(resolution.syllabus_role_id != null
+            ? { syllabus_role_id: resolution.syllabus_role_id }
+            : {}),
+          optimisticRow,
+        });
+        clearMatrixDragOverlay();
+        return;
+      }
       clearMatrixDragOverlay();
     },
     [
       clearMatrixDragOverlay,
       createMut,
+      createObservationMut,
+      reassignObservationMut,
       dateStr,
       dayShifts,
+      dayObservationsList,
       durationByPreset,
       employees,
       presets,
@@ -1785,6 +1990,49 @@ export function ScheduleView() {
                   zPrepStart + shiftClusters.length * zPrepStridePerCluster + 2;
                 const enabledSet = enabledHoursByEmployeeId.get(eid) ?? new Set<string>();
                 const rowFullyDisabled = enabledSet.size === 0;
+                const rowObservations = dayObservationsList.filter(
+                  (ob) => Number(ob.employee_id ?? ob.employeeId) === eid,
+                );
+                const hasActivityInHour = (hour: string) => {
+                  if (
+                    rowShifts.some((s) =>
+                      shiftCoversHour(String(s.start_time), String(s.end_time), hour),
+                    )
+                  ) {
+                    return true;
+                  }
+                  for (const ob of rowObservations) {
+                    const sh = dayShifts.find(
+                      (x) => Number(x.id) === Number(ob.shift_id ?? ob.shiftId),
+                    );
+                    if (
+                      sh &&
+                      shiftCoversHour(
+                        String(sh.start_time),
+                        String(sh.end_time),
+                        hour,
+                      )
+                    ) {
+                      return true;
+                    }
+                  }
+                  return false;
+                };
+                const obsStackedIds = new Set<number>();
+                for (const c of shiftClusters) {
+                  for (const cl of c) {
+                    const ob = observationByShiftId.get(Number(cl.id));
+                    if (
+                      ob &&
+                      Number(ob.employee_id ?? ob.employeeId) === eid
+                    ) {
+                      obsStackedIds.add(Number(ob.id));
+                    }
+                  }
+                }
+                const standaloneRowObs = rowObservations.filter(
+                  (ob) => !obsStackedIds.has(Number(ob.id)),
+                );
                 return (
                   <tr key={eid} className="border-b border-line hover:bg-peach-1/30">
                     <td
@@ -1808,13 +2056,7 @@ export function ScheduleView() {
                       <div className="relative min-h-[28px] w-full">
                         <div className="absolute inset-0 z-0 flex min-h-[28px] items-stretch">
                           {hours.map((hour) => {
-                            const hasShift = rowShifts.some((s) =>
-                              shiftCoversHour(
-                                String(s.start_time),
-                                String(s.end_time),
-                                hour,
-                              ),
-                            );
+                            const hasShift = hasActivityInHour(hour);
                             const hourEnabled =
                               enabledHoursByEmployeeId.get(eid)?.has(hour) ?? false;
                             const hl = activeDragHighlightMs;
@@ -1827,10 +2069,22 @@ export function ScheduleView() {
                                 !hourEnabled ||
                                 !ch.includes(hour) ||
                                 (matrixTypeSlotOverlapEmps?.has(eid) ?? false);
-                            } else {
+                            } else if (matrixDragKind === "empShift") {
                               droppableDisabled =
                                 !hourEnabled ||
                                 (matrixEmpShiftOverlapEmps?.has(eid) ?? false);
+                            } else if (matrixDragKind === "obsSlot") {
+                              const ch = matrixTypeSlotCoveredHours ?? [];
+                              droppableDisabled =
+                                !hourEnabled ||
+                                !ch.includes(hour) ||
+                                (matrixObsSlotOverlapEmps?.has(eid) ?? false);
+                            } else if (matrixDragKind === "obsRow") {
+                              droppableDisabled =
+                                !hourEnabled ||
+                                (matrixObsRowOverlapEmps?.has(eid) ?? false);
+                            } else {
+                              droppableDisabled = !hourEnabled;
                             }
                             const cellBg = !hourEnabled
                               ? "bg-muted/35"
@@ -2008,6 +2262,123 @@ export function ScheduleView() {
                                           />
                                         );
                                       })}
+                                      {cluster.flatMap((clShift) => {
+                                        const ob = observationByShiftId.get(
+                                          Number(clShift.id),
+                                        );
+                                        if (
+                                          !ob ||
+                                          Number(ob.employee_id ?? ob.employeeId) !==
+                                            eid
+                                        ) {
+                                          return [];
+                                        }
+                                        const { muted: obsMuted } = shiftTypePillColors(
+                                          String(
+                                            clShift.type_color ??
+                                              clShift.typeColor ??
+                                              "#7BA3B5",
+                                          ),
+                                        );
+                                        const rname = String(
+                                          clShift.syllabus_role_name ??
+                                            clShift.syllabusRoleName ??
+                                            "",
+                                        ).trim();
+                                        const obsTitle =
+                                          `תצפית\n${pillTitle}` +
+                                          (rname ? `\n${rname}` : "");
+                                        return [
+                                          <MatrixDraggableObservationPill
+                                            key={`obs-in-${ob.id}`}
+                                            observationId={Number(ob.id)}
+                                            shiftId={Number(clShift.id)}
+                                            employeeId={eid}
+                                            typeColorMuted={obsMuted}
+                                            title={obsTitle}
+                                            highlightStartMs={s}
+                                            highlightEndMs={e}
+                                            onLongPressDelete={() =>
+                                              deleteObservationMut.mutate(
+                                                Number(ob.id),
+                                              )
+                                            }
+                                          />,
+                                        ];
+                                      })}
+                                    </div>
+                                  </div>
+                                </Fragment>
+                              );
+                            })}
+                            {standaloneRowObs.map((ob, soIdx) => {
+                              const sh = dayShifts.find(
+                                (x) =>
+                                  Number(x.id) === Number(ob.shift_id ?? ob.shiftId),
+                              );
+                              if (!sh) return null;
+                              const sIv = shiftWallIntervalMs(
+                                dateStr,
+                                String(sh.start_time),
+                                String(sh.end_time),
+                              );
+                              const sClip = clipIntervalToFrame(
+                                sIv.startMs,
+                                sIv.endMs,
+                                scheduleMatrixFrame.frameStartMs,
+                                scheduleMatrixFrame.frameEndMs,
+                              );
+                              if (!sClip) return null;
+                              const [s0, s1] = sClip;
+                              const sLeft =
+                                ((s0 - scheduleMatrixFrame.frameStartMs) /
+                                  matrixRangeMs) *
+                                100;
+                              const sW = ((s1 - s0) / matrixRangeMs) * 100;
+                              const tcol = String(
+                                sh.type_color ?? sh.typeColor ?? "#7BA3B5",
+                              );
+                              const { muted: sMuted } = shiftTypePillColors(tcol);
+                              const sTitle = `תצפית\n${String(sh.type_name ?? "")}`;
+                              const zSolo =
+                                zShiftClusterStart +
+                                shiftClusters.length +
+                                soIdx +
+                                1;
+                              return (
+                                <Fragment key={`obs-standalone-${ob.id}`}>
+                                  <MatrixEmployeePrepRestBands
+                                    dateStr={dateStr}
+                                    shift={sh}
+                                    frameStartMs={scheduleMatrixFrame.frameStartMs}
+                                    frameEndMs={scheduleMatrixFrame.frameEndMs}
+                                    matrixRangeMs={matrixRangeMs}
+                                    zIndexBase={zPrepStart - 1 + soIdx}
+                                    pillInsetClassName={MATRIX_PILL_INSET_X}
+                                  />
+                                  <div
+                                    className="pointer-events-auto absolute top-1/2 box-border -translate-y-1/2 py-0.5"
+                                    style={{
+                                      insetInlineStart: `${sLeft}%`,
+                                      width: `${sW}%`,
+                                      zIndex: zSolo,
+                                    }}
+                                  >
+                                    <div
+                                      className={`box-border flex min-h-0 w-full min-w-0 flex-col gap-0.5 ${MATRIX_PILL_INSET_X}`}
+                                    >
+                                      <MatrixDraggableObservationPill
+                                        observationId={Number(ob.id)}
+                                        shiftId={Number(sh.id)}
+                                        employeeId={eid}
+                                        typeColorMuted={sMuted}
+                                        title={sTitle}
+                                        highlightStartMs={s0}
+                                        highlightEndMs={s1}
+                                        onLongPressDelete={() =>
+                                          deleteObservationMut.mutate(Number(ob.id))
+                                        }
+                                      />
                                     </div>
                                   </div>
                                 </Fragment>
@@ -2147,6 +2518,9 @@ export function ScheduleView() {
                           const segPreset = presetById.get(seg.presetId);
                           const roles = presetSyllabusRolesSorted(segPreset);
                           const slotTitleBase = `${typeName} · ${displayHour}`;
+                          const slotHasObservation = assigned.some((s) =>
+                            observationByShiftId.has(Number(s.id)),
+                          );
 
                           if (roles.length <= 1) {
                             const hasAssigned = assigned.length > 0;
@@ -2176,10 +2550,36 @@ export function ScheduleView() {
                                   aria-label={title}
                                 >
                                   {hasAssigned ? (
-                                    <span
-                                      className="block h-2.5 w-full max-w-full rounded-pill shadow-sm ring-1 ring-black/10"
-                                      style={{ backgroundColor: fillManned }}
-                                    />
+                                    (() => {
+                                      const ms = assigned[0];
+                                      if (!ms) return null;
+                                      if (slotHasObservation) {
+                                        return (
+                                          <MatrixObservationWindowOutlinePill
+                                            title={title}
+                                          />
+                                        );
+                                      }
+                                      return (
+                                        <MatrixDraggableObservationSlotPill
+                                          shiftId={Number(ms.id)}
+                                          shiftWindowId={tid}
+                                          syllabusNum={seg.syllabusNum}
+                                          syllabusRoleId={
+                                            singleRoleId !== undefined &&
+                                            !Number.isNaN(singleRoleId)
+                                              ? singleRoleId
+                                              : undefined
+                                          }
+                                          coveredHours={coveredHours}
+                                          displayHour={displayHour}
+                                          fill={fillManned}
+                                          title={title}
+                                          highlightStartMs={highlightStartMs}
+                                          highlightEndMs={highlightEndMs}
+                                        />
+                                      );
+                                    })()
                                   ) : (
                                     <MatrixDraggableTypeSlotPill
                                       shiftWindowId={tid}
@@ -2245,11 +2645,26 @@ export function ScheduleView() {
                                   return (
                                     <div key={`${tid}-${seg.syllabusNum}-r-${rid}`} title={title}>
                                       {mannedShift ? (
-                                        <span
-                                          className="block h-2.5 w-full max-w-full rounded-pill shadow-sm ring-1 ring-black/10"
-                                          style={{ backgroundColor: fillManned }}
-                                          aria-label={title}
-                                        />
+                                        observationByShiftId.has(
+                                          Number(mannedShift.id),
+                                        ) || slotHasObservation ? (
+                                          <MatrixObservationWindowOutlinePill
+                                            title={title}
+                                          />
+                                        ) : (
+                                          <MatrixDraggableObservationSlotPill
+                                            shiftId={Number(mannedShift.id)}
+                                            shiftWindowId={tid}
+                                            syllabusNum={seg.syllabusNum}
+                                            syllabusRoleId={rid}
+                                            coveredHours={coveredHours}
+                                            displayHour={displayHour}
+                                            fill={fillManned}
+                                            title={title}
+                                            highlightStartMs={highlightStartMs}
+                                            highlightEndMs={highlightEndMs}
+                                          />
+                                        )
                                       ) : (
                                         <MatrixDraggableTypeSlotPill
                                           shiftWindowId={tid}
@@ -2426,7 +2841,9 @@ export function ScheduleView() {
         <DragOverlay dropAnimation={null}>
           {dragOverlayColor ? (
             <span
-              className="box-border block shrink-0 rounded-pill shadow-sm ring-1 ring-black/10"
+              className={`box-border block shrink-0 rounded-pill shadow-sm ${
+                dragOverlayRingBlack ? "ring-2 ring-ink" : "ring-1 ring-black/10"
+              }`}
               style={{
                 backgroundColor: dragOverlayColor,
                 width: dragOverlaySize?.width ?? 80,

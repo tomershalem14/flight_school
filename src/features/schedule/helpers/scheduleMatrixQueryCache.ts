@@ -10,6 +10,10 @@ export function shiftsListKey(weekStr: string) {
   return ["shifts", weekStr] as const;
 }
 
+export function observationsListKey(weekStr: string) {
+  return ["observations", weekStr] as const;
+}
+
 export function scheduleEventsListKey(weekStr: string) {
   return ["schedule_events", weekStr] as const;
 }
@@ -36,6 +40,7 @@ export function invalidateViolationsDeferred(qc: QueryClient) {
 /** Matrix shift create/reassign/delete success: full week `get_shifts` refetch + violations refresh. */
 export function afterMatrixShiftMutationSuccess(qc: QueryClient, weekStr: string): void {
   void qc.invalidateQueries({ queryKey: shiftsListKey(weekStr) });
+  void qc.invalidateQueries({ queryKey: observationsListKey(weekStr) });
   invalidateViolationsDeferred(qc);
 }
 
@@ -61,6 +66,15 @@ export function sortShiftsList(rows: JsonObject[]): JsonObject[] {
     if (ds !== 0) return ds;
     return String(a.start_time ?? "").localeCompare(String(b.start_time ?? ""));
   });
+}
+
+/** Matches `get_observations` ordering (join shift: date, time, id). */
+export function sortObservationsList(rows: JsonObject[]): JsonObject[] {
+  return [...rows].sort((a, b) => Number(a.id) - Number(b.id));
+}
+
+export function afterMatrixObservationMutationSuccess(qc: QueryClient, weekStr: string): void {
+  void qc.invalidateQueries({ queryKey: observationsListKey(weekStr) });
 }
 
 export function rollbackScheduleEventCreate(
@@ -345,4 +359,60 @@ export function buildOptimisticShiftRowTemplate(
     shift_date: dateStr,
     up_to_date: true,
   };
+}
+
+export function observationCreateOnMutate(args: {
+  qc: QueryClient;
+  weekStr: string;
+  shiftId: number;
+  employeeId: number;
+  tempIdRef: MutableRefObject<number>;
+}): { previous: JsonObject[] | undefined; tempId: number } {
+  const { qc, weekStr, shiftId, employeeId, tempIdRef } = args;
+  const key = observationsListKey(weekStr);
+  voidCancelListQuery(qc, key);
+  const previous = snapshotList<JsonObject[]>(qc, key);
+  const tempId = nextNegativeTempId(tempIdRef);
+  const row: JsonObject = {
+    id: tempId,
+    shift_id: shiftId,
+    employee_id: employeeId,
+  };
+  qc.setQueryData<JsonObject[]>(key, (old) =>
+    sortObservationsList([...(old ?? []), row]),
+  );
+  return { previous, tempId };
+}
+
+export function observationDeleteOnMutate(args: {
+  qc: QueryClient;
+  weekStr: string;
+  observationId: number;
+}): { previous: JsonObject[] | undefined } {
+  const { qc, weekStr, observationId } = args;
+  const key = observationsListKey(weekStr);
+  voidCancelListQuery(qc, key);
+  const previous = snapshotList<JsonObject[]>(qc, key);
+  qc.setQueryData<JsonObject[]>(key, (old) =>
+    (old ?? []).filter((r) => Number(r.id) !== observationId),
+  );
+  return { previous };
+}
+
+export function observationReassignOnMutate(args: {
+  qc: QueryClient;
+  weekStr: string;
+  observationId: number;
+  employeeId: number;
+}): { previous: JsonObject[] | undefined } {
+  const { qc, weekStr, observationId, employeeId } = args;
+  const key = observationsListKey(weekStr);
+  voidCancelListQuery(qc, key);
+  const previous = snapshotList<JsonObject[]>(qc, key);
+  qc.setQueryData<JsonObject[]>(key, (old) =>
+    (old ?? []).map((r) =>
+      Number(r.id) === observationId ? { ...r, employee_id: employeeId } : r,
+    ),
+  );
+  return { previous };
 }

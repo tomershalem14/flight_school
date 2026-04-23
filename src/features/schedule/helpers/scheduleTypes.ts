@@ -30,4 +30,28 @@ export type MatrixEmployeeShiftDragData = {
   highlightEndMs: number;
 };
 
+/** Draggable tinted pill in the window row when a slot is manned but not yet observed. */
+export type MatrixObservationSlotDragData = {
+  kind: "obsSlot";
+  shiftId: number;
+  shiftWindowId: number;
+  syllabusNum: number;
+  syllabusRoleId?: number;
+  coveredHours: string[];
+  displayHour: string;
+  color: string;
+  highlightStartMs: number;
+  highlightEndMs: number;
+};
+
+export type MatrixObservationRowDragData = {
+  kind: "obsRow";
+  observationId: number;
+  shiftId: number;
+  employeeId: number;
+  color: string;
+  highlightStartMs: number;
+  highlightEndMs: number;
+};
+
 export type ActiveDragHighlightMs = { startMs: number; endMs: number };

@@ -17,6 +17,7 @@ import {
   DeleteShiftTypeConfirmDialog,
   ShiftTypeEditorModal,
 } from "../schedule/components/ShiftTypeModals";
+import { LONG_PRESS_MS, LONG_PRESS_MOVE_PX } from "../schedule/helpers/scheduleConstants";
 import { useMatrixPillLongPress } from "../schedule/helpers/useMatrixPillLongPress";
 import {
   maxSyllabusRolesInWindowDay,
@@ -28,6 +29,10 @@ import {
   syllabusRoleCellCanAssign,
   typeId,
 } from "../schedule/helpers/scheduleShiftModel";
+import {
+  afterMatrixObservationMutationSuccess,
+  invalidateViolationsDeferred,
+} from "../schedule/helpers/scheduleMatrixQueryCache";
 
 function normalizeShiftRow(s: JsonObject): JsonObject {
   return {
@@ -106,11 +111,54 @@ function assignedShiftForRoleCell(
   return withEmp.find((s) => Number(s.syllabus_role_id) === roleId);
 }
 
+function shiftRowHasEmployee(s: JsonObject | undefined): boolean {
+  if (!s) return false;
+  const e = s.employee_id;
+  return e !== null && e !== undefined && e !== "";
+}
+
+/** First manned shift in syllabus role order (matches איוש column order). */
+function canonicalMannedShiftForObservation(
+  slotShifts: JsonObject[],
+  rowRoles: JsonObject[],
+): JsonObject | undefined {
+  for (const role of rowRoles) {
+    const rid = Number(role.id);
+    const s = assignedShiftForRoleCell(slotShifts, rid, rowRoles);
+    if (shiftRowHasEmployee(s)) return s;
+  }
+  return undefined;
+}
+
+function observationForSlot(
+  slotShifts: JsonObject[],
+  observationByShiftId: Map<number, JsonObject>,
+): JsonObject | undefined {
+  for (const s of slotShifts) {
+    const ob = observationByShiftId.get(Number(s.id));
+    if (ob) return ob;
+  }
+  return undefined;
+}
+
+function observerDisplayName(obs: JsonObject, employees: JsonObject[]): string {
+  const eid = Number(obs.employee_id ?? obs.employeeId);
+  const emp = employees.find((e) => Number(e.id) === eid);
+  return String(emp?.name ?? "—");
+}
+
 type SlotEditorTarget = {
   key: string;
   shift_window_id: number;
   syllabus_num: number;
   syllabus_role_id?: number;
+};
+
+type ObsSlotEditorTarget = {
+  key: string;
+  shift_window_id: number;
+  shift_id: number;
+  observation_id?: number;
 };
 
 function FlightBoardAssignedPill({
@@ -256,6 +304,250 @@ function EmptySlotAssignCell({
   );
 }
 
+function EmptyObsSlotAssignCell({
+  cellKey,
+  editor,
+  slotQuery,
+  setEditor,
+  setSlotQuery,
+  employees,
+  createMut,
+  shiftId,
+  shiftWindowId,
+}: {
+  cellKey: string;
+  editor: ObsSlotEditorTarget | null;
+  slotQuery: string;
+  setEditor: (v: ObsSlotEditorTarget | null) => void;
+  setSlotQuery: (q: string) => void;
+  employees: JsonObject[];
+  createMut: UseMutationResult<
+    unknown,
+    Error,
+    { shift_id: number; employee_id: number },
+    unknown
+  >;
+  shiftId: number;
+  shiftWindowId: number;
+}) {
+  const isOpen = editor?.key === cellKey;
+
+  const closeEditor = useCallback(() => {
+    setEditor(null);
+    setSlotQuery("");
+  }, [setEditor, setSlotQuery]);
+
+  const commitPick = useCallback(
+    (employeeId: number) => {
+      if (!editor || editor.key !== cellKey) return;
+      createMut.mutate({ shift_id: editor.shift_id, employee_id: employeeId });
+      closeEditor();
+    },
+    [cellKey, closeEditor, createMut, editor],
+  );
+
+  const onCloseField = useCallback(() => {
+    if (!editor || editor.key !== cellKey) return;
+    closeEditor();
+  }, [cellKey, closeEditor, editor]);
+
+  if (!isOpen) {
+    return (
+      <button
+        type="button"
+        className="fb-slot-assign transition hover:border-primary/40 hover:bg-primary/5 hover:text-ink"
+        onClick={() => {
+          setEditor({
+            key: cellKey,
+            shift_window_id: shiftWindowId,
+            shift_id: shiftId,
+          });
+          setSlotQuery("");
+        }}
+      >
+        ריק
+      </button>
+    );
+  }
+
+  return (
+    <div className="relative h-5 min-h-0 w-full min-w-0">
+      <AutocompleteCombobox<JsonObject>
+        mode="controlled"
+        textValue={slotQuery}
+        onTextValueChange={setSlotQuery}
+        items={employees}
+        itemToKey={(e) => String(e.id)}
+        itemToLabel={(e) => String(e.name ?? "")}
+        filterMode="substring"
+        emptyQueryBehavior="firstN"
+        emptyQueryFirstCount={25}
+        placement="below"
+        onSelect={(e) => commitPick(Number(e.id))}
+        onEscape={closeEditor}
+        onClose={onCloseField}
+        disabled={createMut.isPending}
+        placeholder="שם מפעיל"
+        dir="rtl"
+        inputClassName="fb-slot-assign"
+        autoFocus
+        selectTextOnAutoFocus
+      />
+    </div>
+  );
+}
+
+function FlightBoardObservationAssignedCell({
+  cellKey,
+  editor,
+  slotQuery,
+  setEditor,
+  setSlotQuery,
+  employees,
+  reassignMut,
+  observationId,
+  observerName,
+  colColor,
+  stale,
+  onLongPressDelete,
+  shiftWindowId,
+  shiftId,
+}: {
+  cellKey: string;
+  editor: ObsSlotEditorTarget | null;
+  slotQuery: string;
+  setEditor: (v: ObsSlotEditorTarget | null) => void;
+  setSlotQuery: (q: string) => void;
+  employees: JsonObject[];
+  reassignMut: UseMutationResult<
+    unknown,
+    Error,
+    { observation_id: number; employee_id: number },
+    unknown
+  >;
+  observationId: number;
+  observerName: string;
+  colColor: string;
+  stale: boolean;
+  onLongPressDelete: () => void;
+  shiftWindowId: number;
+  shiftId: number;
+}) {
+  const isOpen =
+    editor?.key === cellKey &&
+    editor.observation_id != null &&
+    editor.observation_id === observationId;
+
+  const closeEditor = useCallback(() => {
+    setEditor(null);
+    setSlotQuery("");
+  }, [setEditor, setSlotQuery]);
+
+  const commitPick = useCallback(
+    (employeeId: number) => {
+      if (!editor || editor.key !== cellKey || editor.observation_id == null) return;
+      reassignMut.mutate({
+        observation_id: editor.observation_id,
+        employee_id: employeeId,
+      });
+      closeEditor();
+    },
+    [cellKey, closeEditor, editor, reassignMut],
+  );
+
+  const onCloseField = useCallback(() => {
+    if (!editor || editor.key !== cellKey) return;
+    closeEditor();
+  }, [cellKey, closeEditor, editor]);
+
+  const lp = useMatrixPillLongPress({ onLongPressDelete });
+  const tapStartRef = useRef<{ t: number; x: number; y: number } | null>(null);
+  const moveThresholdSq = LONG_PRESS_MOVE_PX * LONG_PRESS_MOVE_PX;
+
+  if (isOpen) {
+    return (
+      <div className="relative h-5 min-h-0 w-full min-w-0">
+        <AutocompleteCombobox<JsonObject>
+          mode="controlled"
+          textValue={slotQuery}
+          onTextValueChange={setSlotQuery}
+          items={employees}
+          itemToKey={(e) => String(e.id)}
+          itemToLabel={(e) => String(e.name ?? "")}
+          filterMode="substring"
+          emptyQueryBehavior="firstN"
+          emptyQueryFirstCount={25}
+          placement="below"
+          onSelect={(e) => commitPick(Number(e.id))}
+          onEscape={closeEditor}
+          onClose={onCloseField}
+          disabled={reassignMut.isPending}
+          placeholder="שם מפעיל"
+          dir="rtl"
+          inputClassName="fb-slot-assign"
+          autoFocus
+          selectTextOnAutoFocus
+        />
+      </div>
+    );
+  }
+
+  const label = String(observerName ?? "—");
+  return (
+    <span
+      className="mx-auto flex h-5 min-h-5 max-h-5 w-full max-w-full touch-none select-none items-center justify-center rounded-lg px-1 py-0"
+      title="לחיצה קצרה לעריכה · לחיצה ארוכה למחיקה"
+      aria-label={label}
+      onPointerDown={(e) => {
+        tapStartRef.current = { t: Date.now(), x: e.clientX, y: e.clientY };
+        lp.onPointerDown(e);
+      }}
+      onPointerMove={(e) => {
+        const s = tapStartRef.current;
+        if (s) {
+          const dx = e.clientX - s.x;
+          const dy = e.clientY - s.y;
+          if (dx * dx + dy * dy > moveThresholdSq) tapStartRef.current = null;
+        }
+        lp.onPointerMove(e);
+      }}
+      onPointerUp={(e) => {
+        const s = tapStartRef.current;
+        tapStartRef.current = null;
+        lp.onPointerUp();
+        if (
+          s &&
+          Date.now() - s.t < LONG_PRESS_MS &&
+          (e.clientX - s.x) ** 2 + (e.clientY - s.y) ** 2 <= moveThresholdSq
+        ) {
+          setEditor({
+            key: cellKey,
+            shift_window_id: shiftWindowId,
+            shift_id: shiftId,
+            observation_id: observationId,
+          });
+          setSlotQuery("");
+        }
+      }}
+      onPointerCancel={() => {
+        tapStartRef.current = null;
+        lp.onPointerCancel();
+      }}
+    >
+      <span
+        className={`flex h-full min-h-0 w-full max-w-full items-center justify-center rounded-pill px-1.5 py-0 text-center font-heading text-[10px] font-bold leading-5 text-white ${
+          stale
+            ? "schedule-striped-warn-pill text-ink shadow-sm ring-1 ring-inset ring-black/10"
+            : "shadow-sm ring-1 ring-inset ring-black/10"
+        }`}
+        style={stale ? undefined : { backgroundColor: colColor }}
+      >
+        {label}
+      </span>
+    </span>
+  );
+}
+
 export function FlightBoardView() {
   const currentDay = useAppStore((s) => s.currentDay);
   const qc = useQueryClient();
@@ -323,6 +615,26 @@ export function FlightBoardView() {
     [shifts, dateStr],
   );
 
+  const { data: observationsRaw = [] } = useQuery({
+    queryKey: ["observations", weekStr],
+    queryFn: () => api.getObservations(weekStr),
+  });
+  const dayShiftIdSet = useMemo(
+    () => new Set(dayShifts.map((s) => Number(s.id))),
+    [dayShifts],
+  );
+  const dayObservationsList = useMemo(() => {
+    const list = (observationsRaw as JsonObject[]) ?? [];
+    return list.filter((ob) => dayShiftIdSet.has(Number(ob.shift_id ?? ob.shiftId)));
+  }, [observationsRaw, dayShiftIdSet]);
+  const observationByShiftId = useMemo(() => {
+    const m = new Map<number, JsonObject>();
+    for (const ob of dayObservationsList) {
+      m.set(Number(ob.shift_id ?? ob.shiftId), ob);
+    }
+    return m;
+  }, [dayObservationsList]);
+
   const globalMax = useMemo(() => {
     let m = 1;
     for (const ty of types) {
@@ -333,6 +645,8 @@ export function FlightBoardView() {
 
   const [slotEditor, setSlotEditor] = useState<SlotEditorTarget | null>(null);
   const [slotQuery, setSlotQuery] = useState("");
+  const [obsSlotEditor, setObsSlotEditor] = useState<ObsSlotEditorTarget | null>(null);
+  const [obsSlotQuery, setObsSlotQuery] = useState("");
   const [shiftTypeDraft, setShiftTypeDraft] = useState<JsonObject | null>(null);
   const [deleteTypeConfirm, setDeleteTypeConfirm] = useState<{
     id: number;
@@ -374,8 +688,50 @@ export function FlightBoardView() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["shifts"] });
       qc.invalidateQueries({ queryKey: ["violations"] });
+      qc.invalidateQueries({ queryKey: ["observations"] });
       setSlotEditor(null);
       setSlotQuery("");
+    },
+    onError: (err) => {
+      alert(errorMessageFromUnknown(err));
+    },
+  });
+
+  const createObservationMut = useMutation({
+    mutationFn: (args: { shift_id: number; employee_id: number }) =>
+      api.createObservation(args),
+    onSuccess: () => {
+      afterMatrixObservationMutationSuccess(qc, weekStr);
+      invalidateViolationsDeferred(qc);
+      setObsSlotEditor(null);
+      setObsSlotQuery("");
+    },
+    onError: (err) => {
+      alert(errorMessageFromUnknown(err));
+    },
+  });
+
+  const reassignObservationMut = useMutation({
+    mutationFn: (args: { observation_id: number; employee_id: number }) =>
+      api.reassignObservationEmployee(args),
+    onSuccess: () => {
+      afterMatrixObservationMutationSuccess(qc, weekStr);
+      invalidateViolationsDeferred(qc);
+      setObsSlotEditor(null);
+      setObsSlotQuery("");
+    },
+    onError: (err) => {
+      alert(errorMessageFromUnknown(err));
+    },
+  });
+
+  const deleteObservationMut = useMutation({
+    mutationFn: (id: number) => api.deleteObservation(id),
+    onSuccess: () => {
+      afterMatrixObservationMutationSuccess(qc, weekStr);
+      invalidateViolationsDeferred(qc);
+      setObsSlotEditor(null);
+      setObsSlotQuery("");
     },
     onError: (err) => {
       alert(errorMessageFromUnknown(err));
@@ -437,7 +793,7 @@ export function FlightBoardView() {
   }, [shiftTypeDraft]);
 
   useEffect(() => {
-    if (!slotEditor && !deleteTypeConfirm && !shiftTypeDraft) return;
+    if (!slotEditor && !obsSlotEditor && !deleteTypeConfirm && !shiftTypeDraft) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (shiftTypeDraft && swatchMenuOpen) {
@@ -446,12 +802,14 @@ export function FlightBoardView() {
       }
       setSlotEditor(null);
       setSlotQuery("");
+      setObsSlotEditor(null);
+      setObsSlotQuery("");
       setDeleteTypeConfirm(null);
       setShiftTypeDraft(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [slotEditor, deleteTypeConfirm, shiftTypeDraft, swatchMenuOpen]);
+  }, [slotEditor, obsSlotEditor, deleteTypeConfirm, shiftTypeDraft, swatchMenuOpen]);
 
   return (
     <div className="flex w-full min-w-0 flex-col gap-4 px-1">
@@ -469,14 +827,14 @@ export function FlightBoardView() {
           const { segments } = windowDayTimeline(dateStr, ty, durationByPreset, colColor);
           const colShifts = dayShifts.filter((s) => Number(s.shift_window_id) === tid);
           const presetById = new Map(presets.map((p) => [Number(p.id), p]));
-          const employeeBlockWidthPct = 33;
-          const metaColWidthPct = (100 - employeeBlockWidthPct) / 5;
+          const employeeBlockWidthPct = 26;
+          const metaColWidthPct = (100 - employeeBlockWidthPct) / 6;
 
           return (
             <div
               key={tid}
               className={
-                slotEditor?.shift_window_id === tid
+                slotEditor?.shift_window_id === tid || obsSlotEditor?.shift_window_id === tid
                   ? "overflow-visible rounded-card border border-line bg-surface shadow-airy"
                   : "overflow-hidden rounded-card border border-line bg-surface shadow-airy"
               }
@@ -513,12 +871,12 @@ export function FlightBoardView() {
               </div>
               <div
                 className={
-                  slotEditor?.shift_window_id === tid
+                  slotEditor?.shift_window_id === tid || obsSlotEditor?.shift_window_id === tid
                     ? "min-w-0 overflow-visible"
                     : "overflow-x-auto"
                 }
               >
-                <table className="w-full min-w-[720px] table-fixed border-collapse border-2 border-ink/18 text-xs">
+                <table className="w-full min-w-[760px] table-fixed border-collapse border-2 border-ink/18 text-xs">
                   <colgroup>
                     {Array.from({ length: 4 }, (_, i) => (
                       <col key={`t-${i}`} style={{ width: `${metaColWidthPct.toFixed(2)}%` }} />
@@ -531,6 +889,7 @@ export function FlightBoardView() {
                         }}
                       />
                     ))}
+                    <col style={{ width: `${metaColWidthPct.toFixed(2)}%` }} />
                     <col style={{ width: `${metaColWidthPct.toFixed(2)}%` }} />
                   </colgroup>
                   <thead>
@@ -554,6 +913,9 @@ export function FlightBoardView() {
                         איוש
                       </th>
                       <th className="border-2 border-ink/18 px-2 py-1 text-center font-heading text-xs font-bold">
+                        מתצפת
+                      </th>
+                      <th className="border-2 border-ink/18 px-2 py-1 text-center font-heading text-xs font-bold">
                         סילבוס
                       </th>
                     </tr>
@@ -562,7 +924,7 @@ export function FlightBoardView() {
                     {segments.length === 0 ? (
                       <tr>
                         <td
-                          colSpan={5 + globalMax}
+                          colSpan={6 + globalMax}
                           className="border-2 border-ink/18 px-3 py-4 text-center text-xs text-muted"
                         >
                           אין סלוטים בחלון זה
@@ -593,6 +955,21 @@ export function FlightBoardView() {
                           presets,
                           dayShifts,
                         );
+                        const obsCellKey = `${tid}-${sn}-obs`;
+                        const canonicalManned = canonicalMannedShiftForObservation(
+                          slotShifts,
+                          rowRoles,
+                        );
+                        const slotObs = observationForSlot(slotShifts, observationByShiftId);
+                        const observedShiftForStale = slotObs
+                          ? slotShifts.find(
+                              (s) => Number(s.id) === Number(slotObs.shift_id ?? slotObs.shiftId),
+                            )
+                          : undefined;
+                        const obsStale =
+                          observedShiftForStale && !shiftIsUpToDate(observedShiftForStale);
+                        const obsTd =
+                          "border-2 border-ink/18 px-2 py-1 text-center align-middle";
                         return (
                           <tr key={sn} className="hover:bg-sky-1/30">
                             <td
@@ -721,6 +1098,46 @@ export function FlightBoardView() {
                                 </td>
                               );
                             })}
+                            {!canonicalManned ? (
+                              <td className={`${obsTd} text-xs text-muted`}>—</td>
+                            ) : slotObs ? (
+                              <td className={obsTd}>
+                                <FlightBoardObservationAssignedCell
+                                  cellKey={obsCellKey}
+                                  editor={obsSlotEditor}
+                                  slotQuery={obsSlotQuery}
+                                  setEditor={setObsSlotEditor}
+                                  setSlotQuery={setObsSlotQuery}
+                                  employees={sortedEmployees}
+                                  reassignMut={reassignObservationMut}
+                                  observationId={Number(slotObs.id)}
+                                  observerName={observerDisplayName(slotObs, employees)}
+                                  colColor={colColor}
+                                  stale={Boolean(obsStale)}
+                                  onLongPressDelete={() =>
+                                    deleteObservationMut.mutate(Number(slotObs.id))
+                                  }
+                                  shiftWindowId={tid}
+                                  shiftId={Number(
+                                    slotObs.shift_id ?? slotObs.shiftId ?? canonicalManned.id,
+                                  )}
+                                />
+                              </td>
+                            ) : (
+                              <td className={obsTd}>
+                                <EmptyObsSlotAssignCell
+                                  cellKey={obsCellKey}
+                                  editor={obsSlotEditor}
+                                  slotQuery={obsSlotQuery}
+                                  setEditor={setObsSlotEditor}
+                                  setSlotQuery={setObsSlotQuery}
+                                  employees={sortedEmployees}
+                                  createMut={createObservationMut}
+                                  shiftId={Number(canonicalManned.id)}
+                                  shiftWindowId={tid}
+                                />
+                              </td>
+                            )}
                             <td
                               className="min-w-0 border-2 border-ink/18 px-2 py-1 align-middle text-center text-ink"
                               title={syllabusName}
