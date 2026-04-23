@@ -246,6 +246,19 @@
     @apply cursor-not-allowed opacity-60;
   }
 
+  /* Manning export panel — read-only path; base `input` uses rounded-card / min-h-9 / text-sm. */
+  input.manning-export-path {
+    @apply box-border !min-h-0 w-full appearance-none !rounded-sm border border-line bg-black/5 px-3 py-2 font-mono !text-[0.6875rem] !leading-snug !text-muted;
+  }
+
+  input.manning-export-path::placeholder {
+    @apply text-muted;
+  }
+
+  input.manning-export-path:focus-visible {
+    @apply border-primary outline-none ring-2 ring-primary/25;
+  }
+
   /* Compact TimeInput24: strip base/min rules from `.time-input-24 input.time-input-24__seg` (px, min-w). */
   .time-input-24.inline-flex.h-7 input.time-input-24__seg {
     font-size: 0.625rem !important;

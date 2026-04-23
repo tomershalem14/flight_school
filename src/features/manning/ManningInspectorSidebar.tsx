@@ -1,5 +1,11 @@
+import { save } from "@tauri-apps/plugin-dialog";
+import { writeFile } from "@tauri-apps/plugin-fs";
 import { useEffect, useId, useState } from "react";
+import { useAppStore } from "../../app/store";
 import type { JsonObject } from "../../shared/api";
+import { formatYmd } from "../../shared/dates";
+import { errorMessageFromUnknown } from "../../shared/errorMessage";
+import { buildEmptyManningWorkbookBytes } from "./manningExportXlsx";
 
 function jsonString(v: JsonObject, key: string): string | undefined {
   const x = v[key];
@@ -166,10 +172,35 @@ function ChevronExpandIcon({ className }: { className?: string }) {
   );
 }
 
+function ExportIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M12 15V3M12 15l4-4M12 15l-4-4" />
+      <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+    </svg>
+  );
+}
+
+type InspectorMenu = "warnings" | "export";
+
 export function ManningInspectorSidebar({ warnings }: { warnings: JsonObject[] }) {
+  const currentDay = useAppStore((s) => s.currentDay);
   const [wideOpen, setWideOpen] = useState(false);
-  /** Extensible when more inspector menus are added */
-  const activeMenu = "warnings" as const;
+  const [activeMenu, setActiveMenu] = useState<InspectorMenu>("warnings");
+  const [exportPath, setExportPath] = useState<string | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const panelId = useId();
   const hasOverlapError = warnings.some(
     (w) =>
@@ -179,6 +210,12 @@ export function ManningInspectorSidebar({ warnings }: { warnings: JsonObject[] }
       w.rule === "global_observation_outside_availability",
   );
   const warningsPanelOpen = wideOpen && activeMenu === "warnings";
+  const exportPanelOpen = wideOpen && activeMenu === "export";
+
+  useEffect(() => {
+    setExportPath(null);
+    setExportError(null);
+  }, [currentDay]);
 
   useEffect(() => {
     if (!wideOpen) return;
@@ -206,7 +243,10 @@ export function ManningInspectorSidebar({ warnings }: { warnings: JsonObject[] }
               }`}
               aria-label="אזהרות"
               aria-pressed={warningsPanelOpen}
-              onClick={() => setWideOpen(true)}
+              onClick={() => {
+                setActiveMenu("warnings");
+                setWideOpen(true);
+              }}
             >
               <WarningsIcon className="shrink-0" />
               {warnings.length > 0 ? (
@@ -219,6 +259,22 @@ export function ManningInspectorSidebar({ warnings }: { warnings: JsonObject[] }
                   {warnings.length > 99 ? "99+" : warnings.length}
                 </span>
               ) : null}
+            </button>
+            <button
+              type="button"
+              className={`flex size-9 items-center justify-center rounded-lg border text-ink transition-colors ${
+                exportPanelOpen
+                  ? "border-primary bg-primary/15 shadow-sm"
+                  : "border-transparent hover:bg-background hover:border-line"
+              }`}
+              aria-label="ייצוא לאקסל"
+              aria-pressed={exportPanelOpen}
+              onClick={() => {
+                setActiveMenu("export");
+                setWideOpen(true);
+              }}
+            >
+              <ExportIcon className="shrink-0" />
             </button>
           </div>
 
@@ -239,28 +295,98 @@ export function ManningInspectorSidebar({ warnings }: { warnings: JsonObject[] }
             id={panelId}
             className="flex h-full min-h-0 w-72 min-w-0 shrink-0 flex-col overflow-hidden bg-surface"
           >
-            <div className="shrink-0 border-b border-line px-3 py-1.5 text-right" dir="rtl">
-              <h2 className="font-heading text-xs font-bold text-ink">אזהרות</h2>
-            </div>
-            {warnings.length > 0 ? (
-              <div
-                className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-contain p-3"
-                dir="rtl"
-              >
-                {warnings.map((v, i) => (
-                  <ViolationCard
-                    key={`${String(v.rule)}-${String(v.shift_id ?? "")}-${i}`}
-                    v={v}
-                  />
-                ))}
-              </div>
+            {activeMenu === "warnings" ? (
+              <>
+                <div className="shrink-0 border-b border-line px-3 py-1.5 text-right" dir="rtl">
+                  <h2 className="font-heading text-xs font-bold text-ink">אזהרות</h2>
+                </div>
+                {warnings.length > 0 ? (
+                  <div
+                    className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-contain p-3"
+                    dir="rtl"
+                  >
+                    {warnings.map((v, i) => (
+                      <ViolationCard
+                        key={`${String(v.rule)}-${String(v.shift_id ?? "")}-${i}`}
+                        v={v}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div
+                    className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain p-3 text-right"
+                    dir="rtl"
+                  >
+                    <p className="shrink-0 text-xs text-muted">אין אזהרות ליום זה</p>
+                  </div>
+                )}
+              </>
             ) : (
-              <div
-                className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain p-3 text-right"
-                dir="rtl"
-              >
-                <p className="shrink-0 text-xs text-muted">אין אזהרות ליום זה</p>
-              </div>
+              <>
+                <div className="shrink-0 border-b border-line px-3 py-1.5 text-right" dir="rtl">
+                  <h2 className="font-heading text-xs font-bold text-ink">ייצוא</h2>
+                </div>
+                <div
+                  className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain p-3 text-right"
+                  dir="rtl"
+                >
+                  <div className="flex flex-col gap-1">
+                    <input
+                      type="text"
+                      readOnly
+                      dir="ltr"
+                      placeholder="לא נבחר קובץ"
+                      aria-label="נתיב הקובץ שנבחר"
+                      className="manning-export-path"
+                      value={exportPath ?? ""}
+                    />
+                    <button
+                      type="button"
+                      className="rounded-sm border border-line bg-background px-3 py-2 text-xs font-heading font-bold text-ink hover:bg-peach-1"
+                      onClick={async () => {
+                        setExportError(null);
+                        try {
+                          const path = await save({
+                            defaultPath: `לוח-${formatYmd(currentDay)}.xlsx`,
+                            filters: [{ name: "Excel", extensions: ["xlsx"] }],
+                          });
+                          if (path) setExportPath(path);
+                        } catch (e) {
+                          setExportError(errorMessageFromUnknown(e));
+                        }
+                      }}
+                    >
+                      בחר מיקום…
+                    </button>
+                  </div>
+                  <div className="min-h-0 flex-1" aria-hidden />
+                  {exportError ? (
+                    <p className="shrink-0 text-[0.625rem] leading-snug text-red-700" role="alert">
+                      {exportError}
+                    </p>
+                  ) : null}
+                  <button
+                    type="button"
+                    disabled={!exportPath || exportBusy}
+                    className="shrink-0 rounded-pill bg-primary px-3 py-2 text-sm font-heading font-bold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={async () => {
+                      if (!exportPath) return;
+                      setExportError(null);
+                      setExportBusy(true);
+                      try {
+                        const bytes = await buildEmptyManningWorkbookBytes();
+                        await writeFile(exportPath, bytes);
+                      } catch (e) {
+                        setExportError(errorMessageFromUnknown(e));
+                      } finally {
+                        setExportBusy(false);
+                      }
+                    }}
+                  >
+                    {exportBusy ? "מייצא…" : "ייצוא"}
+                  </button>
+                </div>
+              </>
             )}
           </aside>
         ) : null}
