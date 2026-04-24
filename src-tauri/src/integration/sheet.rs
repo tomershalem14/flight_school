@@ -82,7 +82,7 @@ pub fn poll_sheet(conn: &mut Connection) -> Result<Value, AppError> {
         .get(&csv_url)
         .header(
             "User-Agent",
-            "Mozilla/5.0 (compatible; FlightSchoolDesktop/1.0)",
+            "Mozilla/5.0 (compatible; HamayishDesktop/1.0)",
         )
         .send()
         .map_err(|e| AppError::Http(e.to_string()))?;

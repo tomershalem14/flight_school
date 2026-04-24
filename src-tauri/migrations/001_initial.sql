@@ -1,4 +1,4 @@
--- Flight School Scheduler — initial schema (fresh install)
+-- המאייש — initial schema (fresh install)
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS roles (

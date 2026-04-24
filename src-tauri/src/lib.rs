@@ -1,4 +1,4 @@
-//! Flight School desktop app — Tauri shell, SQLite persistence, scheduling rules in Rust.
+//! המאייש — Tauri shell, SQLite persistence, scheduling rules in Rust.
 
 mod commands;
 mod db;

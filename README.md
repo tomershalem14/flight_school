@@ -1,6 +1,6 @@
-# Flight School Scheduler (Desktop)
+# המאייש
 
-Tauri + React + TypeScript + SQLite — local-first replacement for the legacy Python/FastAPI app.
+Tauri + React + TypeScript + SQLite — local-first scheduling desktop app.
 
 ## Prerequisites
 
@@ -11,7 +11,7 @@ Tauri + React + TypeScript + SQLite — local-first replacement for the legacy P
 ## Development
 
 ```bash
-cd desktop
+cd flight_school
 npm install
 npm run tauri dev
 ```
@@ -19,11 +19,11 @@ npm run tauri dev
 ## Production build (Windows installer)
 
 ```bash
-cd desktop
+cd flight_school
 npm run tauri build
 ```
 
-Artifacts appear under `desktop/src-tauri/target/release/bundle/`.
+Artifacts appear under `flight_school/src-tauri/target/release/bundle/`.
 
 ## Project layout
 

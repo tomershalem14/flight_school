@@ -1,8 +1,8 @@
 [package]
 name = "flight-school-desktop"
 version = "0.1.0"
-description = "מערכת לוז - בית ספר לטיסה (desktop)"
-authors = ["Flight School"]
+description = "המאייש"
+authors = ["המאייש"]
 edition = "2021"
 
 [lib]

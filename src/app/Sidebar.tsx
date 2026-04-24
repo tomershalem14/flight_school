@@ -14,9 +14,10 @@ export function Sidebar() {
   return (
     <aside className="flex w-56 shrink-0 flex-col border-s border-line bg-surface shadow-airy">
       <div className="border-b border-line px-3 py-3">
-        <div className="min-w-0">
-          <div className="font-heading text-lg font-bold text-ink">לוח טיסות</div>
-          <div className="truncate text-xs text-muted">בית ספר למפעילי כטמ״מ</div>
+        <div className="flex min-h-11 items-center">
+          <div className="min-w-0">
+            <div className="font-heading text-lg font-bold text-ink">המאייש</div>
+          </div>
         </div>
       </div>
       <nav className="flex flex-1 flex-col gap-1 p-2">
