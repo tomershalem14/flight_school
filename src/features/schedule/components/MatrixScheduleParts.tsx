@@ -16,6 +16,7 @@ import {
   shiftPrepRestHmPairs,
   shiftWallIntervalMs,
 } from "../../../shared/manningHours";
+import type { HourTimelinePiece } from "../helpers/matrixEmployeeAvailability";
 import { shiftIsUpToDate } from "../helpers/scheduleShiftModel";
 import { useMatrixPillLongPress } from "../helpers/useMatrixPillLongPress";
 import type { MatrixObservationRowDragData, MatrixObservationSlotDragData } from "../helpers/scheduleTypes";
@@ -363,6 +364,8 @@ export function MatrixDraggableObservationPill({
 export function MatrixEmployeeHourDropZone({
   employeeId,
   hour,
+  droppableId,
+  flexMs,
   hasEmployeeShiftInHour,
   droppableDisabled,
   className,
@@ -370,14 +373,19 @@ export function MatrixEmployeeHourDropZone({
 }: {
   employeeId: number;
   hour: string;
+  /** Defaults to `emp-cell-{employeeId}-{hour}`. Use a unique suffix when an hour is split. */
+  droppableId?: string;
+  /** When set with a positive duration (ms), cell uses `flex: {flexMs} 1 0` for proportional width. */
+  flexMs?: number;
   hasEmployeeShiftInHour: boolean;
   /** `@dnd-kit` disabled when this cell must not accept the active drag. */
   droppableDisabled: boolean;
   className?: string;
   onEmptyClick?: (e: ReactMouseEvent<HTMLDivElement>) => void;
 }) {
+  const id = droppableId ?? `emp-cell-${employeeId}-${hour}`;
   const { setNodeRef } = useDroppable({
-    id: `emp-cell-${employeeId}-${hour}`,
+    id,
     data: { employeeId, hour },
     disabled: droppableDisabled,
   });
@@ -385,13 +393,76 @@ export function MatrixEmployeeHourDropZone({
     onEmptyClick && !hasEmployeeShiftInHour
       ? (e: ReactMouseEvent<HTMLDivElement>) => onEmptyClick(e)
       : undefined;
+  const flexStyle =
+    flexMs != null && flexMs > 0
+      ? ({ flex: `${flexMs} 1 0`, minWidth: 0 } as const)
+      : undefined;
   return (
     <div
       ref={setNodeRef}
       role="presentation"
       className={`min-h-[28px] h-full min-w-0 flex-1 self-stretch border-s border-line ${className ?? ""}`}
+      style={flexStyle}
       onClick={handleEmptyClick}
     />
+  );
+}
+
+/** One matrix hour column split into enabled (droppable) vs disabled (tinted) sub-bands by wall time. */
+export function MatrixEmployeeHourTimelineCell({
+  employeeId,
+  hour,
+  pieces,
+  hasActivityInPiece,
+  segmentDroppableDisabled,
+}: {
+  employeeId: number;
+  hour: string;
+  pieces: HourTimelinePiece[];
+  hasActivityInPiece: (loMs: number, hiMs: number) => boolean;
+  segmentDroppableDisabled: (
+    loMs: number,
+    hiMs: number,
+    hasActivity: boolean,
+  ) => boolean;
+}) {
+  if (pieces.length === 0) {
+    return (
+      <div className="min-h-[28px] h-full min-w-0 flex-1 self-stretch border-s border-line bg-muted/35" />
+    );
+  }
+  return (
+    <div className="flex min-h-[28px] h-full min-w-0 flex-1 flex-row self-stretch border-s border-line">
+      {pieces.map((p, idx) => {
+        const dur = p.hiMs - p.loMs;
+        if (dur <= 0) return null;
+        if (p.kind === "disabled") {
+          return (
+            <div
+              key={`d-${idx}-${p.loMs}`}
+              className="h-full min-w-0 shrink-0 bg-muted/35"
+              style={{ flex: `${dur} 1 0`, minWidth: 0 }}
+              aria-hidden
+            />
+          );
+        }
+        const hasAct = hasActivityInPiece(p.loMs, p.hiMs);
+        const dis = segmentDroppableDisabled(p.loMs, p.hiMs, hasAct);
+        const cellBg = hasAct ? "" : "bg-background/40";
+        return (
+          <MatrixEmployeeHourDropZone
+            key={`e-${idx}-${p.loMs}`}
+            employeeId={employeeId}
+            hour={hour}
+            droppableId={`emp-cell-${employeeId}-${hour}-s${idx}`}
+            flexMs={dur}
+            hasEmployeeShiftInHour={hasAct}
+            droppableDisabled={dis}
+            className={`border-s-0 ${cellBg}`}
+          />
+        );
+      })}
+    </div>
   );
 }
 

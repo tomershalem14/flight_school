@@ -2,6 +2,7 @@ import type { JsonObject } from "../../../shared/api";
 import { parseEmployeeKind } from "../../../shared/employeeOrderSort";
 import {
   clipIntervalToFrame,
+  hmAddMinutes,
   shiftCoversHour,
   shiftWallIntervalMs,
 } from "../../../shared/manningHours";
@@ -94,7 +95,9 @@ export function enabledHourSet(hours: string[], dayRows: JsonObject[]): Set<stri
   return out;
 }
 
-function mergeSortedIntervals(segments: Array<[number, number]>): Array<[number, number]> {
+export function mergeSortedIntervals(
+  segments: Array<[number, number]>,
+): Array<[number, number]> {
   if (segments.length === 0) return [];
   const sorted = [...segments].sort((a, b) => a[0] - b[0]);
   const out: Array<[number, number]> = [];
@@ -147,6 +150,64 @@ export function enabledWallIntervalsMs(
     if (clipped) raw.push(clipped);
   }
   return mergeSortedIntervals(raw);
+}
+
+/** Half-open wall interval for one matrix hour column, clipped to the matrix frame. */
+export function hourColumnIntervalClippedToFrame(
+  dateStr: string,
+  hourLabel: string,
+  frameStartMs: number,
+  frameEndMs: number,
+): [number, number] | null {
+  const h0 = hourLabel.trim();
+  if (!h0) return null;
+  const h1 = hmAddMinutes(h0, 60);
+  const iv = shiftWallIntervalMs(dateStr, h0, h1);
+  const c = clipIntervalToFrame(
+    iv.startMs,
+    iv.endMs,
+    frameStartMs,
+    frameEndMs,
+  );
+  return c;
+}
+
+export type HourTimelinePiece = {
+  kind: "enabled" | "disabled";
+  loMs: number;
+  hiMs: number;
+};
+
+/**
+ * Partition `[cellLo, cellHi)` into alternating enabled/disabled slices using the merged
+ * availability union (same basis as `enabledWallIntervalsMs`).
+ */
+export function hourColumnTimelinePieces(
+  cell: [number, number],
+  enabledUnion: Array<[number, number]>,
+): HourTimelinePiece[] {
+  const [cellLo, cellHi] = cell;
+  if (!(cellHi > cellLo)) return [];
+  const inCell: Array<[number, number]> = [];
+  for (const [s, e] of enabledUnion) {
+    const a = Math.max(cellLo, s);
+    const b = Math.min(cellHi, e);
+    if (b > a) inCell.push([a, b]);
+  }
+  const mergedInCell = mergeSortedIntervals(inCell);
+  const out: HourTimelinePiece[] = [];
+  let t = cellLo;
+  for (const [a, b] of mergedInCell) {
+    if (a > t) {
+      out.push({ kind: "disabled", loMs: t, hiMs: a });
+    }
+    out.push({ kind: "enabled", loMs: a, hiMs: b });
+    t = b;
+  }
+  if (t < cellHi) {
+    out.push({ kind: "disabled", loMs: t, hiMs: cellHi });
+  }
+  return out;
 }
 
 export function msWithinEnabledUnion(

@@ -80,6 +80,7 @@ import {
   MatrixDraggableObservationSlotPill,
   MatrixDraggableTypeSlotPill,
   MatrixEmployeeHourDropZone,
+  MatrixEmployeeHourTimelineCell,
   MatrixEmployeePrepRestBands,
   MatrixEventCreatePopup,
   MatrixObservationWindowOutlinePill,
@@ -95,6 +96,8 @@ import {
   buildEnabledWallIntervalsByEmployeeId,
   buildMatrixEmployeeRows,
   clipRangeToLongestEnabledSubinterval,
+  hourColumnIntervalClippedToFrame,
+  hourColumnTimelinePieces,
   msWithinEnabledUnion,
 } from "./helpers/matrixEmployeeAvailability";
 import {
@@ -2056,9 +2059,99 @@ export function ScheduleView() {
                       <div className="relative min-h-[28px] w-full">
                         <div className="absolute inset-0 z-0 flex min-h-[28px] items-stretch">
                           {hours.map((hour) => {
-                            const hasShift = hasActivityInHour(hour);
                             const hourEnabled =
-                              enabledHoursByEmployeeId.get(eid)?.has(hour) ?? false;
+                              enabledHoursByEmployeeId.get(eid)?.has(hour) ??
+                              false;
+                            const enabledUnion =
+                              enabledWallIntervalsByEmployeeId.get(eid) ?? [];
+                            const pieces =
+                              scheduleMatrixFrame && matrixRangeMs > 0
+                                ? (() => {
+                                    const c = hourColumnIntervalClippedToFrame(
+                                      dateStr,
+                                      hour,
+                                      scheduleMatrixFrame.frameStartMs,
+                                      scheduleMatrixFrame.frameEndMs,
+                                    );
+                                    return c
+                                      ? hourColumnTimelinePieces(c, enabledUnion)
+                                      : [];
+                                  })()
+                                : [];
+
+                            const hasActivityInPiece = (
+                              loMs: number,
+                              hiMs: number,
+                            ) =>
+                              employeeHasShiftOrObservationIntersectingInterval(
+                                dateStr,
+                                rowShifts,
+                                dayObservationsList,
+                                eid,
+                                loMs,
+                                hiMs,
+                              );
+
+                            const segmentDroppableDisabled = (
+                              _loMs: number,
+                              _hiMs: number,
+                              hasAct: boolean,
+                            ) => {
+                              const hl = activeDragHighlightMs;
+                              if (matrixDragKind === null || !hl) {
+                                return hasAct;
+                              }
+                              if (matrixDragKind === "typeSlot") {
+                                const ch = matrixTypeSlotCoveredHours ?? [];
+                                return (
+                                  hasAct ||
+                                  !ch.includes(hour) ||
+                                  (matrixTypeSlotOverlapEmps?.has(eid) ??
+                                    false)
+                                );
+                              }
+                              if (matrixDragKind === "empShift") {
+                                return (
+                                  hasAct ||
+                                  (matrixEmpShiftOverlapEmps?.has(eid) ??
+                                    false)
+                                );
+                              }
+                              if (matrixDragKind === "obsSlot") {
+                                const ch = matrixTypeSlotCoveredHours ?? [];
+                                return (
+                                  hasAct ||
+                                  !ch.includes(hour) ||
+                                  (matrixObsSlotOverlapEmps?.has(eid) ??
+                                    false)
+                                );
+                              }
+                              if (matrixDragKind === "obsRow") {
+                                return (
+                                  hasAct ||
+                                  (matrixObsRowOverlapEmps?.has(eid) ??
+                                    false)
+                                );
+                              }
+                              return hasAct;
+                            };
+
+                            if (pieces.length > 0) {
+                              return (
+                                <MatrixEmployeeHourTimelineCell
+                                  key={`${eid}-tl-${hour}`}
+                                  employeeId={eid}
+                                  hour={hour}
+                                  pieces={pieces}
+                                  hasActivityInPiece={hasActivityInPiece}
+                                  segmentDroppableDisabled={
+                                    segmentDroppableDisabled
+                                  }
+                                />
+                              );
+                            }
+
+                            const hasShift = hasActivityInHour(hour);
                             const hl = activeDragHighlightMs;
                             let droppableDisabled: boolean;
                             if (matrixDragKind === null || !hl) {
@@ -2068,21 +2161,25 @@ export function ScheduleView() {
                               droppableDisabled =
                                 !hourEnabled ||
                                 !ch.includes(hour) ||
-                                (matrixTypeSlotOverlapEmps?.has(eid) ?? false);
+                                (matrixTypeSlotOverlapEmps?.has(eid) ??
+                                  false);
                             } else if (matrixDragKind === "empShift") {
                               droppableDisabled =
                                 !hourEnabled ||
-                                (matrixEmpShiftOverlapEmps?.has(eid) ?? false);
+                                (matrixEmpShiftOverlapEmps?.has(eid) ??
+                                  false);
                             } else if (matrixDragKind === "obsSlot") {
                               const ch = matrixTypeSlotCoveredHours ?? [];
                               droppableDisabled =
                                 !hourEnabled ||
                                 !ch.includes(hour) ||
-                                (matrixObsSlotOverlapEmps?.has(eid) ?? false);
+                                (matrixObsSlotOverlapEmps?.has(eid) ??
+                                  false);
                             } else if (matrixDragKind === "obsRow") {
                               droppableDisabled =
                                 !hourEnabled ||
-                                (matrixObsRowOverlapEmps?.has(eid) ?? false);
+                                (matrixObsRowOverlapEmps?.has(eid) ??
+                                  false);
                             } else {
                               droppableDisabled = !hourEnabled;
                             }

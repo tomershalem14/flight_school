@@ -1,11 +1,12 @@
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeFile } from "@tauri-apps/plugin-fs";
 import { useEffect, useId, useState } from "react";
-import { useAppStore } from "../../app/store";
+import { useAppStore, weekStartString } from "../../app/store";
+import * as api from "../../shared/api";
 import type { JsonObject } from "../../shared/api";
 import { formatYmd } from "../../shared/dates";
 import { errorMessageFromUnknown } from "../../shared/errorMessage";
-import { buildEmptyManningWorkbookBytes } from "./manningExportXlsx";
+import { buildManningDayWorkbookBytes } from "./manningExportXlsx";
 
 function jsonString(v: JsonObject, key: string): string | undefined {
   const x = v[key];
@@ -374,7 +375,23 @@ export function ManningInspectorSidebar({ warnings }: { warnings: JsonObject[] }
                       setExportError(null);
                       setExportBusy(true);
                       try {
-                        const bytes = await buildEmptyManningWorkbookBytes();
+                        const dateStr = formatYmd(currentDay);
+                        const weekStr = weekStartString(currentDay);
+                        const [windows, presets, shifts, observations, employees] = await Promise.all([
+                          api.getShiftWindows(dateStr),
+                          api.getSyllabusPresets(),
+                          api.getShifts(weekStr),
+                          api.getObservations(weekStr),
+                          api.getEmployees(true),
+                        ]);
+                        const bytes = await buildManningDayWorkbookBytes({
+                          dateStr,
+                          windows: windows as JsonObject[],
+                          presets: presets as JsonObject[],
+                          shifts: shifts as JsonObject[],
+                          observations: observations as JsonObject[],
+                          employees: employees as JsonObject[],
+                        });
                         await writeFile(exportPath, bytes);
                       } catch (e) {
                         setExportError(errorMessageFromUnknown(e));
